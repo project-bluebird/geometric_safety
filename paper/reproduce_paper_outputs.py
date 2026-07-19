@@ -32,6 +32,12 @@ APPLICATION_COMMANDS = [
         None,
     ),
     (
+        "method-geometry",
+        "paper.render_method_geometry_figure",
+        "manuscript/figures/application/fig_method_geometry.pdf",
+        None,
+    ),
+    (
         "clearance-grid",
         "paper.render_clearance_grid_figure",
         "manuscript/figures/application/fig_clearance_grid.pdf",
