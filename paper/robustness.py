@@ -24,6 +24,45 @@ TRUTH_COARSE_DT_S = 0.25
 TRUTH_REFINED_DT_S = 0.05
 TRUTH_REFINE_WINDOW_S = 6.0
 SCHEDULE_SEGMENTS = 12
+OU_SPEED_STEP_S = 2.0
+
+
+@dataclass(frozen=True)
+class TruthModelConfig:
+    """Configuration of the truth simulator beyond the stated perturbation classes.
+
+    With all fields at their defaults the truth simulator draws from exactly the
+    classes the envelopes cover, so certified decisions cannot be violated and the
+    experiment verifies the implementation. The remaining fields move the truth
+    outside every stated class, which is where validation happens.
+
+    ``exceedance_factor`` scales the truth perturbation magnitudes relative to the
+    bounds the certificate inflates for. In-turn speed schedules stay clipped to the
+    admissible interval regardless, since excursions beyond the interval belong to
+    the interval-widening remedy rather than the schedule class.
+
+    ``ou_speed_sigma_kt`` enables mean-reverting speed drift over the whole horizon,
+    clipped to the admissible interval. This violates the constant-speed assumption
+    everywhere, not only during turns. ``roll_time_s`` replaces the instant-rate turn
+    with a trapezoidal rate profile that ramps in and out over the given time.
+    ``heading_jitter_deg`` adds piecewise-constant track-keeping error, redrawn every
+    ``heading_jitter_period_s`` seconds.
+    """
+
+    exceedance_factor: float = 1.0
+    ou_speed_sigma_kt: float = 0.0
+    ou_speed_timescale_s: float = 60.0
+    roll_time_s: float = 0.0
+    heading_jitter_deg: float = 0.0
+    heading_jitter_period_s: float = 20.0
+
+    def is_in_class(self) -> bool:
+        return (
+            self.exceedance_factor <= 1.0
+            and self.ou_speed_sigma_kt <= 0.0
+            and self.roll_time_s <= 0.0
+            and self.heading_jitter_deg <= 0.0
+        )
 
 
 @dataclass(frozen=True)
@@ -107,6 +146,35 @@ class _AircraftDraw:
     turn_rate_scale: float
     schedule_times_s: np.ndarray
     schedule_speeds_mps: np.ndarray
+    roll_time_s: float
+    jitter_times_s: np.ndarray
+    jitter_offsets_rad: np.ndarray
+
+
+def _ou_speed_path_mps(
+    rng: np.random.Generator,
+    *,
+    constant_speed_mps: float,
+    min_speed_mps: float,
+    max_speed_mps: float,
+    sigma_kt: float,
+    timescale_s: float,
+    horizon_s: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Sample a mean-reverting speed path over the whole horizon on a coarse grid."""
+    n_steps = max(round(horizon_s / OU_SPEED_STEP_S), 1)
+    edges = np.linspace(0.0, horizon_s, n_steps + 1)
+    sigma_mps = sigma_kt * KT_TO_MPS
+    theta = 1.0 / max(timescale_s, 1e-6)
+    values = np.empty(n_steps, dtype=np.float64)
+    level = constant_speed_mps
+    for idx in range(n_steps):
+        drift = theta * (constant_speed_mps - level) * OU_SPEED_STEP_S
+        diffusion = sigma_mps * math.sqrt(2.0 * theta * OU_SPEED_STEP_S) * float(rng.standard_normal())
+        level = level + drift + diffusion
+        level = min(max(level, min_speed_mps), max_speed_mps)
+        values[idx] = level
+    return edges, values
 
 
 def _sample_aircraft_draw(
@@ -119,8 +187,15 @@ def _sample_aircraft_draw(
     turn_rate_deg_sec: float,
     bounds: PerturbationBounds,
     adversarial: bool,
+    truth: TruthModelConfig,
+    horizon_s: float,
 ) -> _AircraftDraw:
-    """Sample one aircraft's realised speed and perturbation values."""
+    """Sample one aircraft's realised speed and perturbation values.
+
+    The exceedance factor scales the truth magnitudes relative to the stated bounds.
+    In-turn schedules stay clipped to the admissible interval at any factor.
+    """
+    factor = truth.exceedance_factor
     min_speed_mps = max(speed_kt - speed_diff_kt, 0.0) * KT_TO_MPS
     max_speed_mps = (speed_kt + speed_diff_kt) * KT_TO_MPS
     if adversarial:
@@ -130,7 +205,7 @@ def _sample_aircraft_draw(
 
     heading_error_rad = 0.0
     if bounds.heading_error_deg > 0.0:
-        bound_rad = bounds.heading_error_deg * DEG_TO_RAD
+        bound_rad = bounds.heading_error_deg * DEG_TO_RAD * factor
         if adversarial:
             heading_error_rad = float(rng.choice(np.asarray([-bound_rad, bound_rad])))
         else:
@@ -138,11 +213,12 @@ def _sample_aircraft_draw(
 
     turn_delay_s = 0.0
     if bounds.turn_delay_max_s > 0.0:
-        turn_delay_s = float(bounds.turn_delay_max_s if adversarial else rng.uniform(0.0, bounds.turn_delay_max_s))
+        limit_s = bounds.turn_delay_max_s * factor
+        turn_delay_s = float(limit_s if adversarial else rng.uniform(0.0, limit_s))
 
     turn_rate_scale = 1.0
     if bounds.turn_rate_error_max > 0.0:
-        bound = bounds.turn_rate_error_max
+        bound = min(bounds.turn_rate_error_max * factor, 0.95)
         if adversarial:
             turn_rate_scale = float(1.0 + rng.choice(np.asarray([-bound, bound])))
         else:
@@ -150,11 +226,22 @@ def _sample_aircraft_draw(
 
     turn_angle_deg = abs(heading_diff(heading0_deg, target_heading_deg))
     is_turning = turn_angle_deg >= ra.TURN_HEADING_EPS_DEG and abs(turn_rate_deg_sec) > ra.TURN_RATE_EPS_DEG_PER_S
-    if bounds.schedule_uncertainty_kt > 0.0 and is_turning:
+
+    if truth.ou_speed_sigma_kt > 0.0:
+        schedule_times_s, schedule_speeds_mps = _ou_speed_path_mps(
+            rng,
+            constant_speed_mps=constant_speed_mps,
+            min_speed_mps=min_speed_mps,
+            max_speed_mps=max_speed_mps,
+            sigma_kt=truth.ou_speed_sigma_kt,
+            timescale_s=truth.ou_speed_timescale_s,
+            horizon_s=horizon_s,
+        )
+    elif bounds.schedule_uncertainty_kt > 0.0 and is_turning:
         executed_rate = abs(turn_rate_deg_sec) * turn_rate_scale
         turn_duration_s = turn_angle_deg / executed_rate
         edges = np.linspace(turn_delay_s, turn_delay_s + turn_duration_s, SCHEDULE_SEGMENTS + 1)
-        delta_mps = bounds.schedule_uncertainty_kt * KT_TO_MPS
+        delta_mps = bounds.schedule_uncertainty_kt * KT_TO_MPS * factor
         low = max(constant_speed_mps - delta_mps, min_speed_mps)
         high = min(constant_speed_mps + delta_mps, max_speed_mps)
         if adversarial:
@@ -167,6 +254,15 @@ def _sample_aircraft_draw(
         schedule_times_s = np.empty(0, dtype=np.float64)
         schedule_speeds_mps = np.empty(0, dtype=np.float64)
 
+    if truth.heading_jitter_deg > 0.0:
+        n_segments = max(round(horizon_s / max(truth.heading_jitter_period_s, 1.0)), 1)
+        jitter_times_s = np.linspace(0.0, horizon_s, n_segments + 1)
+        jitter_bound_rad = truth.heading_jitter_deg * DEG_TO_RAD
+        jitter_offsets_rad = rng.uniform(-jitter_bound_rad, jitter_bound_rad, size=n_segments)
+    else:
+        jitter_times_s = np.empty(0, dtype=np.float64)
+        jitter_offsets_rad = np.empty(0, dtype=np.float64)
+
     return _AircraftDraw(
         constant_speed_mps=constant_speed_mps,
         heading_error_rad=heading_error_rad,
@@ -174,6 +270,9 @@ def _sample_aircraft_draw(
         turn_rate_scale=turn_rate_scale,
         schedule_times_s=schedule_times_s,
         schedule_speeds_mps=schedule_speeds_mps,
+        roll_time_s=truth.roll_time_s if is_turning else 0.0,
+        jitter_times_s=jitter_times_s,
+        jitter_offsets_rad=jitter_offsets_rad,
     )
 
 
@@ -199,13 +298,30 @@ def _perturbed_displacement(
     is_turning = abs(turn_angle_deg) >= ra.TURN_HEADING_EPS_DEG and abs(turn_rate_deg_sec) > ra.TURN_RATE_EPS_DEG_PER_S
     if is_turning:
         executed_rate_deg_s = abs(turn_rate_deg_sec) * draw.turn_rate_scale
-        turn_duration_s = abs(turn_angle_deg) / executed_rate_deg_s
-        progress_s = np.clip(mid_times - draw.turn_delay_s, 0.0, turn_duration_s)
-        headings_deg = heading0_deg + math.copysign(1.0, turn_angle_deg) * executed_rate_deg_s * progress_s
+        if draw.roll_time_s > 0.0:
+            # Trapezoidal rate transient: the rate ramps in over roll_time_s and the
+            # cumulative angle is clamped at the commanded turn angle. The ramp-in lag
+            # is the out-of-class element; the clamp approximates the roll-out.
+            ramp = np.clip((mid_times - draw.turn_delay_s) / draw.roll_time_s, 0.0, 1.0)
+            cumulative_angle_deg = np.minimum(
+                np.cumsum(executed_rate_deg_s * ramp * dt_s), abs(turn_angle_deg)
+            )
+            headings_deg = heading0_deg + math.copysign(1.0, turn_angle_deg) * cumulative_angle_deg
+        else:
+            turn_duration_s = abs(turn_angle_deg) / executed_rate_deg_s
+            progress_s = np.clip(mid_times - draw.turn_delay_s, 0.0, turn_duration_s)
+            headings_deg = heading0_deg + math.copysign(1.0, turn_angle_deg) * executed_rate_deg_s * progress_s
     else:
         headings_deg = np.full(mid_times.shape, heading0_deg)
 
     headings_rad = headings_deg * DEG_TO_RAD + draw.heading_error_rad
+    if draw.jitter_times_s.size:
+        segment_idx = np.clip(
+            np.searchsorted(draw.jitter_times_s, mid_times, side="right") - 1,
+            0,
+            draw.jitter_offsets_rad.size - 1,
+        )
+        headings_rad = headings_rad + draw.jitter_offsets_rad[segment_idx]
 
     speeds_mps = np.full(mid_times.shape, draw.constant_speed_mps)
     if draw.schedule_times_s.size:
@@ -230,14 +346,18 @@ def simulate_truth_min_separation(
     rng: np.random.Generator,
     *,
     adversarial: bool = True,
+    truth: TruthModelConfig | None = None,
 ) -> float:
     """Simulate one perturbed truth realisation and return its minimum separation.
 
     The relative trajectory composes the sampled per-aircraft executed paths, a
     constant differential wind at the full bound in a random direction, and an
     initial relative-position offset at the full bound in a random direction. A
-    coarse pass locates the minimum and a refined pass sharpens it.
+    coarse pass locates the minimum and a refined pass sharpens it. The optional
+    truth-model configuration moves the simulation outside the stated classes.
     """
+    if truth is None:
+        truth = TruthModelConfig()
     a_draw = _sample_aircraft_draw(
         rng,
         speed_kt=encounter.a_speed_kt,
@@ -247,6 +367,8 @@ def simulate_truth_min_separation(
         turn_rate_deg_sec=encounter.a_turn_rate_deg_sec,
         bounds=bounds,
         adversarial=adversarial,
+        truth=truth,
+        horizon_s=encounter.projection_time_s,
     )
     b_draw = _sample_aircraft_draw(
         rng,
@@ -257,12 +379,14 @@ def simulate_truth_min_separation(
         turn_rate_deg_sec=encounter.b_turn_rate_deg_sec,
         bounds=bounds,
         adversarial=adversarial,
+        truth=truth,
+        horizon_s=encounter.projection_time_s,
     )
 
     wind_vector_mps = np.zeros(2)
     if bounds.differential_wind_kt > 0.0:
         wind_dir = rng.uniform(0.0, 2.0 * math.pi)
-        magnitude = bounds.differential_wind_kt * KT_TO_MPS
+        magnitude = bounds.differential_wind_kt * KT_TO_MPS * truth.exceedance_factor
         if not adversarial:
             magnitude *= float(rng.uniform(0.0, 1.0))
         wind_vector_mps = magnitude * np.array([math.sin(wind_dir), math.cos(wind_dir)])
@@ -270,7 +394,9 @@ def simulate_truth_min_separation(
     offset_m = np.zeros(2)
     if bounds.position_error_m > 0.0:
         offset_dir = rng.uniform(0.0, 2.0 * math.pi)
-        magnitude = bounds.position_error_m if adversarial else bounds.position_error_m * float(rng.uniform(0.0, 1.0))
+        magnitude = bounds.position_error_m * truth.exceedance_factor
+        if not adversarial:
+            magnitude *= float(rng.uniform(0.0, 1.0))
         offset_m = magnitude * np.array([math.sin(offset_dir), math.cos(offset_dir)])
 
     def min_separation_on(times_s: np.ndarray) -> tuple[float, float]:
@@ -331,12 +457,15 @@ def evaluate_robustness_case(
     ref_lat: float,
     ref_lon: float,
     adversarial: bool = True,
+    truth: TruthModelConfig | None = None,
 ) -> RobustnessCaseResult:
     """Evaluate one encounter: certify with and without inflation, then attack it.
 
     A violation is a truth realisation whose minimum separation drops below the
-    threshold on an encounter the inflated certificate declared safe. Under the
-    manuscript's propositions the violation count must be zero for per-class bounds.
+    threshold on an encounter the inflated certificate declared safe. For truth drawn
+    from the stated classes the manuscript's propositions require a zero count, so
+    that configuration verifies the implementation. Out-of-class or exceedance truth
+    configurations can produce genuine violations, which is where validation happens.
     """
     from paper.evaluation import encounter_to_turn_kwargs
 
@@ -347,7 +476,7 @@ def evaluate_robustness_case(
     truth_min = math.inf
     n_below = 0
     for _ in range(n_sims):
-        sim_min = simulate_truth_min_separation(encounter, bounds, rng, adversarial=adversarial)
+        sim_min = simulate_truth_min_separation(encounter, bounds, rng, adversarial=adversarial, truth=truth)
         truth_min = min(truth_min, sim_min)
         if sim_min < encounter.separation_threshold_m:
             n_below += 1

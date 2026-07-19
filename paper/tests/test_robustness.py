@@ -9,6 +9,7 @@ from geometric_safety.util import DEG_TO_RAD, KT_TO_MPS, NMI_TO_M
 from paper.evaluation import DEFAULT_REF_LAT, DEFAULT_REF_LON, Encounter
 from paper.robustness import (
     PerturbationBounds,
+    TruthModelConfig,
     deviation_envelope_m,
     evaluate_robustness_case,
     simulate_truth_min_separation,
@@ -106,6 +107,8 @@ class TestTruthSimulation:
                 turn_rate_deg_sec=3.0,
                 bounds=bounds,
                 adversarial=True,
+                truth=TruthModelConfig(),
+                horizon_s=300.0,
             )
             assert draw.schedule_speeds_mps.size > 0
             assert float(draw.schedule_speeds_mps.min()) >= min_speed - 1e-9
@@ -120,6 +123,79 @@ class TestTruthSimulation:
             eta_horizon = deviation_envelope_m(encounter, bounds, encounter.projection_time_s)
             baseline = simulate_truth_min_separation(encounter, PerturbationBounds(), np.random.default_rng(11))
             assert sim_min >= baseline - eta_horizon - 1.0
+
+
+class TestTruthModelConfig:
+    def test_default_config_is_in_class(self):
+        assert TruthModelConfig().is_in_class()
+        assert not TruthModelConfig(exceedance_factor=1.5).is_in_class()
+        assert not TruthModelConfig(ou_speed_sigma_kt=5.0).is_in_class()
+        assert not TruthModelConfig(roll_time_s=5.0).is_in_class()
+        assert not TruthModelConfig(heading_jitter_deg=0.5).is_in_class()
+
+    def test_default_truth_matches_legacy_behaviour(self):
+        encounter = _turning_encounter(9.0, 45.0)
+        bounds = PerturbationBounds(differential_wind_kt=3.0, schedule_uncertainty_kt=8.0)
+        base = simulate_truth_min_separation(encounter, bounds, np.random.default_rng(5))
+        with_config = simulate_truth_min_separation(
+            encounter, bounds, np.random.default_rng(5), truth=TruthModelConfig()
+        )
+        assert with_config == pytest.approx(base, rel=1e-12)
+
+    def test_ou_speeds_stay_inside_interval(self):
+        from paper.robustness import _ou_speed_path_mps
+
+        rng = np.random.default_rng(9)
+        min_speed = 240.0 * KT_TO_MPS
+        max_speed = 280.0 * KT_TO_MPS
+        _, values = _ou_speed_path_mps(
+            rng,
+            constant_speed_mps=260.0 * KT_TO_MPS,
+            min_speed_mps=min_speed,
+            max_speed_mps=max_speed,
+            sigma_kt=25.0,
+            timescale_s=30.0,
+            horizon_s=900.0,
+        )
+        assert float(values.min()) >= min_speed - 1e-9
+        assert float(values.max()) <= max_speed + 1e-9
+
+    def test_roll_dynamics_change_the_path(self):
+        encounter = _turning_encounter(9.0, 60.0)
+        base = simulate_truth_min_separation(
+            encounter, PerturbationBounds(), np.random.default_rng(13), truth=TruthModelConfig()
+        )
+        rolled = simulate_truth_min_separation(
+            encounter, PerturbationBounds(), np.random.default_rng(13), truth=TruthModelConfig(roll_time_s=6.0)
+        )
+        assert rolled != pytest.approx(base, abs=1e-6)
+
+    def test_straight_ou_drift_never_violates_plain_certificate(self):
+        """Proposition 2.1 in action: whole-horizon speed variation is free when straight.
+
+        For straight-heading pairs, any measurable speed schedule inside the interval
+        reaches only positions the constant-speed hull already covers, so even the
+        uninflated certificate must survive OU speed drift.
+        """
+        truth = TruthModelConfig(ou_speed_sigma_kt=20.0, ou_speed_timescale_s=45.0)
+        rng = np.random.default_rng(20260720)
+        checked = 0
+        for separation_nmi in (7.0, 9.0, 12.0):
+            encounter = _straight_crossing(separation_nmi)
+            result = evaluate_robustness_case(
+                encounter,
+                PerturbationBounds(),
+                n_sims=40,
+                rng=rng,
+                ref_lat=DEFAULT_REF_LAT,
+                ref_lon=DEFAULT_REF_LON,
+                adversarial=True,
+                truth=truth,
+            )
+            if result.certified_safe:
+                checked += 1
+                assert result.n_below_threshold == 0
+        assert checked > 0
 
 
 class TestCertificateValidity:
