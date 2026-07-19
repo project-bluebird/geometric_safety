@@ -17,13 +17,15 @@ import pytest
 
 from geometric_safety.relevant_aircraft import (
     _closest_time_from_projection,
+    _deviation_envelope_m,
     _interval_distance_lower_bound,
     _interval_local_lipschitz_mps,
     _relative_position_hull_at_time,
     _relative_speed_mps,
     _speed_rectangle_corner_points,
     _turn_displacement_basis,
-    _turn_speed_schedule_buffer_m,
+    _turn_execution_envelope_m,
+    _turn_speed_schedule_envelope_m,
     _unwrapped_heading_deg_at_time,
     catch_up_projection_interval,
     catch_up_projection_interval_with_turns,
@@ -542,30 +544,110 @@ class TestHelpers:
         # The local bound should never produce a less safe answer than the global bound.
         assert int(local_result[0]) >= int(global_result[0])
 
-    def test_turn_speed_schedule_buffer_matches_full_turn_example(self):
-        """The robustness helper should reproduce the stated full-turn bound."""
-        buffer_m = _turn_speed_schedule_buffer_m(
+    def test_turn_speed_schedule_envelope_matches_proven_bound(self):
+        """The envelope should equal delta * t_a * (1 - cos(theta_a)) / theta_a in scope."""
+        envelope_m = _turn_speed_schedule_envelope_m(
             heading0_deg=0.0,
             target_heading_deg=90.0,
             turn_rate_deg_sec=3.0,
-            projection_time_s=30.0,
-            turn_speed_schedule_uncertainty_kt=50.0,
+            t_s=30.0,
+            schedule_uncertainty_kt=50.0,
+            min_speed_mps=100.0,
+            max_speed_mps=200.0,
         )
 
-        expected = 0.5 * 30.0 * (100.0 * KT_TO_MPS) * math.sin(45.0 * DEG_TO_RAD)
-        assert buffer_m == pytest.approx(expected, rel=1e-12)
+        theta_a = 90.0 * DEG_TO_RAD
+        expected = (50.0 * KT_TO_MPS) * 30.0 * (1.0 - math.cos(theta_a)) / theta_a
+        assert envelope_m == pytest.approx(expected, rel=1e-12)
 
-    def test_turn_speed_schedule_buffer_is_zero_for_straight_flight(self):
-        """The optional robustness buffer should vanish when no turn is flown."""
-        buffer_m = _turn_speed_schedule_buffer_m(
+    def test_turn_speed_schedule_envelope_dominated_by_old_buffer(self):
+        """The proven envelope should never exceed the previously shipped buffer."""
+        for sweep_deg in (10.0, 30.0, 60.0, 90.0):
+            for t_s in (5.0, 15.0, 30.0, 120.0):
+                envelope_m = _turn_speed_schedule_envelope_m(
+                    heading0_deg=0.0,
+                    target_heading_deg=sweep_deg,
+                    turn_rate_deg_sec=3.0,
+                    t_s=t_s,
+                    schedule_uncertainty_kt=25.0,
+                    min_speed_mps=100.0,
+                    max_speed_mps=200.0,
+                )
+                t_active = min(t_s, sweep_deg / 3.0)
+                theta_active = 3.0 * DEG_TO_RAD * t_active
+                old_buffer_m = (25.0 * KT_TO_MPS) * t_active * math.sin(0.5 * theta_active)
+                assert envelope_m <= old_buffer_m + 1e-12
+
+    def test_turn_speed_schedule_envelope_beyond_ninety_uses_fallback(self):
+        """Sweeps beyond 90 degrees should use the unconditional fallback bound."""
+        envelope_m = _turn_speed_schedule_envelope_m(
+            heading0_deg=0.0,
+            target_heading_deg=150.0,
+            turn_rate_deg_sec=3.0,
+            t_s=50.0,
+            schedule_uncertainty_kt=10.0,
+            min_speed_mps=100.0,
+            max_speed_mps=200.0,
+        )
+
+        theta_a = 150.0 * DEG_TO_RAD
+        amplitude = min(2.0 * 10.0 * KT_TO_MPS, 100.0)
+        expected = amplitude * 4.0 * 50.0 * (1.0 - math.cos(0.5 * theta_a)) / theta_a
+        assert envelope_m == pytest.approx(expected, rel=1e-12)
+
+    def test_turn_speed_schedule_envelope_is_zero_for_straight_flight(self):
+        """The envelope should vanish when no turn is flown."""
+        envelope_m = _turn_speed_schedule_envelope_m(
             heading0_deg=45.0,
             target_heading_deg=45.0,
             turn_rate_deg_sec=0.0,
-            projection_time_s=600.0,
-            turn_speed_schedule_uncertainty_kt=50.0,
+            t_s=600.0,
+            schedule_uncertainty_kt=50.0,
+            min_speed_mps=100.0,
+            max_speed_mps=200.0,
         )
 
-        assert buffer_m == pytest.approx(0.0, abs=1e-12)
+        assert envelope_m == pytest.approx(0.0, abs=1e-12)
+
+    def test_turn_execution_envelope_saturates_after_turn(self):
+        """The execution envelope should stop growing once the turn window passes."""
+        kwargs = {
+            "heading0_deg": 0.0,
+            "target_heading_deg": 60.0,
+            "turn_rate_deg_sec": 3.0,
+            "max_speed_mps": 128.6,
+            "turn_delay_max_s": 5.0,
+            "turn_rate_error_max": 0.1,
+        }
+        early = _turn_execution_envelope_m(t_s=10.0, **kwargs)
+        at_saturation = _turn_execution_envelope_m(t_s=25.0, **kwargs)
+        late = _turn_execution_envelope_m(t_s=600.0, **kwargs)
+
+        assert 0.0 < early < at_saturation
+        assert late == pytest.approx(at_saturation, rel=1e-12)
+
+    def test_deviation_envelope_const_and_rate_terms(self):
+        """Constant and linear envelope terms should add exactly."""
+        eta_m = _deviation_envelope_m(
+            t_s=100.0,
+            eta_const_m=100.0,
+            eta_rate_mps=2.5,
+            a_heading0_deg=0.0,
+            a_target_heading_deg=0.0,
+            a_turn_rate_deg_sec=0.0,
+            a_min_speed_mps=100.0,
+            a_max_speed_mps=150.0,
+            b_heading0_deg=180.0,
+            b_target_heading_deg=180.0,
+            b_turn_rate_deg_sec=0.0,
+            b_min_speed_mps=100.0,
+            b_max_speed_mps=150.0,
+            turn_speed_schedule_uncertainty_kt=0.0,
+            turn_delay_max_s=0.0,
+            turn_rate_error_max=0.0,
+        )
+
+        assert eta_m == pytest.approx(100.0 + 2.5 * 100.0, rel=1e-12)
 
     def test_turn_speed_schedule_uncertainty_zero_matches_default(self):
         """Passing a zero robustness uncertainty should be a no-op."""

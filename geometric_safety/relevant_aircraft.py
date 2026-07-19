@@ -1064,32 +1064,38 @@ def _interval_distance_lower_bound(start_dist_m: float, end_dist_m: float, lipsc
 
 
 @numba.njit(cache=True, fastmath=True)
-def _turn_speed_schedule_buffer_m(
+def _turn_speed_schedule_envelope_m(
     heading0_deg: float,
     target_heading_deg: float,
     turn_rate_deg_sec: float,
-    projection_time_s: float,
-    turn_speed_schedule_uncertainty_kt: float,
+    t_s: float,
+    schedule_uncertainty_kt: float,
+    min_speed_mps: float,
+    max_speed_mps: float,
 ) -> float:
     """
-    Return a one-aircraft robustness buffer for bounded speed variation during a turn.
+    Return the one-aircraft deviation envelope for bounded in-turn speed variation.
 
-    The core turn-aware solver assumes one constant speed over the horizon. If, in
-    reality, an aircraft may vary its instantaneous speed within
-    `nominal +/- turn_speed_schedule_uncertainty_kt` while the turn is active, then the
-    fixed-time position can move away from the constant-speed model segment. This helper
-    returns a conservative bound on that mismatch, assuming the speed variation only
-    occurs during the active turning portion of the horizon.
+    The perturbed class holds the realised constant speed everywhere except during the
+    active turn, where the instantaneous speed may follow any measurable schedule inside
+    `[s - delta, s + delta]` intersected with the admissible interval. The intersection
+    is essential: excursions beyond the admissible interval cannot be absorbed along
+    track and admit no envelope of this shape (see the paper's robustness section).
 
-    The bound is
+    For an active sweep `theta_a <= pi/2` the proven envelope is
 
-        0.5 * t_active * Delta_s * sin(theta_active / 2),
+        delta * t_active * (1 - cos(theta_a)) / theta_a,
 
-    where `Delta_s` is the full width of the in-turn speed interval, `t_active` is the
-    amount of turn time seen within the projection horizon, and `theta_active` is the
-    corresponding heading sweep in radians.
+    which is sharper than the previously shipped `delta * t_active * sin(theta_a / 2)`
+    buffer and is approached by extreme schedules in the long-horizon limit. Beyond
+    `pi/2` the unconditional fallback
+
+        min(2 * delta, width) * 4 * t_active * (1 - cos(theta_a / 2)) / theta_a
+
+    applies, where `width` is the admissible interval width. Both bounds are evaluated
+    at the query time `t_s`, so the envelope is time-varying and nondecreasing.
     """
-    if projection_time_s <= 0.0 or turn_speed_schedule_uncertainty_kt <= 0.0:
+    if t_s <= 0.0 or schedule_uncertainty_kt <= 0.0:
         return 0.0
 
     turn_angle_deg = abs(heading_diff(heading0_deg, target_heading_deg))
@@ -1097,15 +1103,137 @@ def _turn_speed_schedule_buffer_m(
         return 0.0
 
     turn_duration_s = turn_angle_deg / abs(turn_rate_deg_sec)
-    active_turn_time_s = min(projection_time_s, turn_duration_s)
-    active_turn_sweep_deg = min(turn_angle_deg, abs(turn_rate_deg_sec) * projection_time_s)
-
-    if active_turn_time_s <= 0.0 or active_turn_sweep_deg <= 0.0:
+    active_turn_time_s = min(t_s, turn_duration_s)
+    sweep_rad = abs(turn_rate_deg_sec) * DEG_TO_RAD * active_turn_time_s
+    if active_turn_time_s <= 0.0 or sweep_rad <= 1e-12:
         return 0.0
 
-    delta_speed_mps = 2.0 * turn_speed_schedule_uncertainty_kt * KT_TO_MPS
-    active_turn_sweep_rad = active_turn_sweep_deg * DEG_TO_RAD
-    return 0.5 * active_turn_time_s * delta_speed_mps * math.sin(0.5 * active_turn_sweep_rad)
+    delta_mps = schedule_uncertainty_kt * KT_TO_MPS
+    # The tolerance keeps the intended inclusive pi/2 boundary robust to floating-point
+    # rounding of the sweep computation.
+    if sweep_rad <= 0.5 * math.pi + 1e-9:
+        return delta_mps * active_turn_time_s * (1.0 - math.cos(sweep_rad)) / sweep_rad
+
+    width_mps = max(max_speed_mps - min_speed_mps, 0.0)
+    amplitude_mps = min(2.0 * delta_mps, width_mps)
+    return amplitude_mps * 4.0 * active_turn_time_s * (1.0 - math.cos(0.5 * sweep_rad)) / sweep_rad
+
+
+@numba.njit(cache=True, fastmath=True)
+def _turn_execution_envelope_m(
+    heading0_deg: float,
+    target_heading_deg: float,
+    turn_rate_deg_sec: float,
+    t_s: float,
+    max_speed_mps: float,
+    turn_delay_max_s: float,
+    turn_rate_error_max: float,
+) -> float:
+    """
+    Return the one-aircraft deviation envelope for bounded turn execution error.
+
+    The perturbed class delays turn initiation by up to `turn_delay_max_s` seconds and
+    scales the turn rate by `(1 + e)` with `|e| <= turn_rate_error_max < 1`, ending at
+    the commanded absolute target heading. The envelope integrates the worst-case
+    heading-profile gap and multiplies by the maximum speed:
+
+        s_max * [ min(|omega| t_d, |dH|) * min(t, tau + t_d)
+                  + e * |dH| * min(t, tau / (1 - e)) ].
+
+    The value saturates shortly after the commanded turn completes.
+    """
+    if t_s <= 0.0 or (turn_delay_max_s <= 0.0 and turn_rate_error_max <= 0.0):
+        return 0.0
+
+    turn_angle_deg = abs(heading_diff(heading0_deg, target_heading_deg))
+    if turn_angle_deg < TURN_HEADING_EPS_DEG or abs(turn_rate_deg_sec) <= TURN_RATE_EPS_DEG_PER_S:
+        return 0.0
+
+    omega_rad_s = abs(turn_rate_deg_sec) * DEG_TO_RAD
+    turn_angle_rad = turn_angle_deg * DEG_TO_RAD
+    turn_duration_s = turn_angle_rad / omega_rad_s
+
+    phi_delay = 0.0
+    if turn_delay_max_s > 0.0:
+        heading_gap_rad = min(omega_rad_s * turn_delay_max_s, turn_angle_rad)
+        phi_delay = heading_gap_rad * min(t_s, turn_duration_s + turn_delay_max_s)
+
+    phi_rate = 0.0
+    if 0.0 < turn_rate_error_max < 1.0:
+        phi_rate = turn_rate_error_max * turn_angle_rad * min(
+            t_s, turn_duration_s / (1.0 - turn_rate_error_max)
+        )
+
+    return max_speed_mps * (phi_delay + phi_rate)
+
+
+@numba.njit(cache=True, fastmath=True)
+def _deviation_envelope_m(
+    t_s: float,
+    eta_const_m: float,
+    eta_rate_mps: float,
+    a_heading0_deg: float,
+    a_target_heading_deg: float,
+    a_turn_rate_deg_sec: float,
+    a_min_speed_mps: float,
+    a_max_speed_mps: float,
+    b_heading0_deg: float,
+    b_target_heading_deg: float,
+    b_turn_rate_deg_sec: float,
+    b_min_speed_mps: float,
+    b_max_speed_mps: float,
+    turn_speed_schedule_uncertainty_kt: float,
+    turn_delay_max_s: float,
+    turn_rate_error_max: float,
+) -> float:
+    """
+    Return the total deviation envelope eta(t) for the configured perturbation classes.
+
+    `eta_const_m` covers constant offsets such as relative-position estimation error.
+    `eta_rate_mps` covers linear-in-time classes: a differential wind bound contributes
+    its magnitude directly, and a heading-estimate bound of `eps_i` radians per aircraft
+    contributes `s_i_max * eps_i`. The remaining terms are the closed-form in-turn
+    schedule and turn-execution envelopes. The total is nondecreasing in `t_s`, which
+    the inflated interval certificate relies on.
+    """
+    eta_m = eta_const_m + eta_rate_mps * max(t_s, 0.0)
+    eta_m += _turn_speed_schedule_envelope_m(
+        heading0_deg=a_heading0_deg,
+        target_heading_deg=a_target_heading_deg,
+        turn_rate_deg_sec=a_turn_rate_deg_sec,
+        t_s=t_s,
+        schedule_uncertainty_kt=turn_speed_schedule_uncertainty_kt,
+        min_speed_mps=a_min_speed_mps,
+        max_speed_mps=a_max_speed_mps,
+    )
+    eta_m += _turn_speed_schedule_envelope_m(
+        heading0_deg=b_heading0_deg,
+        target_heading_deg=b_target_heading_deg,
+        turn_rate_deg_sec=b_turn_rate_deg_sec,
+        t_s=t_s,
+        schedule_uncertainty_kt=turn_speed_schedule_uncertainty_kt,
+        min_speed_mps=b_min_speed_mps,
+        max_speed_mps=b_max_speed_mps,
+    )
+    eta_m += _turn_execution_envelope_m(
+        heading0_deg=a_heading0_deg,
+        target_heading_deg=a_target_heading_deg,
+        turn_rate_deg_sec=a_turn_rate_deg_sec,
+        t_s=t_s,
+        max_speed_mps=a_max_speed_mps,
+        turn_delay_max_s=turn_delay_max_s,
+        turn_rate_error_max=turn_rate_error_max,
+    )
+    eta_m += _turn_execution_envelope_m(
+        heading0_deg=b_heading0_deg,
+        target_heading_deg=b_target_heading_deg,
+        turn_rate_deg_sec=b_turn_rate_deg_sec,
+        t_s=t_s,
+        max_speed_mps=b_max_speed_mps,
+        turn_delay_max_s=turn_delay_max_s,
+        turn_rate_error_max=turn_rate_error_max,
+    )
+    return eta_m
 
 
 @numba.njit(cache=True, fastmath=True)
@@ -1125,6 +1253,10 @@ def _catch_up_projection_interval_with_turns_local(
     use_interval_local_lipschitz: bool = TURN_USE_INTERVAL_LOCAL_LIPSCHITZ_DEFAULT,
     turn_speed_schedule_uncertainty_kt: float = TURN_SPEED_SCHEDULE_UNCERTAINTY_KT_DEFAULT,
     min_cert_interval_s: float = TURN_TIME_CERT_MIN_INTERVAL_S,
+    eta_const_m: float = 0.0,
+    eta_rate_mps: float = 0.0,
+    turn_delay_max_s: float = 0.0,
+    turn_rate_error_max: float = 0.0,
 ) -> tuple[bool, float, float]:
     """Internal local-coordinate entrypoint for the turn-aware solver."""
     a_turn_angle_deg = heading_diff(a_heading0_deg, a_target_heading_deg)
@@ -1132,7 +1264,10 @@ def _catch_up_projection_interval_with_turns_local(
     a_is_turning = abs(a_turn_angle_deg) >= TURN_HEADING_EPS_DEG and abs(a_turn_rate_deg_sec) > TURN_RATE_EPS_DEG_PER_S
     b_is_turning = abs(b_turn_angle_deg) >= TURN_HEADING_EPS_DEG and abs(b_turn_rate_deg_sec) > TURN_RATE_EPS_DEG_PER_S
 
-    if not a_is_turning and not b_is_turning:
+    # Constant and linear envelope terms apply to straight motion too, so the exact
+    # straight delegation is only taken when no envelope is configured. The turn-only
+    # envelope terms vanish without a commanded turn.
+    if not a_is_turning and not b_is_turning and eta_const_m <= 0.0 and eta_rate_mps <= 0.0:
         return catch_up_projection_interval(
             a_lat=0.0,
             a_lon=0.0,
@@ -1161,34 +1296,28 @@ def _catch_up_projection_interval_with_turns_local(
     # bound is retained as an opt-out option for debugging and comparison.
     global_lipschitz_mps = a_max_speed_mps + b_max_speed_mps
 
-    # Optional robustness buffer for speed variation during active turns. This keeps the
-    # geometry and certification logic unchanged and instead inflates the required
-    # threshold by a horizon-wide conservative margin.
-    turn_speed_schedule_buffer_m = _turn_speed_schedule_buffer_m(
-        heading0_deg=a_heading0_deg,
-        target_heading_deg=a_target_heading_deg,
-        turn_rate_deg_sec=a_turn_rate_deg_sec,
-        projection_time_s=projection_time_s,
-        turn_speed_schedule_uncertainty_kt=turn_speed_schedule_uncertainty_kt,
-    ) + _turn_speed_schedule_buffer_m(
-        heading0_deg=b_heading0_deg,
-        target_heading_deg=b_target_heading_deg,
-        turn_rate_deg_sec=b_turn_rate_deg_sec,
-        projection_time_s=projection_time_s,
-        turn_speed_schedule_uncertainty_kt=turn_speed_schedule_uncertainty_kt,
+    # Deviation envelopes inflate the required threshold per evaluated time. The
+    # geometry and certification logic are unchanged, and the zero-envelope fast path
+    # skips the envelope evaluation entirely.
+    has_envelope = (
+        eta_const_m > 0.0
+        or eta_rate_mps > 0.0
+        or turn_speed_schedule_uncertainty_kt > 0.0
+        or turn_delay_max_s > 0.0
+        or turn_rate_error_max > 0.0
     )
-    effective_separation_threshold_m = separation_threshold_m + turn_speed_schedule_buffer_m
 
     if projection_time_s <= 0.0:
         min_dist_now = float(np.linalg.norm(rel_pos0))
-        return min_dist_now >= separation_threshold_m, min_dist_now, 0.0
+        return min_dist_now >= separation_threshold_m + eta_const_m, min_dist_now, 0.0
 
     if min_cert_interval_s <= 0.0:
         min_cert_interval_s = TURN_TIME_CERT_MIN_INTERVAL_S
 
     # Always check the horizon endpoints explicitly before doing any interval logic.
+    # At t = 0 only the constant envelope term is active.
     start_dist_m = float(np.linalg.norm(rel_pos0))
-    if start_dist_m < separation_threshold_m:
+    if start_dist_m < separation_threshold_m + eta_const_m:
         return False, start_dist_m, 0.0
 
     end_dist_m = _min_distance_to_relative_hull_at_time(
@@ -1240,7 +1369,29 @@ def _catch_up_projection_interval_with_turns_local(
         ),
         dt_s=projection_time_s,
     )
-    if initial_lower_bound_m >= effective_separation_threshold_m:
+    eta_horizon_m = (
+        _deviation_envelope_m(
+            t_s=projection_time_s,
+            eta_const_m=eta_const_m,
+            eta_rate_mps=eta_rate_mps,
+            a_heading0_deg=a_heading0_deg,
+            a_target_heading_deg=a_target_heading_deg,
+            a_turn_rate_deg_sec=a_turn_rate_deg_sec,
+            a_min_speed_mps=a_min_speed_mps,
+            a_max_speed_mps=a_max_speed_mps,
+            b_heading0_deg=b_heading0_deg,
+            b_target_heading_deg=b_target_heading_deg,
+            b_turn_rate_deg_sec=b_turn_rate_deg_sec,
+            b_min_speed_mps=b_min_speed_mps,
+            b_max_speed_mps=b_max_speed_mps,
+            turn_speed_schedule_uncertainty_kt=turn_speed_schedule_uncertainty_kt,
+            turn_delay_max_s=turn_delay_max_s,
+            turn_rate_error_max=turn_rate_error_max,
+        )
+        if has_envelope
+        else 0.0
+    )
+    if initial_lower_bound_m >= separation_threshold_m + eta_horizon_m:
         return True, best_sample_dist_m, best_sample_time_s
 
     # Depth-first interval subdivision uses an explicit stack because Numba handles
@@ -1305,8 +1456,34 @@ def _catch_up_projection_interval_with_turns_local(
             most_critical_lower_bound_m = interval_lower_bound_m
             most_critical_time_s = 0.5 * (left_t_s + right_t_s)
 
-        # This whole interval is certified safe; no need to look inside it.
-        if interval_lower_bound_m >= effective_separation_threshold_m:
+        # The envelope is nondecreasing, so evaluating it at the interval's right
+        # endpoint bounds it over the whole interval, matching the inflated interval
+        # certificate.
+        interval_eta_m = (
+            _deviation_envelope_m(
+                t_s=right_t_s,
+                eta_const_m=eta_const_m,
+                eta_rate_mps=eta_rate_mps,
+                a_heading0_deg=a_heading0_deg,
+                a_target_heading_deg=a_target_heading_deg,
+                a_turn_rate_deg_sec=a_turn_rate_deg_sec,
+                a_min_speed_mps=a_min_speed_mps,
+                a_max_speed_mps=a_max_speed_mps,
+                b_heading0_deg=b_heading0_deg,
+                b_target_heading_deg=b_target_heading_deg,
+                b_turn_rate_deg_sec=b_turn_rate_deg_sec,
+                b_min_speed_mps=b_min_speed_mps,
+                b_max_speed_mps=b_max_speed_mps,
+                turn_speed_schedule_uncertainty_kt=turn_speed_schedule_uncertainty_kt,
+                turn_delay_max_s=turn_delay_max_s,
+                turn_rate_error_max=turn_rate_error_max,
+            )
+            if has_envelope
+            else 0.0
+        )
+
+        # This whole interval is certified safe, so there is no need to look inside it.
+        if interval_lower_bound_m >= separation_threshold_m + interval_eta_m:
             continue
 
         # At the minimum certification width we stop refining. If the interval still
@@ -1337,7 +1514,31 @@ def _catch_up_projection_interval_with_turns_local(
             best_sample_dist_m = mid_dist_m
             best_sample_time_s = mid_t_s
 
-        if mid_dist_m < separation_threshold_m:
+        # A midpoint inside the inflated threshold can never be certified, so the
+        # search can stop early. With no envelope this is the plain conflict witness.
+        mid_eta_m = (
+            _deviation_envelope_m(
+                t_s=mid_t_s,
+                eta_const_m=eta_const_m,
+                eta_rate_mps=eta_rate_mps,
+                a_heading0_deg=a_heading0_deg,
+                a_target_heading_deg=a_target_heading_deg,
+                a_turn_rate_deg_sec=a_turn_rate_deg_sec,
+                a_min_speed_mps=a_min_speed_mps,
+                a_max_speed_mps=a_max_speed_mps,
+                b_heading0_deg=b_heading0_deg,
+                b_target_heading_deg=b_target_heading_deg,
+                b_turn_rate_deg_sec=b_turn_rate_deg_sec,
+                b_min_speed_mps=b_min_speed_mps,
+                b_max_speed_mps=b_max_speed_mps,
+                turn_speed_schedule_uncertainty_kt=turn_speed_schedule_uncertainty_kt,
+                turn_delay_max_s=turn_delay_max_s,
+                turn_rate_error_max=turn_rate_error_max,
+            )
+            if has_envelope
+            else 0.0
+        )
+        if mid_dist_m < separation_threshold_m + mid_eta_m:
             return False, best_sample_dist_m, best_sample_time_s
 
         # Push the two child intervals. DFS keeps memory small and tends to find nearby
@@ -1376,6 +1577,10 @@ def catch_up_projection_interval_with_turns(
     projection_time_s: float,
     use_interval_local_lipschitz: bool = TURN_USE_INTERVAL_LOCAL_LIPSCHITZ_DEFAULT,
     turn_speed_schedule_uncertainty_kt: float = TURN_SPEED_SCHEDULE_UNCERTAINTY_KT_DEFAULT,
+    eta_const_m: float = 0.0,
+    eta_rate_mps: float = 0.0,
+    turn_delay_max_s: float = 0.0,
+    turn_rate_error_max: float = 0.0,
 ) -> tuple[bool, float, float]:
     """
     Evaluate horizontal separation when one or both aircraft may execute one turn.
@@ -1423,12 +1628,23 @@ def catch_up_projection_interval_with_turns(
         commanded heading profiles. If False, use the simpler global bound
         `a_max + b_max`.
     turn_speed_schedule_uncertainty_kt : float, optional
-        Optional robustness assumption for turning aircraft only. If positive, the
-        function inflates the separation threshold by a conservative additive buffer
-        corresponding to instantaneous in-turn speed variation within
-        `nominal +/- turn_speed_schedule_uncertainty_kt`, even though the core reachable
-        set still assumes one constant speed over the horizon. The buffer is zero for
-        straight aircraft and is disabled by default.
+        Deviation-envelope bound for turning aircraft only. If positive, the decision
+        covers instantaneous in-turn speed variation within
+        `nominal +/- turn_speed_schedule_uncertainty_kt`, clipped to the admissible
+        interval, by inflating the threshold with the proven time-varying envelope.
+        The envelope is zero for straight aircraft and is disabled by default.
+    eta_const_m : float, optional
+        Constant deviation-envelope term in metres, covering a bounded
+        relative-position estimation error.
+    eta_rate_mps : float, optional
+        Linear deviation-envelope rate in metres per second. A differential wind bound
+        contributes its magnitude directly, and a heading-estimate bound of
+        `eps_i` radians per aircraft contributes `s_i_max * eps_i`.
+    turn_delay_max_s : float, optional
+        Deviation-envelope bound on turn-initiation delay in seconds.
+    turn_rate_error_max : float, optional
+        Deviation-envelope bound on the relative turn-rate error, as a fraction
+        strictly below one.
 
     Returns
     -------
@@ -1437,10 +1653,10 @@ def catch_up_projection_interval_with_turns(
 
         For turning cases, `min_distance_m` and `closest_time_s` are informative
         sampled/certified estimates. The primary contract is the boolean separation
-        result, which is sound with respect to the modelled envelope. If
-        `turn_speed_schedule_uncertainty_kt > 0`, the boolean decision also includes
-        the requested robustness buffer, while the distance/time pair remains a raw
-        diagnostic of the constant-speed geometry.
+        result, which is sound with respect to the modelled envelope. If any
+        deviation-envelope parameter is positive, the boolean decision also covers
+        the corresponding bounded perturbation classes, while the distance/time pair
+        remains a raw diagnostic of the constant-speed geometry.
 
     Notes
     -----
@@ -1458,8 +1674,9 @@ def catch_up_projection_interval_with_turns(
 
     So the boolean return value is a certificate about the whole horizon, while the
     distance/time pair is a compact summary of the most critical sampled or certified
-    point encountered during the search. The optional turn-speed-schedule buffer is
-    applied by inflating the threshold, not by changing the reachable-set geometry.
+    point encountered during the search. All deviation envelopes are applied by
+    inflating the threshold per evaluated time, not by changing the reachable-set
+    geometry.
     """
     rel_pos0 = -latlon_to_local_xy(b_lat, b_lon, ref_lat=a_lat, ref_lon=a_lon)
     return _catch_up_projection_interval_with_turns_local(
@@ -1478,4 +1695,8 @@ def catch_up_projection_interval_with_turns(
         use_interval_local_lipschitz=use_interval_local_lipschitz,
         turn_speed_schedule_uncertainty_kt=turn_speed_schedule_uncertainty_kt,
         min_cert_interval_s=TURN_TIME_CERT_MIN_INTERVAL_S,
+        eta_const_m=eta_const_m,
+        eta_rate_mps=eta_rate_mps,
+        turn_delay_max_s=turn_delay_max_s,
+        turn_rate_error_max=turn_rate_error_max,
     )
