@@ -290,9 +290,13 @@ def _perturbed_displacement(
     commanded absolute target, the sampled speed schedule applies inside the executed
     turn window, and the whole path is rotated by the sampled heading error. Midpoint
     integration on the grid keeps the discretisation error far below envelope scale.
+
+    The grid must start at time zero because displacement accumulates from the start
+    of the horizon. Step sizes may vary, which lets callers mix a coarse prefix with
+    a refined window in one pass.
     """
-    dt_s = float(times_s[1] - times_s[0]) if times_s.size > 1 else 0.0
-    mid_times = times_s[:-1] + 0.5 * dt_s
+    dts_s = np.diff(times_s)
+    mid_times = times_s[:-1] + 0.5 * dts_s
 
     turn_angle_deg = heading_diff(heading0_deg, target_heading_deg)
     is_turning = abs(turn_angle_deg) >= ra.TURN_HEADING_EPS_DEG and abs(turn_rate_deg_sec) > ra.TURN_RATE_EPS_DEG_PER_S
@@ -304,7 +308,7 @@ def _perturbed_displacement(
             # is the out-of-class element; the clamp approximates the roll-out.
             ramp = np.clip((mid_times - draw.turn_delay_s) / draw.roll_time_s, 0.0, 1.0)
             cumulative_angle_deg = np.minimum(
-                np.cumsum(executed_rate_deg_s * ramp * dt_s), abs(turn_angle_deg)
+                np.cumsum(executed_rate_deg_s * ramp * dts_s), abs(turn_angle_deg)
             )
             headings_deg = heading0_deg + math.copysign(1.0, turn_angle_deg) * cumulative_angle_deg
         else:
@@ -333,8 +337,8 @@ def _perturbed_displacement(
         )
         speeds_mps[in_window] = draw.schedule_speeds_mps[segment_idx]
 
-    step_east = speeds_mps * np.sin(headings_rad) * dt_s
-    step_north = speeds_mps * np.cos(headings_rad) * dt_s
+    step_east = speeds_mps * np.sin(headings_rad) * dts_s
+    step_north = speeds_mps * np.cos(headings_rad) * dts_s
     east = np.concatenate(([0.0], np.cumsum(step_east)))
     north = np.concatenate(([0.0], np.cumsum(step_north)))
     return np.stack([east, north], axis=1)
@@ -424,10 +428,14 @@ def simulate_truth_min_separation(
     coarse_times = np.linspace(0.0, encounter.projection_time_s, coarse_n + 1)
     coarse_min, coarse_argmin_s = min_separation_on(coarse_times)
 
+    # The refined grid keeps a coarse prefix back to time zero, because the
+    # displacement integral accumulates from the start of the horizon.
     window_lo = max(coarse_argmin_s - TRUTH_REFINE_WINDOW_S, 0.0)
     window_hi = min(coarse_argmin_s + TRUTH_REFINE_WINDOW_S, encounter.projection_time_s)
     refined_n = max(round((window_hi - window_lo) / TRUTH_REFINED_DT_S), 1)
-    refined_times = np.linspace(window_lo, window_hi, refined_n + 1)
+    window_times = np.linspace(window_lo, window_hi, refined_n + 1)
+    prefix_times = np.arange(0.0, window_lo, TRUTH_COARSE_DT_S)
+    refined_times = np.concatenate((prefix_times, window_times))
     refined_min, _ = min_separation_on(refined_times)
 
     return min(coarse_min, refined_min)

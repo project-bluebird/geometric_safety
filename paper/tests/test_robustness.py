@@ -125,6 +125,38 @@ class TestTruthSimulation:
             assert sim_min >= baseline - eta_horizon - 1.0
 
 
+class TestRefinementRegression:
+    def test_null_bounds_never_beat_closed_form_corner_minimum(self):
+        """Regression: the refined pass must integrate from time zero.
+
+        This encounter surfaced in the first full campaign: the refined window
+        starts mid-flight, and a version of the simulator that restarted the
+        displacement integral at the window start produced phantom minima about
+        875 m below the true geometry. With no perturbations, every simulated
+        minimum must stay at or above the corner-speed closed-form minimum.
+        """
+        encounter = Encounter(
+            rel_east_m=-8836.561111056866,
+            rel_north_m=7051.932027004443,
+            a_heading0_deg=17.48879248402574,
+            a_target_heading_deg=66.88305673393172,
+            a_speed_kt=412.23095163006667,
+            a_turn_rate_deg_sec=3.332027101937868,
+            b_heading0_deg=250.1598706335322,
+            b_target_heading_deg=272.7816572715893,
+            b_speed_kt=333.14077986393494,
+            b_turn_rate_deg_sec=3.497832952349475,
+            speed_diff_kt=23.745130535311073,
+            projection_time_s=600.0,
+        )
+        closed_form_min_m = 9901.5
+        for k in range(50):
+            sim_min = simulate_truth_min_separation(
+                encounter, PerturbationBounds(), np.random.default_rng(k), adversarial=True
+            )
+            assert sim_min >= closed_form_min_m - 1.0
+
+
 class TestTruthModelConfig:
     def test_default_config_is_in_class(self):
         assert TruthModelConfig().is_in_class()
