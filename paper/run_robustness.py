@@ -2,16 +2,16 @@
 
 Three campaign layers, run over the broad mixed-turn suite:
 
-1. ``inclass``: truth drawn from the stated perturbation classes with adversarial
+1. ``inclass``: executed motion drawn from the stated perturbation classes with adversarial
    draws. The propositions require zero violations of the inflated certificate, so
    this layer verifies the envelope implementation and measures the certification
    cost of inflation.
-2. ``misspec``: truth drawn from outside every stated class (OU speed drift over the
+2. ``misspec``: executed motion drawn from outside every stated class (OU speed drift over the
    whole horizon, turn-rate roll-in transients, track-keeping heading jitter). Each
    configuration is scored against the plain certificate and against a certificate
    inflated with a misspecified proxy envelope. Violations are possible and
    informative.
-3. ``exceedance``: truth perturbations scaled past the stated bounds while the
+3. ``exceedance``: applied perturbations scaled past the stated bounds while the
    certificate inflates for the stated bounds, producing graceful-degradation
    curves of violation rate against exceedance ratio.
 
@@ -47,8 +47,8 @@ from paper.evaluation import (
     generate_mixed_turn_suite,
 )
 from paper.robustness import (
+    ExecutionModelConfig,
     PerturbationBounds,
-    TruthModelConfig,
     deviation_envelope_m,
     evaluate_robustness_case,
     solver_envelope_kwargs,
@@ -160,18 +160,18 @@ class CampaignConfig:
     campaign: str
     label: str
     bounds: PerturbationBounds
-    truth: TruthModelConfig
+    execution: ExecutionModelConfig
 
     def to_row(self) -> dict[str, Any]:
         row: dict[str, Any] = {"campaign": self.campaign, "label": self.label}
         row.update({f"bound_{key}": value for key, value in asdict(self.bounds).items()})
-        row.update({f"truth_{key}": value for key, value in asdict(self.truth).items()})
+        row.update({f"execution_{key}": value for key, value in asdict(self.execution).items()})
         return row
 
 
 def build_inclass_configs() -> list[CampaignConfig]:
     def config(label: str, bounds: PerturbationBounds) -> CampaignConfig:
-        return CampaignConfig(campaign="inclass", label=label, bounds=bounds, truth=TruthModelConfig())
+        return CampaignConfig(campaign="inclass", label=label, bounds=bounds, execution=ExecutionModelConfig())
 
     configs = [
         config(f"wind_{wind_kt:g}kt", PerturbationBounds(differential_wind_kt=wind_kt))
@@ -200,22 +200,22 @@ def build_inclass_configs() -> list[CampaignConfig]:
 
 
 def build_misspec_configs() -> list[CampaignConfig]:
-    """Out-of-class truth against plain and proxy-inflated certificates.
+    """Out-of-class executed motion against plain and proxy-inflated certificates.
 
-    Each truth model appears twice: once with null bounds, so the inflated
+    Each execution model appears twice: once with null bounds, so the inflated
     certificate coincides with the plain one, and once with a misspecified proxy
     envelope (schedule uncertainty for OU drift, initiation delay for roll
     transients, heading error for jitter).
     """
     configs = []
     for sigma_kt in (5.0, 10.0, 20.0):
-        truth = TruthModelConfig(ou_speed_sigma_kt=sigma_kt, ou_speed_timescale_s=60.0)
+        execution = ExecutionModelConfig(ou_speed_sigma_kt=sigma_kt, ou_speed_timescale_s=60.0)
         configs.append(
             CampaignConfig(
                 campaign="misspec",
                 label=f"ou_{sigma_kt:g}kt_plain",
                 bounds=PerturbationBounds(),
-                truth=truth,
+                execution=execution,
             )
         )
         configs.append(
@@ -223,17 +223,17 @@ def build_misspec_configs() -> list[CampaignConfig]:
                 campaign="misspec",
                 label=f"ou_{sigma_kt:g}kt_proxy_schedule",
                 bounds=PerturbationBounds(schedule_uncertainty_kt=sigma_kt),
-                truth=truth,
+                execution=execution,
             )
         )
     for roll_s in (3.0, 6.0, 10.0):
-        truth = TruthModelConfig(roll_time_s=roll_s)
+        execution = ExecutionModelConfig(roll_time_s=roll_s)
         configs.append(
             CampaignConfig(
                 campaign="misspec",
                 label=f"roll_{roll_s:g}s_plain",
                 bounds=PerturbationBounds(),
-                truth=truth,
+                execution=execution,
             )
         )
         configs.append(
@@ -241,17 +241,17 @@ def build_misspec_configs() -> list[CampaignConfig]:
                 campaign="misspec",
                 label=f"roll_{roll_s:g}s_proxy_delay",
                 bounds=PerturbationBounds(turn_delay_max_s=roll_s),
-                truth=truth,
+                execution=execution,
             )
         )
     for jitter_deg in (0.5, 1.0, 2.0):
-        truth = TruthModelConfig(heading_jitter_deg=jitter_deg)
+        execution = ExecutionModelConfig(heading_jitter_deg=jitter_deg)
         configs.append(
             CampaignConfig(
                 campaign="misspec",
                 label=f"jitter_{jitter_deg:g}deg_plain",
                 bounds=PerturbationBounds(),
-                truth=truth,
+                execution=execution,
             )
         )
         configs.append(
@@ -259,7 +259,7 @@ def build_misspec_configs() -> list[CampaignConfig]:
                 campaign="misspec",
                 label=f"jitter_{jitter_deg:g}deg_proxy_heading",
                 bounds=PerturbationBounds(heading_error_deg=jitter_deg),
-                truth=truth,
+                execution=execution,
             )
         )
     return configs
@@ -278,7 +278,7 @@ def build_exceedance_configs() -> list[CampaignConfig]:
             campaign="exceedance",
             label=f"{label}_x{factor:g}",
             bounds=bounds,
-            truth=TruthModelConfig(exceedance_factor=factor),
+            execution=ExecutionModelConfig(exceedance_factor=factor),
         )
         for label, bounds in base_bounds
         for factor in EXCEEDANCE_FACTORS
@@ -303,7 +303,7 @@ def _evaluate_chunk(
             ref_lat=DEFAULT_REF_LAT,
             ref_lon=DEFAULT_REF_LON,
             adversarial=True,
-            truth=config.truth,
+            execution=config.execution,
         )
         row = config.to_row()
         row["suite"] = suite_name

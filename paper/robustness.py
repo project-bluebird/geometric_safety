@@ -1,10 +1,10 @@
-"""Perturbed-truth simulation and deviation envelopes for the robustness study.
+"""Executed-motion simulation and deviation envelopes for the robustness study.
 
 The manuscript's robustness section derives, for each bounded out-of-model
 perturbation class, a deviation envelope ``eta(t)`` such that certifying against the
 inflated threshold ``D + eta(t)`` restores the one-sided safety guarantee. This module
 provides the paper-pipeline side of that story: converting perturbation bounds into
-solver envelope parameters, simulating perturbed truth trajectories, and measuring
+solver envelope parameters, simulating perturbed executed trajectories, and measuring
 whether certified-safe decisions ever coincide with a true loss of separation.
 """
 
@@ -20,23 +20,23 @@ from geometric_safety import relevant_aircraft as ra
 from geometric_safety.util import DEG_TO_RAD, KT_TO_MPS, heading_diff
 from paper.evaluation import Encounter
 
-TRUTH_COARSE_DT_S = 0.25
-TRUTH_REFINED_DT_S = 0.05
-TRUTH_REFINE_WINDOW_S = 6.0
+SIM_COARSE_DT_S = 0.25
+SIM_REFINED_DT_S = 0.05
+SIM_REFINE_WINDOW_S = 6.0
 SCHEDULE_SEGMENTS = 12
 OU_SPEED_STEP_S = 2.0
 
 
 @dataclass(frozen=True)
-class TruthModelConfig:
-    """Configuration of the truth simulator beyond the stated perturbation classes.
+class ExecutionModelConfig:
+    """Configuration of the executed-motion simulator beyond the stated classes.
 
-    With all fields at their defaults the truth simulator draws from exactly the
+    With all fields at their defaults the simulator draws executed motion from exactly the
     classes the envelopes cover, so certified decisions cannot be violated and the
-    experiment verifies the implementation. The remaining fields move the truth
+    experiment verifies the implementation. The remaining fields move the executed motion
     outside every stated class, which is where validation happens.
 
-    ``exceedance_factor`` scales the truth perturbation magnitudes relative to the
+    ``exceedance_factor`` scales the applied perturbation magnitudes relative to the
     bounds the certificate inflates for. In-turn speed schedules stay clipped to the
     admissible interval regardless, since excursions beyond the interval belong to
     the interval-widening remedy rather than the schedule class.
@@ -187,15 +187,15 @@ def _sample_aircraft_draw(
     turn_rate_deg_sec: float,
     bounds: PerturbationBounds,
     adversarial: bool,
-    truth: TruthModelConfig,
+    execution: ExecutionModelConfig,
     horizon_s: float,
 ) -> _AircraftDraw:
     """Sample one aircraft's realised speed and perturbation values.
 
-    The exceedance factor scales the truth magnitudes relative to the stated bounds.
+    The exceedance factor scales the applied magnitudes relative to the stated bounds.
     In-turn schedules stay clipped to the admissible interval at any factor.
     """
-    factor = truth.exceedance_factor
+    factor = execution.exceedance_factor
     min_speed_mps = max(speed_kt - speed_diff_kt, 0.0) * KT_TO_MPS
     max_speed_mps = (speed_kt + speed_diff_kt) * KT_TO_MPS
     if adversarial:
@@ -227,14 +227,14 @@ def _sample_aircraft_draw(
     turn_angle_deg = abs(heading_diff(heading0_deg, target_heading_deg))
     is_turning = turn_angle_deg >= ra.TURN_HEADING_EPS_DEG and abs(turn_rate_deg_sec) > ra.TURN_RATE_EPS_DEG_PER_S
 
-    if truth.ou_speed_sigma_kt > 0.0:
+    if execution.ou_speed_sigma_kt > 0.0:
         schedule_times_s, schedule_speeds_mps = _ou_speed_path_mps(
             rng,
             constant_speed_mps=constant_speed_mps,
             min_speed_mps=min_speed_mps,
             max_speed_mps=max_speed_mps,
-            sigma_kt=truth.ou_speed_sigma_kt,
-            timescale_s=truth.ou_speed_timescale_s,
+            sigma_kt=execution.ou_speed_sigma_kt,
+            timescale_s=execution.ou_speed_timescale_s,
             horizon_s=horizon_s,
         )
     elif bounds.schedule_uncertainty_kt > 0.0 and is_turning:
@@ -254,10 +254,10 @@ def _sample_aircraft_draw(
         schedule_times_s = np.empty(0, dtype=np.float64)
         schedule_speeds_mps = np.empty(0, dtype=np.float64)
 
-    if truth.heading_jitter_deg > 0.0:
-        n_segments = max(round(horizon_s / max(truth.heading_jitter_period_s, 1.0)), 1)
+    if execution.heading_jitter_deg > 0.0:
+        n_segments = max(round(horizon_s / max(execution.heading_jitter_period_s, 1.0)), 1)
         jitter_times_s = np.linspace(0.0, horizon_s, n_segments + 1)
-        jitter_bound_rad = truth.heading_jitter_deg * DEG_TO_RAD
+        jitter_bound_rad = execution.heading_jitter_deg * DEG_TO_RAD
         jitter_offsets_rad = rng.uniform(-jitter_bound_rad, jitter_bound_rad, size=n_segments)
     else:
         jitter_times_s = np.empty(0, dtype=np.float64)
@@ -270,7 +270,7 @@ def _sample_aircraft_draw(
         turn_rate_scale=turn_rate_scale,
         schedule_times_s=schedule_times_s,
         schedule_speeds_mps=schedule_speeds_mps,
-        roll_time_s=truth.roll_time_s if is_turning else 0.0,
+        roll_time_s=execution.roll_time_s if is_turning else 0.0,
         jitter_times_s=jitter_times_s,
         jitter_offsets_rad=jitter_offsets_rad,
     )
@@ -344,24 +344,24 @@ def _perturbed_displacement(
     return np.stack([east, north], axis=1)
 
 
-def simulate_truth_min_separation(
+def simulate_executed_min_separation(
     encounter: Encounter,
     bounds: PerturbationBounds,
     rng: np.random.Generator,
     *,
     adversarial: bool = True,
-    truth: TruthModelConfig | None = None,
+    execution: ExecutionModelConfig | None = None,
 ) -> float:
-    """Simulate one perturbed truth realisation and return its minimum separation.
+    """Simulate one perturbed executed realisation and return its minimum separation.
 
     The relative trajectory composes the sampled per-aircraft executed paths, a
     constant differential wind at the full bound in a random direction, and an
     initial relative-position offset at the full bound in a random direction. A
     coarse pass locates the minimum and a refined pass sharpens it. The optional
-    truth-model configuration moves the simulation outside the stated classes.
+    execution-model configuration moves the simulation outside the stated classes.
     """
-    if truth is None:
-        truth = TruthModelConfig()
+    if execution is None:
+        execution = ExecutionModelConfig()
     a_draw = _sample_aircraft_draw(
         rng,
         speed_kt=encounter.a_speed_kt,
@@ -371,7 +371,7 @@ def simulate_truth_min_separation(
         turn_rate_deg_sec=encounter.a_turn_rate_deg_sec,
         bounds=bounds,
         adversarial=adversarial,
-        truth=truth,
+        execution=execution,
         horizon_s=encounter.projection_time_s,
     )
     b_draw = _sample_aircraft_draw(
@@ -383,14 +383,14 @@ def simulate_truth_min_separation(
         turn_rate_deg_sec=encounter.b_turn_rate_deg_sec,
         bounds=bounds,
         adversarial=adversarial,
-        truth=truth,
+        execution=execution,
         horizon_s=encounter.projection_time_s,
     )
 
     wind_vector_mps = np.zeros(2)
     if bounds.differential_wind_kt > 0.0:
         wind_dir = rng.uniform(0.0, 2.0 * math.pi)
-        magnitude = bounds.differential_wind_kt * KT_TO_MPS * truth.exceedance_factor
+        magnitude = bounds.differential_wind_kt * KT_TO_MPS * execution.exceedance_factor
         if not adversarial:
             magnitude *= float(rng.uniform(0.0, 1.0))
         wind_vector_mps = magnitude * np.array([math.sin(wind_dir), math.cos(wind_dir)])
@@ -398,7 +398,7 @@ def simulate_truth_min_separation(
     offset_m = np.zeros(2)
     if bounds.position_error_m > 0.0:
         offset_dir = rng.uniform(0.0, 2.0 * math.pi)
-        magnitude = bounds.position_error_m * truth.exceedance_factor
+        magnitude = bounds.position_error_m * execution.exceedance_factor
         if not adversarial:
             magnitude *= float(rng.uniform(0.0, 1.0))
         offset_m = magnitude * np.array([math.sin(offset_dir), math.cos(offset_dir)])
@@ -424,17 +424,17 @@ def simulate_truth_min_separation(
         idx = int(np.argmin(distances))
         return float(distances[idx]), float(times_s[idx])
 
-    coarse_n = max(round(encounter.projection_time_s / TRUTH_COARSE_DT_S), 1)
+    coarse_n = max(round(encounter.projection_time_s / SIM_COARSE_DT_S), 1)
     coarse_times = np.linspace(0.0, encounter.projection_time_s, coarse_n + 1)
     coarse_min, coarse_argmin_s = min_separation_on(coarse_times)
 
     # The refined grid keeps a coarse prefix back to time zero, because the
     # displacement integral accumulates from the start of the horizon.
-    window_lo = max(coarse_argmin_s - TRUTH_REFINE_WINDOW_S, 0.0)
-    window_hi = min(coarse_argmin_s + TRUTH_REFINE_WINDOW_S, encounter.projection_time_s)
-    refined_n = max(round((window_hi - window_lo) / TRUTH_REFINED_DT_S), 1)
+    window_lo = max(coarse_argmin_s - SIM_REFINE_WINDOW_S, 0.0)
+    window_hi = min(coarse_argmin_s + SIM_REFINE_WINDOW_S, encounter.projection_time_s)
+    refined_n = max(round((window_hi - window_lo) / SIM_REFINED_DT_S), 1)
     window_times = np.linspace(window_lo, window_hi, refined_n + 1)
-    prefix_times = np.arange(0.0, window_lo, TRUTH_COARSE_DT_S)
+    prefix_times = np.arange(0.0, window_lo, SIM_COARSE_DT_S)
     refined_times = np.concatenate((prefix_times, window_times))
     refined_min, _ = min_separation_on(refined_times)
 
@@ -448,7 +448,7 @@ class RobustnessCaseResult:
     certified_safe: bool
     inflated_certified_safe: bool
     n_sims: int
-    truth_min_separation_m: float
+    executed_min_separation_m: float
     n_below_threshold: int
     n_violations: int
 
@@ -465,14 +465,14 @@ def evaluate_robustness_case(
     ref_lat: float,
     ref_lon: float,
     adversarial: bool = True,
-    truth: TruthModelConfig | None = None,
+    execution: ExecutionModelConfig | None = None,
 ) -> RobustnessCaseResult:
     """Evaluate one encounter: certify with and without inflation, then attack it.
 
-    A violation is a truth realisation whose minimum separation drops below the
-    threshold on an encounter the inflated certificate declared safe. For truth drawn
+    A violation is a simulated realisation whose minimum separation drops below the
+    threshold on an encounter the inflated certificate declared safe. For executed motion drawn
     from the stated classes the manuscript's propositions require a zero count, so
-    that configuration verifies the implementation. Out-of-class or exceedance truth
+    that configuration verifies the implementation. Out-of-class or exceedance execution
     configurations can produce genuine violations, which is where validation happens.
     """
     from paper.evaluation import encounter_to_turn_kwargs
@@ -481,11 +481,11 @@ def evaluate_robustness_case(
     plain = ra.catch_up_projection_interval_with_turns(**kwargs)
     inflated = ra.catch_up_projection_interval_with_turns(**kwargs, **solver_envelope_kwargs(encounter, bounds))
 
-    truth_min = math.inf
+    executed_min = math.inf
     n_below = 0
     for _ in range(n_sims):
-        sim_min = simulate_truth_min_separation(encounter, bounds, rng, adversarial=adversarial, truth=truth)
-        truth_min = min(truth_min, sim_min)
+        sim_min = simulate_executed_min_separation(encounter, bounds, rng, adversarial=adversarial, execution=execution)
+        executed_min = min(executed_min, sim_min)
         if sim_min < encounter.separation_threshold_m:
             n_below += 1
 
@@ -494,7 +494,7 @@ def evaluate_robustness_case(
         certified_safe=bool(plain[0]),
         inflated_certified_safe=bool(inflated[0]),
         n_sims=n_sims,
-        truth_min_separation_m=truth_min,
+        executed_min_separation_m=executed_min,
         n_below_threshold=n_below,
         n_violations=n_violations,
     )

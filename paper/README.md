@@ -362,7 +362,7 @@ The out-of-model robustness study runs three campaign layers over the broad
 mixed-turn suite plus per-configuration boundary suites (encounters certified
 safe with margin near the deviation envelope, where violations can actually
 occur): `inclass` verification of the envelope implementation, `misspec`
-validation against out-of-class truth models, and `exceedance` degradation
+validation against out-of-class execution models, and `exceedance` degradation
 curves past the stated bounds.
 
 Quick smoke run:

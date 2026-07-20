@@ -8,11 +8,11 @@ import pytest
 from geometric_safety.util import DEG_TO_RAD, KT_TO_MPS, NMI_TO_M
 from paper.evaluation import DEFAULT_REF_LAT, DEFAULT_REF_LON, Encounter
 from paper.robustness import (
+    ExecutionModelConfig,
     PerturbationBounds,
-    TruthModelConfig,
     deviation_envelope_m,
     evaluate_robustness_case,
-    simulate_truth_min_separation,
+    simulate_executed_min_separation,
     solver_envelope_kwargs,
 )
 
@@ -76,13 +76,13 @@ class TestEnvelopeConversion:
         assert deviation_envelope_m(encounter, PerturbationBounds(), 300.0) == pytest.approx(0.0)
 
 
-class TestTruthSimulation:
+class TestExecutedMotionSimulation:
     def test_null_bounds_match_analytic_straight_geometry(self):
         encounter = _straight_crossing(8.0, speed_diff_kt=0.0)
         rng = np.random.default_rng(7)
-        sim_min = simulate_truth_min_separation(encounter, PerturbationBounds(), rng)
+        sim_min = simulate_executed_min_separation(encounter, PerturbationBounds(), rng)
 
-        # With no perturbations and a degenerate speed interval the truth trajectory
+        # With no perturbations and a degenerate speed interval the executed trajectory
         # is the nominal one: both aircraft northbound, closing at 10 kt from 8 NMI
         # east offset, so the separation stays 8 NMI east and shrinks only north.
         rel_north_final = (260.0 - 250.0) * KT_TO_MPS * 300.0
@@ -107,7 +107,7 @@ class TestTruthSimulation:
                 turn_rate_deg_sec=3.0,
                 bounds=bounds,
                 adversarial=True,
-                truth=TruthModelConfig(),
+                execution=ExecutionModelConfig(),
                 horizon_s=300.0,
             )
             assert draw.schedule_speeds_mps.size > 0
@@ -119,9 +119,9 @@ class TestTruthSimulation:
         bounds = PerturbationBounds(differential_wind_kt=5.0)
         rng = np.random.default_rng(11)
         for _ in range(20):
-            sim_min = simulate_truth_min_separation(encounter, bounds, rng)
+            sim_min = simulate_executed_min_separation(encounter, bounds, rng)
             eta_horizon = deviation_envelope_m(encounter, bounds, encounter.projection_time_s)
-            baseline = simulate_truth_min_separation(encounter, PerturbationBounds(), np.random.default_rng(11))
+            baseline = simulate_executed_min_separation(encounter, PerturbationBounds(), np.random.default_rng(11))
             assert sim_min >= baseline - eta_horizon - 1.0
 
 
@@ -151,26 +151,26 @@ class TestRefinementRegression:
         )
         closed_form_min_m = 9901.5
         for k in range(50):
-            sim_min = simulate_truth_min_separation(
+            sim_min = simulate_executed_min_separation(
                 encounter, PerturbationBounds(), np.random.default_rng(k), adversarial=True
             )
             assert sim_min >= closed_form_min_m - 1.0
 
 
-class TestTruthModelConfig:
+class TestExecutionModelConfig:
     def test_default_config_is_in_class(self):
-        assert TruthModelConfig().is_in_class()
-        assert not TruthModelConfig(exceedance_factor=1.5).is_in_class()
-        assert not TruthModelConfig(ou_speed_sigma_kt=5.0).is_in_class()
-        assert not TruthModelConfig(roll_time_s=5.0).is_in_class()
-        assert not TruthModelConfig(heading_jitter_deg=0.5).is_in_class()
+        assert ExecutionModelConfig().is_in_class()
+        assert not ExecutionModelConfig(exceedance_factor=1.5).is_in_class()
+        assert not ExecutionModelConfig(ou_speed_sigma_kt=5.0).is_in_class()
+        assert not ExecutionModelConfig(roll_time_s=5.0).is_in_class()
+        assert not ExecutionModelConfig(heading_jitter_deg=0.5).is_in_class()
 
-    def test_default_truth_matches_legacy_behaviour(self):
+    def test_default_config_matches_legacy_behaviour(self):
         encounter = _turning_encounter(9.0, 45.0)
         bounds = PerturbationBounds(differential_wind_kt=3.0, schedule_uncertainty_kt=8.0)
-        base = simulate_truth_min_separation(encounter, bounds, np.random.default_rng(5))
-        with_config = simulate_truth_min_separation(
-            encounter, bounds, np.random.default_rng(5), truth=TruthModelConfig()
+        base = simulate_executed_min_separation(encounter, bounds, np.random.default_rng(5))
+        with_config = simulate_executed_min_separation(
+            encounter, bounds, np.random.default_rng(5), execution=ExecutionModelConfig()
         )
         assert with_config == pytest.approx(base, rel=1e-12)
 
@@ -194,11 +194,11 @@ class TestTruthModelConfig:
 
     def test_roll_dynamics_change_the_path(self):
         encounter = _turning_encounter(9.0, 60.0)
-        base = simulate_truth_min_separation(
-            encounter, PerturbationBounds(), np.random.default_rng(13), truth=TruthModelConfig()
+        base = simulate_executed_min_separation(
+            encounter, PerturbationBounds(), np.random.default_rng(13), execution=ExecutionModelConfig()
         )
-        rolled = simulate_truth_min_separation(
-            encounter, PerturbationBounds(), np.random.default_rng(13), truth=TruthModelConfig(roll_time_s=6.0)
+        rolled = simulate_executed_min_separation(
+            encounter, PerturbationBounds(), np.random.default_rng(13), execution=ExecutionModelConfig(roll_time_s=6.0)
         )
         assert rolled != pytest.approx(base, abs=1e-6)
 
@@ -209,7 +209,7 @@ class TestTruthModelConfig:
         reaches only positions the constant-speed hull already covers, so even the
         uninflated certificate must survive OU speed drift.
         """
-        truth = TruthModelConfig(ou_speed_sigma_kt=20.0, ou_speed_timescale_s=45.0)
+        execution = ExecutionModelConfig(ou_speed_sigma_kt=20.0, ou_speed_timescale_s=45.0)
         rng = np.random.default_rng(20260720)
         checked = 0
         for separation_nmi in (7.0, 9.0, 12.0):
@@ -222,7 +222,7 @@ class TestTruthModelConfig:
                 ref_lat=DEFAULT_REF_LAT,
                 ref_lon=DEFAULT_REF_LON,
                 adversarial=True,
-                truth=truth,
+                execution=execution,
             )
             if result.certified_safe:
                 checked += 1
@@ -243,7 +243,7 @@ class TestCertificateValidity:
         ids=["wind", "position", "heading", "execution", "schedule"],
     )
     def test_inflated_certificate_never_violated(self, bounds):
-        """Certified-safe under inflation must survive adversarial truth simulation."""
+        """Certified-safe under inflation must survive adversarial executed-motion draws."""
         encounters = [
             _straight_crossing(8.0),
             _straight_crossing(12.0),

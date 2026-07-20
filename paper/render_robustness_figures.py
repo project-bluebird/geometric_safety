@@ -97,8 +97,8 @@ def render_exceedance(aggregate: dict, output_pdf: Path) -> None:
     ax.set_ylim(FLOOR_PER_1K * 0.8, 90.0)
     ax.set_yticks([0.01, 0.1, 1.0, 10.0])
     ax.set_yticklabels(["0", "0.1", "1", "10"])
-    ax.set_xlabel("Truth perturbation relative to stated bound", fontsize=9.5)
-    ax.set_ylabel("Violations per 1000 truth draws", fontsize=9.5)
+    ax.set_xlabel("Applied perturbation relative to stated bound", fontsize=9.5)
+    ax.set_ylabel("Violations per 1000 simulations", fontsize=9.5)
     ax.tick_params(axis="both", labelsize=8.6)
     ax.grid(True, color="#d7dbe0", lw=0.6, alpha=0.7)
     for spine in ("top", "right", "left", "bottom"):
@@ -139,7 +139,7 @@ def render_misspec(aggregate: dict, output_pdf: Path) -> None:
     ax.set_xticklabels(["0", "0.1", "1", "10", "100"])
     ax.set_yticks(positions)
     ax.set_yticklabels(labels, fontsize=8.2)
-    ax.set_xlabel("Violations per 1000 truth draws", fontsize=9.5)
+    ax.set_xlabel("Violations per 1000 simulations", fontsize=9.5)
     ax.tick_params(axis="x", labelsize=8.6)
     ax.grid(True, axis="x", color="#d7dbe0", lw=0.6, alpha=0.7)
     for spine in ("top", "right", "left", "bottom"):

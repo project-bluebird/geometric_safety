@@ -35,7 +35,7 @@ SLIM_COLUMNS = (
     "n_sims",
     "n_below_threshold",
     "n_violations",
-    "truth_min_separation_m",
+    "executed_min_separation_m",
     "eta_horizon_m",
 )
 
