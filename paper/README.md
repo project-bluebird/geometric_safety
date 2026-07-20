@@ -355,3 +355,35 @@ uv run python -m paper.run_evaluation \
 For a non-default seed, replace `run_00_seed_20260325` with the first
 per-seed run directory in `main_evaluation/`. For a single-seed run,
 use `paper_eval_outputs/<run>/main_evaluation` directly.
+
+## Robustness campaigns
+
+The out-of-model robustness study runs three campaign layers over the broad
+mixed-turn suite plus per-configuration boundary suites (encounters certified
+safe with margin near the deviation envelope, where violations can actually
+occur): `inclass` verification of the envelope implementation, `misspec`
+validation against out-of-class truth models, and `exceedance` degradation
+curves past the stated bounds.
+
+Quick smoke run:
+
+```bash
+uv run python -m paper.run_robustness --quick --n-jobs 8 \
+    --output-dir paper_eval_outputs/robustness_smoke
+```
+
+Full five-seed campaign (about two hours on a 96-worker server):
+
+```bash
+uv run python -m paper.run_robustness \
+    --n-encounters 2000 --n-boundary 200 --n-sims 100 \
+    --repeat-seeds 5 --n-jobs 96 \
+    --output-dir paper_eval_outputs/robustness_full
+```
+
+Each per-seed run directory contains `robustness_rows.csv` (one row per
+config, suite, and encounter), `robustness_summary.csv`, and
+`robustness_summary.json`. Boundary suites are cached under
+`<output-dir>/boundary_cache/` and are reused across configs and repeat
+runs. In-class total violations must be zero; the runner prints a warning
+otherwise.
