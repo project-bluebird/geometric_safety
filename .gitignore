@@ -50,3 +50,4 @@ paper_figure_repro/
 paper/results/*.tar.gz
 !paper/results/paper_full_20260502_0738.tar.gz
 !paper/results/projection_deterministic_51_cap_100nmi.tar.gz
+!paper/results/robustness_compact_20260720.tar.gz

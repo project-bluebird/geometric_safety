@@ -387,3 +387,15 @@ config, suite, and encounter), `robustness_summary.csv`, and
 `<output-dir>/boundary_cache/` and are reused across configs and repeat
 runs. In-class total violations must be zero; the runner prints a warning
 otherwise.
+
+To archive a campaign compactly for the repository and render its figures:
+
+```bash
+uv run python -m paper.archive_robustness \
+    --results-dir paper_eval_outputs/robustness_full \
+    --output paper/results/robustness_compact_<date>.tar.gz
+
+uv run python -m paper.render_robustness_figures \
+    --results-dir paper_eval_outputs/robustness_full \
+    --output-dir paper_eval_outputs/robustness_figures
+```
