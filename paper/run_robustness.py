@@ -25,7 +25,8 @@ from __future__ import annotations
 import argparse
 from concurrent.futures import ProcessPoolExecutor
 import csv
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields
+import hashlib
 import json
 from pathlib import Path
 import time
@@ -68,12 +69,43 @@ BOUNDARY_CANDIDATE_BATCH = 512
 BOUNDARY_MAX_BATCHES = 400
 
 
+def _encounter_from_json_dict(payload: dict[str, Any]) -> Encounter:
+    return Encounter(**{field.name: float(payload[field.name]) for field in fields(Encounter)})
+
+
+def _boundary_batch_worker(args: tuple[int, PerturbationBounds, float]) -> list[Encounter]:
+    """Scan one candidate batch and return the encounters that pass the boundary filter."""
+    batch_seed, bounds, band_m = args
+    accepted = []
+    for encounter in generate_mixed_turn_suite(BOUNDARY_CANDIDATE_BATCH, batch_seed):
+        kwargs = encounter_to_turn_kwargs(encounter, DEFAULT_REF_LAT, DEFAULT_REF_LON)
+        inflated = ra.catch_up_projection_interval_with_turns(
+            **kwargs, **solver_envelope_kwargs(encounter, bounds)
+        )
+        if not bool(inflated[0]):
+            continue
+        reference = evaluate_dense_reference(encounter)
+        eta_at_critical_m = deviation_envelope_m(encounter, bounds, reference.closest_time_s)
+        if reference.margin_m <= eta_at_critical_m + band_m:
+            accepted.append(encounter)
+    return accepted
+
+
+def _boundary_cache_path(cache_dir: Path, bounds: PerturbationBounds, seed: int, band_m: float) -> Path:
+    key = json.dumps({"bounds": asdict(bounds), "seed": seed, "band_m": band_m}, sort_keys=True)
+    digest = hashlib.sha1(key.encode("utf-8")).hexdigest()[:16]
+    return cache_dir / f"boundary_{digest}.json"
+
+
 def generate_boundary_suite(
     n: int,
     seed: int,
     bounds: PerturbationBounds,
     *,
     band_m: float = BOUNDARY_BAND_M,
+    n_jobs: int = 1,
+    cache_dir: Path | None = None,
+    pool: ProcessPoolExecutor | None = None,
 ) -> list[Encounter]:
     """Rejection-sample encounters certified safe with margin near the envelope.
 
@@ -82,28 +114,43 @@ def generate_boundary_suite(
     barely exercise the phenomenon. This sampler keeps encounters whose inflated
     certificate returns safe and whose dense-reference margin exceeds the envelope
     at the dense-reference critical time by at most ``band_m``.
+
+    Candidate batches are scanned in deterministic seed order, so the accepted
+    suite does not depend on ``n_jobs``. The optional cache stores accepted
+    encounters and scan progress per (bounds, seed, band) so repeated runs and
+    larger ``n`` requests resume instead of rescanning.
     """
     accepted: list[Encounter] = []
-    batch_seed = seed
-    for _ in range(BOUNDARY_MAX_BATCHES):
-        if len(accepted) >= n:
-            break
-        candidates = generate_mixed_turn_suite(BOUNDARY_CANDIDATE_BATCH, batch_seed)
-        batch_seed += 1
-        for encounter in candidates:
-            if len(accepted) >= n:
-                break
-            kwargs = encounter_to_turn_kwargs(encounter, DEFAULT_REF_LAT, DEFAULT_REF_LON)
-            inflated = ra.catch_up_projection_interval_with_turns(
-                **kwargs, **solver_envelope_kwargs(encounter, bounds)
+    batches_done = 0
+    cache_path = None
+    if cache_dir is not None:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        cache_path = _boundary_cache_path(cache_dir, bounds, seed, band_m)
+        if cache_path.exists():
+            payload = json.loads(cache_path.read_text())
+            accepted = [_encounter_from_json_dict(entry) for entry in payload["encounters"]]
+            batches_done = int(payload["batches_done"])
+
+    while len(accepted) < n and batches_done < BOUNDARY_MAX_BATCHES:
+        wave = min(max(n_jobs, 1), BOUNDARY_MAX_BATCHES - batches_done)
+        tasks = [(seed + batches_done + offset, bounds, band_m) for offset in range(wave)]
+        if pool is None:
+            results = [_boundary_batch_worker(task) for task in tasks]
+        else:
+            results = list(pool.map(_boundary_batch_worker, tasks))
+        for batch_accepted in results:
+            accepted.extend(batch_accepted)
+        batches_done += wave
+        if cache_path is not None:
+            cache_path.write_text(
+                json.dumps(
+                    {
+                        "batches_done": batches_done,
+                        "encounters": [asdict(encounter) for encounter in accepted],
+                    }
+                )
             )
-            if not bool(inflated[0]):
-                continue
-            reference = evaluate_dense_reference(encounter)
-            eta_at_critical_m = deviation_envelope_m(encounter, bounds, reference.closest_time_s)
-            if reference.margin_m <= eta_at_critical_m + band_m:
-                accepted.append(encounter)
-    return accepted
+    return accepted[:n]
 
 
 @dataclass(frozen=True)
@@ -274,10 +321,11 @@ def run_campaign(
     seed: int,
     n_sims: int,
     n_jobs: int,
+    pool: ProcessPoolExecutor | None = None,
 ) -> list[dict[str, Any]]:
     """Run every (config, suite) pairing, parallelised over encounter chunks."""
     rows: list[dict[str, Any]] = []
-    if n_jobs <= 1:
+    if pool is None:
         for config, suite_name, encounters in config_suites:
             rows.extend(_evaluate_chunk((config, suite_name, list(enumerate(encounters)), seed, n_sims)))
         return rows
@@ -290,9 +338,8 @@ def run_campaign(
             (config, suite_name, indexed[start : start + chunk_size], seed, n_sims)
             for start in range(0, len(indexed), chunk_size)
         )
-    with ProcessPoolExecutor(max_workers=n_jobs) as pool:
-        for chunk_rows in pool.map(_evaluate_chunk, tasks):
-            rows.extend(chunk_rows)
+    for chunk_rows in pool.map(_evaluate_chunk, tasks):
+        rows.extend(chunk_rows)
     return rows
 
 
@@ -368,6 +415,7 @@ def main(argv: list[str] | None = None) -> None:
         configs.extend(build_exceedance_configs())
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
+    pool = ProcessPoolExecutor(max_workers=args.n_jobs) if args.n_jobs > 1 else None
     for repeat in range(args.repeat_seeds):
         seed = args.seed + repeat * args.seed_step
         run_dir = args.output_dir / f"run_{repeat:02d}_seed_{seed}"
@@ -380,9 +428,16 @@ def main(argv: list[str] | None = None) -> None:
         for config in configs:
             config_suites.append((config, "broad", broad_suite))
             if config.bounds not in boundary_cache:
-                boundary_cache[config.bounds] = generate_boundary_suite(n_boundary, seed + 777, config.bounds)
+                boundary_cache[config.bounds] = generate_boundary_suite(
+                    n_boundary,
+                    seed + 777,
+                    config.bounds,
+                    n_jobs=args.n_jobs,
+                    cache_dir=args.output_dir / "boundary_cache",
+                    pool=pool,
+                )
             config_suites.append((config, "boundary", boundary_cache[config.bounds]))
-        rows = run_campaign(config_suites, seed=seed, n_sims=n_sims, n_jobs=args.n_jobs)
+        rows = run_campaign(config_suites, seed=seed, n_sims=n_sims, n_jobs=args.n_jobs, pool=pool)
         summaries = summarise(rows)
         elapsed_s = time.perf_counter() - started
 
@@ -407,6 +462,8 @@ def main(argv: list[str] | None = None) -> None:
         )
         if inclass_violations:
             print("WARNING: in-class violations found; the envelope implementation is broken.")
+    if pool is not None:
+        pool.shutdown()
 
 
 if __name__ == "__main__":
