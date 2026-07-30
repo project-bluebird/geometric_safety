@@ -46,7 +46,11 @@ MISSPEC_GROUPS = (
     ("jitter", "Heading jitter", ("0.5", "1", "2"), "$^\\circ$"),
     ("ou", "OU speed drift", ("5", "10", "20"), " kt"),
 )
-FLOOR_PER_1K = 8e-3
+# Exact zeros are drawn at this value, which is also the axis tick labelled
+# "0", so zero markers sit on the zero line rather than left of it. The
+# smallest nonzero rate in the campaigns is 0.04 per 1000, so the clamp is
+# unambiguous.
+FLOOR_PER_1K = 1e-2
 
 
 def load_aggregates(results_dir: Path) -> dict[tuple[str, str, str], dict[str, float]]:
