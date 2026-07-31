@@ -121,7 +121,7 @@ def render_misspec(aggregate: dict, output_pdf: Path) -> None:
     proxy_rates = []
     for prefix, title, magnitudes, unit in MISSPEC_GROUPS:
         for magnitude in magnitudes:
-            proxy_suffix = {"roll": "proxy_delay", "jitter": "proxy_heading", "ou": "proxy_schedule"}[prefix]
+            proxy_suffix = {"roll": "delay_env", "jitter": "heading_env", "ou": "proxy_schedule"}[prefix]
             unit_key = {"roll": "s", "jitter": "deg", "ou": "kt"}[prefix]
             base = f"{prefix}_{magnitude}{unit_key}"
             labels.append(f"{title} {magnitude}{unit}")
@@ -150,7 +150,7 @@ def render_misspec(aggregate: dict, output_pdf: Path) -> None:
         ax.spines[spine].set_color("#aeb7c2")
         ax.spines[spine].set_linewidth(0.8)
     ax.plot([], [], "o", ms=6.0, color="#C73E1D", label="plain certificate")
-    ax.plot([], [], "o", ms=6.0, mfc="white", mec="#0072B2", mew=1.6, label="proxy-inflated certificate")
+    ax.plot([], [], "o", ms=6.0, mfc="white", mec="#0072B2", mew=1.6, label="envelope-inflated certificate")
     ax.legend(fontsize=7.8, loc="lower right", framealpha=0.9)
     fig.tight_layout()
     output_pdf.parent.mkdir(parents=True, exist_ok=True)

@@ -266,3 +266,91 @@ class TestCertificateValidity:
             any_certified = any_certified or result.inflated_certified_safe
             assert result.n_violations == 0
         assert any_certified, "test suite should contain at least one certifiable encounter"
+
+
+class TestMisspecDrawDecoupling:
+    def test_misspec_inflated_configs_draw_no_inclass_perturbation(self):
+        """Misspec inflated arms must execute only the out-of-model behaviour."""
+        from paper.run_robustness import build_misspec_configs
+
+        configs = build_misspec_configs()
+        assert len(configs) == 18
+        for config in configs:
+            if config.bounds.is_null():
+                assert config.draw_bounds is None
+            else:
+                assert config.draw_bounds is not None
+                assert config.draw_bounds.is_null()
+
+    def test_draw_bounds_decouples_simulator_from_certificate(self):
+        """With null draw bounds the executed motion matches the pure-behaviour sim."""
+        encounter = _turning_encounter(9.0, 45.0)
+        execution = ExecutionModelConfig(heading_jitter_deg=1.0)
+        bounds = PerturbationBounds(heading_error_deg=1.0)
+        n_sims = 20
+
+        result = evaluate_robustness_case(
+            encounter,
+            bounds,
+            n_sims=n_sims,
+            rng=np.random.default_rng(20260731),
+            ref_lat=DEFAULT_REF_LAT,
+            ref_lon=DEFAULT_REF_LON,
+            adversarial=True,
+            execution=execution,
+            draw_bounds=PerturbationBounds(),
+        )
+        rng = np.random.default_rng(20260731)
+        pure_min = min(
+            simulate_executed_min_separation(
+                encounter, PerturbationBounds(), rng, adversarial=True, execution=execution
+            )
+            for _ in range(n_sims)
+        )
+        assert result.executed_min_separation_m == pytest.approx(pure_min, rel=1e-12)
+
+        coupled = evaluate_robustness_case(
+            encounter,
+            bounds,
+            n_sims=n_sims,
+            rng=np.random.default_rng(20260731),
+            ref_lat=DEFAULT_REF_LAT,
+            ref_lon=DEFAULT_REF_LON,
+            adversarial=True,
+            execution=execution,
+        )
+        assert coupled.executed_min_separation_m != pytest.approx(pure_min, rel=1e-12)
+
+    @pytest.mark.parametrize(
+        ("execution", "bounds"),
+        [
+            (ExecutionModelConfig(roll_time_s=10.0), PerturbationBounds(turn_delay_max_s=10.0)),
+            (ExecutionModelConfig(heading_jitter_deg=2.0), PerturbationBounds(heading_error_deg=2.0)),
+        ],
+        ids=["roll_delay_env", "jitter_heading_env"],
+    )
+    def test_roll_and_jitter_dominated_by_matching_envelopes(self, execution, bounds):
+        """The delay/heading envelopes are valid for pure roll/jitter: zero violations."""
+        encounters = [
+            _turning_encounter(9.0, 45.0),
+            _turning_encounter(12.0, 60.0),
+            _turning_encounter(7.5, 30.0),
+            _straight_crossing(8.0),
+        ]
+        rng = np.random.default_rng(20260731)
+        any_certified = False
+        for encounter in encounters:
+            result = evaluate_robustness_case(
+                encounter,
+                bounds,
+                n_sims=40,
+                rng=rng,
+                ref_lat=DEFAULT_REF_LAT,
+                ref_lon=DEFAULT_REF_LON,
+                adversarial=True,
+                execution=execution,
+                draw_bounds=PerturbationBounds(),
+            )
+            any_certified = any_certified or result.inflated_certified_safe
+            assert result.n_violations == 0
+        assert any_certified, "at least one encounter should certify under inflation"

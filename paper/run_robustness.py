@@ -6,11 +6,12 @@ Three campaign layers, run over the broad mixed-turn suite:
    draws. The propositions require zero violations of the inflated certificate, so
    this layer verifies the envelope implementation and measures the certification
    cost of inflation.
-2. ``misspec``: executed motion drawn from outside every stated class (OU speed drift over the
-   whole horizon, turn-rate roll-in transients, track-keeping heading jitter). Each
-   configuration is scored against the plain certificate and against a certificate
-   inflated with a misspecified proxy envelope. Violations are possible and
-   informative.
+2. ``misspec``: executed motion drawn from outside the commanded model (OU speed drift over
+   the whole horizon, turn-rate roll-in transients, track-keeping heading jitter),
+   with no in-class perturbation added. Each configuration is scored against the
+   plain certificate and against one inflated with the matching envelope: valid by
+   domination for roll and jitter (zero violations required), a genuine
+   misspecified proxy for OU drift (violations possible and informative).
 3. ``exceedance``: applied perturbations scaled past the stated bounds while the
    certificate inflates for the stated bounds, producing graceful-degradation
    curves of violation rate against exceedance ratio.
@@ -155,12 +156,18 @@ def generate_boundary_suite(
 
 @dataclass(frozen=True)
 class CampaignConfig:
-    """One named configuration inside a campaign layer."""
+    """One named configuration inside a campaign layer.
+
+    ``bounds`` drives the certificate inflation. ``draw_bounds``, when set,
+    replaces ``bounds`` for the simulator's in-class draws; misspec configs set
+    it null so the executed motion is exactly the out-of-class behaviour.
+    """
 
     campaign: str
     label: str
     bounds: PerturbationBounds
     execution: ExecutionModelConfig
+    draw_bounds: PerturbationBounds | None = None
 
     def to_row(self) -> dict[str, Any]:
         row: dict[str, Any] = {"campaign": self.campaign, "label": self.label}
@@ -200,12 +207,18 @@ def build_inclass_configs() -> list[CampaignConfig]:
 
 
 def build_misspec_configs() -> list[CampaignConfig]:
-    """Out-of-class executed motion against plain and proxy-inflated certificates.
+    """Out-of-model executed motion against plain and inflated certificates.
 
     Each execution model appears twice: once with null bounds, so the inflated
-    certificate coincides with the plain one, and once with a misspecified proxy
-    envelope (schedule uncertainty for OU drift, initiation delay for roll
-    transients, heading error for jitter).
+    certificate coincides with the plain one, and once inflated with the matching
+    envelope. The executed motion is exactly the out-of-model behaviour in both
+    arms (``draw_bounds`` is null), so the inflation covers the behaviour alone.
+    The delay envelope with ``t_d`` equal to the ramp time dominates the roll-in
+    transient, and the heading envelope dominates bounded track-keeping jitter,
+    so the manuscript's domination remarks make those two certificates valid and
+    the propositions require zero violations. The schedule envelope remains a
+    genuine misspecified proxy for OU drift, which acts on straight segments the
+    envelope does not cover.
     """
     configs = []
     for sigma_kt in (5.0, 10.0, 20.0):
@@ -224,6 +237,7 @@ def build_misspec_configs() -> list[CampaignConfig]:
                 label=f"ou_{sigma_kt:g}kt_proxy_schedule",
                 bounds=PerturbationBounds(schedule_uncertainty_kt=sigma_kt),
                 execution=execution,
+                draw_bounds=PerturbationBounds(),
             )
         )
     for roll_s in (3.0, 6.0, 10.0):
@@ -239,9 +253,10 @@ def build_misspec_configs() -> list[CampaignConfig]:
         configs.append(
             CampaignConfig(
                 campaign="misspec",
-                label=f"roll_{roll_s:g}s_proxy_delay",
+                label=f"roll_{roll_s:g}s_delay_env",
                 bounds=PerturbationBounds(turn_delay_max_s=roll_s),
                 execution=execution,
+                draw_bounds=PerturbationBounds(),
             )
         )
     for jitter_deg in (0.5, 1.0, 2.0):
@@ -257,9 +272,10 @@ def build_misspec_configs() -> list[CampaignConfig]:
         configs.append(
             CampaignConfig(
                 campaign="misspec",
-                label=f"jitter_{jitter_deg:g}deg_proxy_heading",
+                label=f"jitter_{jitter_deg:g}deg_heading_env",
                 bounds=PerturbationBounds(heading_error_deg=jitter_deg),
                 execution=execution,
+                draw_bounds=PerturbationBounds(),
             )
         )
     return configs
@@ -304,6 +320,7 @@ def _evaluate_chunk(
             ref_lon=DEFAULT_REF_LON,
             adversarial=True,
             execution=config.execution,
+            draw_bounds=config.draw_bounds,
         )
         row = config.to_row()
         row["suite"] = suite_name

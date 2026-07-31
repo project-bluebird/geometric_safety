@@ -466,6 +466,7 @@ def evaluate_robustness_case(
     ref_lon: float,
     adversarial: bool = True,
     execution: ExecutionModelConfig | None = None,
+    draw_bounds: PerturbationBounds | None = None,
 ) -> RobustnessCaseResult:
     """Evaluate one encounter: certify with and without inflation, then attack it.
 
@@ -474,6 +475,13 @@ def evaluate_robustness_case(
     from the stated classes the manuscript's propositions require a zero count, so
     that configuration verifies the implementation. Out-of-class or exceedance execution
     configurations can produce genuine violations, which is where validation happens.
+
+    ``bounds`` always drives the certificate inflation. The simulated executed
+    motion draws its in-class perturbations from ``draw_bounds`` when given and
+    from ``bounds`` otherwise. A null ``draw_bounds`` therefore executes only the
+    out-of-model behaviour in ``execution`` while the certificate still inflates,
+    which is the misspecification setting; leaving ``draw_bounds`` unset keeps the
+    in-class and exceedance semantics of executing the class being certified.
     """
     from paper.evaluation import encounter_to_turn_kwargs
 
@@ -481,10 +489,11 @@ def evaluate_robustness_case(
     plain = ra.catch_up_projection_interval_with_turns(**kwargs)
     inflated = ra.catch_up_projection_interval_with_turns(**kwargs, **solver_envelope_kwargs(encounter, bounds))
 
+    sim_bounds = bounds if draw_bounds is None else draw_bounds
     executed_min = math.inf
     n_below = 0
     for _ in range(n_sims):
-        sim_min = simulate_executed_min_separation(encounter, bounds, rng, adversarial=adversarial, execution=execution)
+        sim_min = simulate_executed_min_separation(encounter, sim_bounds, rng, adversarial=adversarial, execution=execution)
         executed_min = min(executed_min, sim_min)
         if sim_min < encounter.separation_threshold_m:
             n_below += 1
