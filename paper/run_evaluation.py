@@ -1040,6 +1040,18 @@ def build_table_2(straight_summary: dict[str, Any]) -> list[dict[str, Any]]:
         {"metric": "Oracle vs proposed agreement", "value": straight_summary["oracle_vs_proposed_agreement_rate"]},
         {"metric": "Max distance error (m)", "value": straight_summary["max_distance_error_m"]},
         {"metric": "Max closest-time error (s)", "value": straight_summary["max_time_error_s"]},
+        {
+            "metric": "Independent oracle vs proposed agreement",
+            "value": straight_summary["independent_vs_proposed_agreement_rate"],
+        },
+        {
+            "metric": "Max distance error vs independent (m)",
+            "value": straight_summary["max_distance_error_vs_independent_m"],
+        },
+        {
+            "metric": "Max closest-time error vs independent (s)",
+            "value": straight_summary["max_time_error_vs_independent_s"],
+        },
         {"metric": "Nominal proxy false-safe rate", "value": nominal["false_safe_rate"]},
         {"metric": "Nominal proxy false-unsafe rate", "value": nominal["false_unsafe_rate"]},
         {"metric": "Nominal proxy disagreement rate", "value": nominal["overall_disagreement_rate"]},

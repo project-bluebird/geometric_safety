@@ -694,16 +694,38 @@ def benchmark_solver_runtimes(
 
 
 def _evaluate_straight_chunk(encounters: list[Encounter]) -> list[dict[str, Any]]:
-    """Evaluate a chunk of straight encounters, returning row dicts."""
+    """Evaluate a chunk of straight encounters, returning row dicts.
+
+    The independent oracle is a separate high-precision implementation with no
+    shared geometry code. The turn-aware solver delegates zero-turn cases to
+    the production closed form, so the closed form cannot referee itself; the
+    independent columns are the ones that validate the implementation.
+    """
+    from paper.independent_oracle import independent_straight_outcome
+
     rows = []
     for encounter in encounters:
         oracle = evaluate_straight_oracle(encounter)
         proposed = evaluate_proposed(encounter)
         nominal = evaluate_nominal_proxy(encounter)
+        indep_safe, indep_distance_m, indep_time_s = independent_straight_outcome(
+            rel_east_m=encounter.rel_east_m,
+            rel_north_m=encounter.rel_north_m,
+            a_heading_deg=encounter.a_heading0_deg,
+            a_speed_kt=encounter.a_speed_kt,
+            b_heading_deg=encounter.b_heading0_deg,
+            b_speed_kt=encounter.b_speed_kt,
+            speed_diff_kt=encounter.speed_diff_kt,
+            horizon_s=encounter.projection_time_s,
+            threshold_m=encounter.separation_threshold_m,
+        )
         row = encounter_to_row(encounter)
         row.update(outcome_to_row("oracle", oracle))
         row.update(outcome_to_row("proposed", proposed))
         row.update(outcome_to_row("nominal_proxy", nominal))
+        row["independent_is_safe"] = int(indep_safe)
+        row["independent_min_distance_m"] = indep_distance_m
+        row["independent_closest_time_s"] = indep_time_s
         rows.append(row)
     return rows
 
@@ -720,16 +742,23 @@ def run_straight_suite(encounters: list[Encounter], *, n_jobs: int = 1) -> dict[
     oracle_safe = [bool(row["oracle_is_safe"]) for row in rows]
     proposed_safe = [bool(row["proposed_is_safe"]) for row in rows]
     nominal_safe = [bool(row["nominal_proxy_is_safe"]) for row in rows]
+    independent_safe = [bool(row["independent_is_safe"]) for row in rows]
     distance_errors = [abs(row["proposed_min_distance_m"] - row["oracle_min_distance_m"]) for row in rows]
     time_errors = [abs(row["proposed_closest_time_s"] - row["oracle_closest_time_s"]) for row in rows]
+    indep_distance_errors = [abs(row["proposed_min_distance_m"] - row["independent_min_distance_m"]) for row in rows]
+    indep_time_errors = [abs(row["proposed_closest_time_s"] - row["independent_closest_time_s"]) for row in rows]
     oracle_safe_arr = np.asarray(oracle_safe, dtype=bool)
     proposed_safe_arr = np.asarray(proposed_safe, dtype=bool)
     nominal_safe_arr = np.asarray(nominal_safe, dtype=bool)
+    independent_safe_arr = np.asarray(independent_safe, dtype=bool)
     summary = {
         "n": len(rows),
         "oracle_vs_proposed_agreement_rate": float(np.mean(oracle_safe_arr == proposed_safe_arr)),
         "max_distance_error_m": float(np.max(distance_errors) if distance_errors else 0.0),
         "max_time_error_s": float(np.max(time_errors) if time_errors else 0.0),
+        "independent_vs_proposed_agreement_rate": float(np.mean(independent_safe_arr == proposed_safe_arr)),
+        "max_distance_error_vs_independent_m": float(np.max(indep_distance_errors) if indep_distance_errors else 0.0),
+        "max_time_error_vs_independent_s": float(np.max(indep_time_errors) if indep_time_errors else 0.0),
         "nominal_proxy": boolean_confusion_summary(
             reference_safe=oracle_safe_arr,
             method_safe=nominal_safe_arr,
