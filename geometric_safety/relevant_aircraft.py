@@ -517,7 +517,17 @@ def _closest_time_from_projection(closest_vec: np.ndarray, hull: np.ndarray, T: 
     #
     # The corresponding time is then `t = T (u + v)`. We therefore search all hull
     # vertex pairs and keep the smallest valid `u + v`.
-    best_alpha = np.inf
+    #
+    # The not-found sentinel is a finite value above every valid alpha, never an
+    # infinity: this function can be compiled into fastmath callers, whose
+    # no-infinities assumption makes any comparison against `np.inf` unreliable.
+    best_alpha = 2.0
+
+    # Tolerances are scale-relative, not absolute: this function is also compiled
+    # inside fastmath callers, where reassociation and FMA contraction perturb the
+    # cross products by amounts far above one ulp, and an absolute 1e-12 test then
+    # rejects genuinely collinear configurations on sliver hulls.
+    collinear_tol = 1e-9
 
     # Degenerate ray case: if `p` lies on the segment from the origin to a hull vertex,
     # then only one outer vertex is needed in the representation.
@@ -528,7 +538,7 @@ def _closest_time_from_projection(closest_vec: np.ndarray, hull: np.ndarray, T: 
             continue
 
         cross = a[0] * closest_vec[1] - a[1] * closest_vec[0]
-        if abs(cross) > eps * max(a_norm, norm_closest):
+        if abs(cross) > collinear_tol * a_norm * norm_closest:
             continue
 
         dot = float(np.dot(a, closest_vec))
@@ -539,7 +549,10 @@ def _closest_time_from_projection(closest_vec: np.ndarray, hull: np.ndarray, T: 
         if alpha <= 1.0 + eps and alpha < best_alpha:
             best_alpha = alpha
 
-    # General 2-D case: solve `closest_vec = u a + v b` for each vertex pair.
+    # General 2-D case: solve `closest_vec = u a + v b` for each vertex pair. On
+    # nearly parallel vertex pairs the solve is ill-conditioned, so every candidate
+    # must also reconstruct `closest_vec` before it is accepted; without this guard
+    # a cancellation-corrupted solution can slip through the sign tests.
     for i in range(n):
         a = hull_arr[i]
         for j in range(i + 1, n):
@@ -552,14 +565,20 @@ def _closest_time_from_projection(closest_vec: np.ndarray, hull: np.ndarray, T: 
             u = (closest_vec[0] * b[1] - closest_vec[1] * b[0]) / det
             v = (a[0] * closest_vec[1] - a[1] * closest_vec[0]) / det
 
-            if u < -eps or v < -eps:
+            if u < -collinear_tol or v < -collinear_tol:
+                continue
+
+            residual_x = u * a[0] + v * b[0] - closest_vec[0]
+            residual_y = u * a[1] + v * b[1] - closest_vec[1]
+            residual_tol = collinear_tol * (norm_closest + 1.0)
+            if residual_x * residual_x + residual_y * residual_y > residual_tol * residual_tol:
                 continue
 
             alpha = u + v
             if alpha <= 1.0 + eps and alpha < best_alpha:
                 best_alpha = alpha
 
-    if best_alpha == np.inf:
+    if best_alpha > 1.0 + eps:
         # Numerical fallback: recover the radial gauge from the furthest projection of
         # the hull on the displacement direction. This should rarely be needed.
         direction = closest_vec / norm_closest
@@ -638,7 +657,10 @@ def compute_relative_velocity_hull(
     return small_convex_hull(reachable_points)
 
 
-@numba.njit(cache=True, fastmath=True)
+# No fastmath here: this top-level query is not a hot loop, and the closest-time
+# recovery it calls depends on exact sign tests and would inherit the relaxed
+# semantics if compiled within a fastmath caller.
+@numba.njit(cache=True)
 def catch_up_projection_interval(
     a_lat: float,
     a_lon: float,

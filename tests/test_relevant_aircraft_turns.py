@@ -220,6 +220,31 @@ class TestStraightStraightRegression:
         assert ref_dist == pytest.approx(turn_dist, abs=1e-6), f"min_dist mismatch: ref={ref_dist}, turn={turn_dist}"
         assert ref_time == pytest.approx(turn_time, abs=1e-6), f"time mismatch: ref={ref_time}, turn={turn_time}"
 
+    def test_sliver_hull_closest_time(self):
+        """Near-antiparallel headings collapse the reachable hull to a razor-thin
+        sliver, and the closest-time recovery must still report the time that
+        attains the minimum rather than clipping to the horizon end. The values
+        are pinned against an arbitrary-precision reimplementation."""
+        import numpy as np
+
+        is_separated, min_dist_m, closest_time_s = catch_up_projection_interval(
+            a_lat=0.0,
+            a_lon=0.0,
+            a_heading=32.61553945503712,
+            a_speed_kt=234.3488541869565,
+            b_lat=0.0,
+            b_lon=0.0,
+            b_heading=212.6143910177294,
+            b_speed_kt=368.7382526298944,
+            separation_threshold_m=5.0 * NMI_TO_M,
+            speed_diff_kt=27.836888098896647,
+            projection_time_s=1200.0,
+            rel_pos_override=np.array([-21453.687270485607, -56678.73631862431]),
+        )
+        assert is_separated
+        assert min_dist_m == pytest.approx(12478.440009027207, abs=1e-4)
+        assert closest_time_s == pytest.approx(191.1478471721988, abs=1e-3)
+
     @pytest.mark.parametrize("speed_diff_kt", [10, 25, 50])
     @pytest.mark.parametrize("proj_time_min", [5, 15, 30])
     @pytest.mark.parametrize("sep_nmi", [3, 5, 7])
