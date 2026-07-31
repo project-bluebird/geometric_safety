@@ -409,8 +409,8 @@ def build_run_record(
             "max_distance_error_vs_independent_m": float(
                 straight_results["summary"]["max_distance_error_vs_independent_m"]
             ),
-            "max_time_error_vs_independent_s": float(
-                straight_results["summary"]["max_time_error_vs_independent_s"]
+            "max_time_suboptimality_vs_independent_m": float(
+                straight_results["summary"]["max_time_suboptimality_vs_independent_m"]
             ),
         },
         "just_unsafe": dict(just_unsafe_results["summary"]),
@@ -1136,8 +1136,8 @@ def build_table_2(straight_summary: dict[str, Any]) -> list[dict[str, Any]]:
             "value": straight_summary["max_distance_error_vs_independent_m"],
         },
         {
-            "metric": "Max closest-time error vs independent (s)",
-            "value": straight_summary["max_time_error_vs_independent_s"],
+            "metric": "Max distance excess at reported closest time vs independent (m)",
+            "value": straight_summary["max_time_suboptimality_vs_independent_m"],
         },
         {"metric": "Nominal proxy false-safe rate", "value": nominal["false_safe_rate"]},
         {"metric": "Nominal proxy false-unsafe rate", "value": nominal["false_unsafe_rate"]},

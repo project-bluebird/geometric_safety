@@ -850,7 +850,7 @@ def _evaluate_straight_chunk(encounters: list[Encounter]) -> list[dict[str, Any]
     the production closed form, so the closed form cannot referee itself; the
     independent columns are the ones that validate the implementation.
     """
-    from paper.independent_oracle import independent_straight_outcome
+    from paper.independent_oracle import independent_straight_distance_at_time, independent_straight_outcome
 
     rows = []
     for encounter in encounters:
@@ -868,6 +868,19 @@ def _evaluate_straight_chunk(encounters: list[Encounter]) -> list[dict[str, Any]
             horizon_s=encounter.projection_time_s,
             threshold_m=encounter.separation_threshold_m,
         )
+        # The minimising time need not be unique (antiparallel tracks hold the
+        # worst-case distance flat), so the reported time is validated by the
+        # distance it attains rather than by comparing time values.
+        indep_at_reported_m = independent_straight_distance_at_time(
+            rel_east_m=encounter.rel_east_m,
+            rel_north_m=encounter.rel_north_m,
+            a_heading_deg=encounter.a_heading0_deg,
+            a_speed_kt=encounter.a_speed_kt,
+            b_heading_deg=encounter.b_heading0_deg,
+            b_speed_kt=encounter.b_speed_kt,
+            speed_diff_kt=encounter.speed_diff_kt,
+            time_s=proposed.closest_time_s,
+        )
         row = encounter_to_row(encounter)
         row.update(outcome_to_row("oracle", oracle))
         row.update(outcome_to_row("proposed", proposed))
@@ -875,6 +888,7 @@ def _evaluate_straight_chunk(encounters: list[Encounter]) -> list[dict[str, Any]
         row["independent_is_safe"] = int(indep_safe)
         row["independent_min_distance_m"] = indep_distance_m
         row["independent_closest_time_s"] = indep_time_s
+        row["independent_distance_at_proposed_time_m"] = indep_at_reported_m
         rows.append(row)
     return rows
 
@@ -895,7 +909,10 @@ def run_straight_suite(encounters: list[Encounter], *, n_jobs: int = 1) -> dict[
     distance_errors = [abs(row["proposed_min_distance_m"] - row["oracle_min_distance_m"]) for row in rows]
     time_errors = [abs(row["proposed_closest_time_s"] - row["oracle_closest_time_s"]) for row in rows]
     indep_distance_errors = [abs(row["proposed_min_distance_m"] - row["independent_min_distance_m"]) for row in rows]
-    indep_time_errors = [abs(row["proposed_closest_time_s"] - row["independent_closest_time_s"]) for row in rows]
+    indep_time_suboptimality = [
+        max(0.0, row["independent_distance_at_proposed_time_m"] - row["independent_min_distance_m"])
+        for row in rows
+    ]
     oracle_safe_arr = np.asarray(oracle_safe, dtype=bool)
     proposed_safe_arr = np.asarray(proposed_safe, dtype=bool)
     nominal_safe_arr = np.asarray(nominal_safe, dtype=bool)
@@ -907,7 +924,9 @@ def run_straight_suite(encounters: list[Encounter], *, n_jobs: int = 1) -> dict[
         "max_time_error_s": float(np.max(time_errors) if time_errors else 0.0),
         "independent_vs_proposed_agreement_rate": float(np.mean(independent_safe_arr == proposed_safe_arr)),
         "max_distance_error_vs_independent_m": float(np.max(indep_distance_errors) if indep_distance_errors else 0.0),
-        "max_time_error_vs_independent_s": float(np.max(indep_time_errors) if indep_time_errors else 0.0),
+        "max_time_suboptimality_vs_independent_m": float(
+            np.max(indep_time_suboptimality) if indep_time_suboptimality else 0.0
+        ),
         "nominal_proxy": boolean_confusion_summary(
             reference_safe=oracle_safe_arr,
             method_safe=nominal_safe_arr,

@@ -143,6 +143,63 @@ def _gauge(hull: list[Point], p: Point, tol: Scalar) -> Scalar:
     return hi
 
 
+def independent_straight_distance_at_time(
+    *,
+    rel_east_m: float,
+    rel_north_m: float,
+    a_heading_deg: float,
+    a_speed_kt: float,
+    b_heading_deg: float,
+    b_speed_kt: float,
+    speed_diff_kt: float,
+    time_s: float,
+    dps: int = DEFAULT_DPS,
+) -> float:
+    """Worst-case separation at one instant: min over admissible speeds of ||r(t)||.
+
+    The fixed-time reachable relative displacement set is t times the convex
+    hull of the four corner relative velocities, without the origin point that
+    the whole-horizon set carries, because at a fixed instant every realisation
+    has flown for exactly t seconds.
+    """
+    with mp.workdps(dps):
+        kt = mp.mpf(_KT_TO_MPS_NUM) / mp.mpf(_KT_TO_MPS_DEN)
+        h_a = mp.radians(mp.mpf(a_heading_deg))
+        h_b = mp.radians(mp.mpf(b_heading_deg))
+        u_a = (mp.sin(h_a), mp.cos(h_a))
+        u_b = (mp.sin(h_b), mp.cos(h_b))
+        diff = mp.mpf(speed_diff_kt) * kt
+        s_a = mp.mpf(a_speed_kt) * kt
+        s_b = mp.mpf(b_speed_kt) * kt
+        speeds_a = (max(s_a - diff, mp.mpf(0)), s_a + diff)
+        speeds_b = (max(s_b - diff, mp.mpf(0)), s_b + diff)
+        t = mp.mpf(time_s)
+
+        points: list[Point] = []
+        for sa in speeds_a:
+            for sb in speeds_b:
+                vx = sa * u_a[0] - sb * u_b[0]
+                vy = sa * u_a[1] - sb * u_b[1]
+                points.append((t * vx, t * vy))
+
+        scale = max(mp.hypot(px, py) for px, py in points)
+        scale = max(scale, mp.hypot(mp.mpf(rel_east_m), mp.mpf(rel_north_m)), mp.mpf(1))
+        tol = scale * mp.mpf(10) ** (-(dps - 8))
+
+        hull = _convex_hull(points)
+        q: Point = (-mp.mpf(rel_east_m), -mp.mpf(rel_north_m))
+
+        if _hull_is_degenerate(hull, tol):
+            (seg_a, seg_b), seg_len = _farthest_pair(hull)
+            if seg_len <= tol:
+                distance = mp.hypot(q[0] - seg_a[0], q[1] - seg_a[1])
+            else:
+                distance, _ = _point_segment(q, seg_a, seg_b)
+        else:
+            distance, _ = _distance_to_hull(hull, q, tol)
+        return float(distance)
+
+
 def independent_straight_outcome(
     *,
     rel_east_m: float,
