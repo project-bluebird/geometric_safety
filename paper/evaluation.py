@@ -27,6 +27,8 @@ AMBIGUITY_BAND_M = 0.05 * NMI_TO_M
 REFINE_NEAR_THRESHOLD_BAND_M = 0.10 * NMI_TO_M
 NEAR_THRESHOLD_SAFE_MARGIN_MIN_M = 0.05 * NMI_TO_M
 NEAR_THRESHOLD_SAFE_MARGIN_MAX_M = 1.50 * NMI_TO_M
+JUST_UNSAFE_MARGIN_MIN_M = -0.50 * NMI_TO_M
+JUST_UNSAFE_MARGIN_MAX_M = -0.05 * NMI_TO_M
 MARGIN_BINS_NMI = (0.05, 0.25, 0.50, 0.75, 1.00, 1.50)
 TURN_ANGLE_BINS_DEG = (0.0, 10.0, 20.0, 35.0, 50.0, 60.0)
 SPEED_UNCERTAINTY_BINS_KT = (5.0, 10.0, 15.0, 20.0, 25.0, 30.0)
@@ -119,6 +121,7 @@ class EvaluationConfig:
     straight_n: int = 50_000
     mixed_turn_n: int = 20_000
     near_threshold_n: int = 5_000
+    just_unsafe_n: int = 5_000
     seed: int = 20260325
     ref_lat: float = DEFAULT_REF_LAT
     ref_lon: float = DEFAULT_REF_LON
@@ -141,6 +144,7 @@ class EvaluationConfig:
             straight_n=200,
             mixed_turn_n=120,
             near_threshold_n=24,
+            just_unsafe_n=24,
             seed=20260325,
             runtimes_rounds=2,
             quick=True,
@@ -309,6 +313,105 @@ def _generate_near_threshold_chunk(
                 if len(accepted) >= n:
                     break
     return accepted
+
+
+def generate_just_unsafe_suite(
+    n: int,
+    seed: int,
+    config: EvaluationConfig,
+) -> list[ReferencedEncounter]:
+    """Generate genuinely unsafe encounters with shallow reference incursions.
+
+    The near-threshold suite is safe by construction, so it can only measure
+    conservatism; this mirror suite (reference margin in [-0.5, -0.05) NMI) is
+    the population on which a false-safe outcome could actually occur, which is
+    what the no-false-safe claim needs to be tested against.
+    """
+    if config.n_jobs <= 1 or n <= 1:
+        return _generate_just_unsafe_chunk(n, seed, config)
+
+    worker_count = min(max(1, int(config.n_jobs)), n)
+    worker_targets = _split_counts(n, worker_count)
+    rng = np.random.default_rng(seed)
+    worker_seeds = [int(value) for value in rng.integers(0, 2**31 - 1, size=worker_count)]
+
+    accepted: list[ReferencedEncounter] = []
+    with ProcessPoolExecutor(max_workers=worker_count) as executor:
+        futures = [
+            executor.submit(_generate_just_unsafe_chunk, target_n, worker_seed, config)
+            for target_n, worker_seed in zip(worker_targets, worker_seeds, strict=True)
+            if target_n > 0
+        ]
+        for future in futures:
+            accepted.extend(future.result())
+    return accepted[:n]
+
+
+def _generate_just_unsafe_chunk(
+    n: int,
+    seed: int,
+    config: EvaluationConfig,
+) -> list[ReferencedEncounter]:
+    """Generate one accepted shard of the just-unsafe suite."""
+    rng = np.random.default_rng(seed)
+    accepted: list[ReferencedEncounter] = []
+    batch_size = 64 if config.quick else 512
+    while len(accepted) < n:
+        batch = generate_mixed_turn_suite(
+            n=batch_size,
+            seed=int(rng.integers(0, 2**31 - 1)),
+            threshold_m=DEFAULT_THRESHOLD_M,
+            turn_zero_probability=config.turn_zero_probability,
+        )
+        for encounter in batch:
+            reference = evaluate_dense_reference(
+                encounter,
+                coarse_dt_s=config.coarse_reference_dt_s,
+                refined_dt_s=config.refined_reference_dt_s,
+                near_threshold_band_m=config.refine_near_threshold_band_m,
+            )
+            if (
+                not reference.is_safe
+                and JUST_UNSAFE_MARGIN_MIN_M <= reference.margin_m <= JUST_UNSAFE_MARGIN_MAX_M
+            ):
+                accepted.append(ReferencedEncounter(encounter=encounter, reference=reference))
+                if len(accepted) >= n:
+                    break
+    return accepted
+
+
+def run_just_unsafe_suite(
+    referenced: list[ReferencedEncounter],
+    *,
+    config: EvaluationConfig,
+) -> dict[str, Any]:
+    """Score the solver and the nominal baseline on the just-unsafe suite.
+
+    Every encounter is unsafe with a shallow incursion, so any solver-safe
+    outcome here is a genuine false-safe and falsifies the certificate.
+    """
+    rows = []
+    solver_false_safe_n = 0
+    nominal_false_safe_n = 0
+    for item in referenced:
+        proposed = evaluate_proposed(item.encounter)
+        nominal = evaluate_nominal_proxy(item.encounter)
+        solver_false_safe_n += int(proposed.is_safe)
+        nominal_false_safe_n += int(nominal.is_safe)
+        row = encounter_to_row(item.encounter)
+        row["reference_margin_m"] = item.reference.margin_m
+        row.update(outcome_to_row("proposed", proposed))
+        row.update(outcome_to_row("nominal_proxy", nominal))
+        rows.append(row)
+    margins = [item.reference.margin_m for item in referenced]
+    summary = {
+        "n": len(referenced),
+        "solver_false_safe_n": solver_false_safe_n,
+        "nominal_proxy_false_safe_n": nominal_false_safe_n,
+        "margin_min_m": float(min(margins)) if margins else 0.0,
+        "margin_max_m": float(max(margins)) if margins else 0.0,
+    }
+    return {"rows": rows, "summary": summary}
 
 
 def _split_counts(total: int, buckets: int) -> list[int]:
@@ -682,11 +785,24 @@ def benchmark_solver_runtimes(
     *,
     ref_lat: float,
     ref_lon: float,
+    envelope_bounds: Any | None = None,
 ) -> list[float]:
-    """Measure compiled solver runtimes for the public API in microseconds."""
+    """Measure compiled solver runtimes for the public API in microseconds.
+
+    With ``envelope_bounds`` set (a ``paper.robustness.PerturbationBounds``),
+    each decision runs with the corresponding threshold inflation active, which
+    is the configuration a robust deployment would actually pay for: inflation
+    can force extra subdivision, so the un-inflated timing alone understates
+    the deployed cost.
+    """
+    if envelope_bounds is not None:
+        from paper.robustness import solver_envelope_kwargs
+
     samples_us = []
     for encounter in encounters:
         kwargs = encounter_to_turn_kwargs(encounter, ref_lat, ref_lon)
+        if envelope_bounds is not None:
+            kwargs.update(solver_envelope_kwargs(encounter, envelope_bounds))
         start = time.perf_counter()
         ra.catch_up_projection_interval_with_turns(**kwargs)
         samples_us.append((time.perf_counter() - start) * 1e6)
@@ -806,7 +922,20 @@ def run_mixed_turn_suite(
     config: EvaluationConfig,
 ) -> dict[str, Any]:
     """Evaluate the broad mixed-turn suite."""
+    from paper.robustness import PerturbationBounds
+
     runtime_samples_us = benchmark_solver_runtimes(encounters, ref_lat=config.ref_lat, ref_lon=config.ref_lon)
+    # A representative inflated configuration (10 kt wind with the mid
+    # execution bounds) times the certificate a robust deployment would run.
+    runtime_envelope_bounds = PerturbationBounds(
+        differential_wind_kt=10.0, turn_delay_max_s=5.0, turn_rate_error_max=0.10
+    )
+    runtime_envelope_samples_us = benchmark_solver_runtimes(
+        encounters,
+        ref_lat=config.ref_lat,
+        ref_lon=config.ref_lon,
+        envelope_bounds=runtime_envelope_bounds,
+    )
 
     if config.n_jobs <= 1:
         rows = _evaluate_mixed_turn_chunk((encounters, config))
@@ -824,9 +953,18 @@ def run_mixed_turn_suite(
     coarse_safe_arr = np.asarray([bool(row["coarse_proxy_is_safe"]) for row in rows], dtype=bool)
     eligible_arr = np.asarray([bool(row["eligible_for_boolean_tallies"]) for row in rows], dtype=bool)
     dense_safe_mask = eligible_arr & reference_safe_arr
+    in_band_arr = ~eligible_arr
     summary = {
         "n": len(rows),
         "eligible_n": int(np.sum(eligible_arr)),
+        # The ambiguity band hides exactly the cases where an implementation
+        # error would first surface, so the in-band solver-vs-reference tallies
+        # are reported rather than silently dropped.
+        "in_band": {
+            "n": int(np.sum(in_band_arr)),
+            "solver_safe_reference_unsafe_n": int(np.sum(in_band_arr & ~reference_safe_arr & proposed_safe_arr)),
+            "solver_unsafe_reference_safe_n": int(np.sum(in_band_arr & reference_safe_arr & ~proposed_safe_arr)),
+        },
         "proposed": boolean_confusion_summary(reference_safe_arr, proposed_safe_arr, eligible_arr),
         "nominal_proxy": boolean_confusion_summary(reference_safe_arr, nominal_safe_arr, eligible_arr),
         "coarse_proxy": boolean_confusion_summary(reference_safe_arr, coarse_safe_arr, eligible_arr),
@@ -834,6 +972,12 @@ def run_mixed_turn_suite(
             float(np.mean(proposed_safe_arr[dense_safe_mask])) if np.any(dense_safe_mask) else 0.0
         ),
         "runtime": summarize_runtime_samples(runtime_samples_us),
+        "runtime_with_envelope": summarize_runtime_samples(runtime_envelope_samples_us),
+        "runtime_envelope_bounds": {
+            "differential_wind_kt": 10.0,
+            "turn_delay_max_s": 5.0,
+            "turn_rate_error_max": 0.10,
+        },
     }
     return {"rows": rows, "summary": summary}
 

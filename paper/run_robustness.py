@@ -281,6 +281,45 @@ def build_misspec_configs() -> list[CampaignConfig]:
     return configs
 
 
+def build_combined_configs() -> list[CampaignConfig]:
+    """Simultaneous perturbation classes under the summed envelope.
+
+    The manuscript's composition lemma licenses exactly this sum: the
+    offset-type envelopes (wind, position) add to any valid envelope, and the
+    heading envelope adds to the execution envelope because its proof needs
+    only that the executed path is unit-speed. The in-turn schedule class is
+    deliberately excluded, since its envelope is derived against the commanded
+    rate and no combined derivation with the execution class exists. The
+    propositions therefore require zero violations in both configurations.
+    """
+    return [
+        CampaignConfig(
+            campaign="combined",
+            label="combined_modest",
+            bounds=PerturbationBounds(
+                differential_wind_kt=2.0,
+                position_error_m=50.0,
+                heading_error_deg=0.5,
+                turn_delay_max_s=3.0,
+                turn_rate_error_max=0.05,
+            ),
+            execution=ExecutionModelConfig(),
+        ),
+        CampaignConfig(
+            campaign="combined",
+            label="combined_larger",
+            bounds=PerturbationBounds(
+                differential_wind_kt=5.0,
+                position_error_m=150.0,
+                heading_error_deg=1.0,
+                turn_delay_max_s=5.0,
+                turn_rate_error_max=0.10,
+            ),
+            execution=ExecutionModelConfig(),
+        ),
+    ]
+
+
 def build_exceedance_configs() -> list[CampaignConfig]:
     base_bounds = (
         ("wind_5kt", PerturbationBounds(differential_wind_kt=5.0)),
@@ -412,7 +451,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--n-boundary", type=int, default=DEFAULT_N_BOUNDARY)
     parser.add_argument("--n-sims", type=int, default=DEFAULT_N_SIMS)
     parser.add_argument("--n-jobs", type=int, default=1)
-    parser.add_argument("--campaign", choices=("inclass", "misspec", "exceedance", "all"), default="all")
+    parser.add_argument(
+        "--campaign", choices=("inclass", "combined", "misspec", "exceedance", "all"), default="all"
+    )
     parser.add_argument("--quick", action="store_true", help="Small suite for smoke runs.")
     return parser.parse_args(argv)
 
@@ -426,6 +467,8 @@ def main(argv: list[str] | None = None) -> None:
     configs: list[CampaignConfig] = []
     if args.campaign in ("inclass", "all"):
         configs.extend(build_inclass_configs())
+    if args.campaign in ("combined", "all"):
+        configs.extend(build_combined_configs())
     if args.campaign in ("misspec", "all"):
         configs.extend(build_misspec_configs())
     if args.campaign in ("exceedance", "all"):

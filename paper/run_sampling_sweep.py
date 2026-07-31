@@ -27,6 +27,7 @@ from typing import Any
 
 import numpy as np
 
+from geometric_safety.util import KT_TO_MPS
 from paper.evaluation import (
     AMBIGUITY_BAND_M,
     Encounter,
@@ -54,6 +55,16 @@ def _evaluate_chunk(args: tuple[list[tuple[int, Encounter]], tuple[float, ...]])
         evals, certified = count_fixed_time_evals(
             encounter, dt_min_s=CERT_DT_MIN_S, use_interval_local_lipschitz=True
         )
+        # Global Lipschitz constant: the pair can close no faster than the two
+        # speed caps combined. Clearing D + L*dt/2 at every sample certifies
+        # the whole horizon, so uniform sampling plus this shift is itself a
+        # sound continuous-time certificate; the sweep reports what that
+        # certified variant costs in conservatism relative to the adaptive
+        # search.
+        lipschitz_mps = (
+            (encounter.a_speed_kt + encounter.speed_diff_kt)
+            + (encounter.b_speed_kt + encounter.speed_diff_kt)
+        ) * KT_TO_MPS
         row: dict[str, Any] = {
             "encounter_idx": encounter_idx,
             "projection_time_s": encounter.projection_time_s,
@@ -62,11 +73,15 @@ def _evaluate_chunk(args: tuple[list[tuple[int, Encounter]], tuple[float, ...]])
             "eligible": int(abs(reference.margin_m) >= AMBIGUITY_BAND_M),
             "certified_is_safe": int(certified.is_safe),
             "certified_fixed_time_evals": evals,
+            "global_lipschitz_mps": lipschitz_mps,
         }
         for dt_s in sample_dts_s:
             outcome = evaluate_coarse_turn_proxy(encounter, sample_dt_s=dt_s)
             row[f"proxy_is_safe_dt{dt_s:g}"] = int(outcome.is_safe)
             row[f"proxy_margin_m_dt{dt_s:g}"] = outcome.margin_m
+            row[f"certuni_is_safe_dt{dt_s:g}"] = int(
+                outcome.margin_m >= 0.5 * lipschitz_mps * dt_s
+            )
         rows.append(row)
     return rows
 
@@ -89,6 +104,12 @@ def summarise(rows: list[dict[str, Any]], sample_dts_s: tuple[float, ...]) -> li
         evals_per_encounter = statistics.mean(
             row["projection_time_s"] / dt_s + 1.0 for row in eligible
         )
+        certuni_false_safe = sum(1 for row in unsafe if row[f"certuni_is_safe_dt{dt_s:g}"])
+        certuni_false_unsafe = sum(
+            1
+            for row in eligible
+            if row["reference_is_safe"] and not row[f"certuni_is_safe_dt{dt_s:g}"]
+        )
         summaries.append(
             {
                 "sample_dt_s": dt_s,
@@ -97,6 +118,8 @@ def summarise(rows: list[dict[str, Any]], sample_dts_s: tuple[float, ...]) -> li
                 "proxy_false_safe_n": false_safe,
                 "proxy_false_unsafe_n": false_unsafe,
                 "proxy_mean_evals": evals_per_encounter,
+                "certuni_false_safe_n": certuni_false_safe,
+                "certuni_false_unsafe_n": certuni_false_unsafe,
                 "certified_false_safe_n": sum(
                     1 for row in unsafe if row["certified_is_safe"]
                 ),

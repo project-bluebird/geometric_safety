@@ -35,9 +35,11 @@ from paper.evaluation import (
     benchmark_fixed_time_kernel,
     build_sampled_proxy_counterexample_row,
     build_uniform_times,
+    generate_just_unsafe_suite,
     generate_mixed_turn_suite,
     generate_near_threshold_suite,
     generate_straight_suite,
+    run_just_unsafe_suite,
     run_mixed_turn_suite,
     run_near_threshold_suite,
     run_straight_suite,
@@ -46,8 +48,13 @@ from paper.evaluation import (
 )
 
 SUITE_PROFILES = {
-    "paper": {"straight_n": 50_000, "mixed_turn_n": 20_000, "near_threshold_n": 5_000},
-    "large100k": {"straight_n": 100_000, "mixed_turn_n": 100_000, "near_threshold_n": 100_000},
+    "paper": {"straight_n": 50_000, "mixed_turn_n": 20_000, "near_threshold_n": 5_000, "just_unsafe_n": 5_000},
+    "large100k": {
+        "straight_n": 100_000,
+        "mixed_turn_n": 100_000,
+        "near_threshold_n": 100_000,
+        "just_unsafe_n": 100_000,
+    },
 }
 MANUSCRIPT_FONT_FAMILY = ["Times New Roman", "Times", "Nimbus Roman", "Liberation Serif", "DejaVu Serif"]
 ROW_OUTPUT_MODES = ("all", "none", "figure", "first-figure")
@@ -222,6 +229,7 @@ def build_config(args: argparse.Namespace, *, seed: int) -> EvaluationConfig:
         straight_n=profile_sizes["straight_n"] if args.straight_n is None else args.straight_n,
         mixed_turn_n=profile_sizes["mixed_turn_n"] if args.mixed_turn_n is None else args.mixed_turn_n,
         near_threshold_n=profile_sizes["near_threshold_n"] if args.near_threshold_n is None else args.near_threshold_n,
+        just_unsafe_n=profile_sizes["just_unsafe_n"],
         seed=seed,
         coarse_proxy_dt_s=args.coarse_proxy_dt,
         dt_min_values_s=tuple(args.dt_min_values),
@@ -252,10 +260,12 @@ def run_single_evaluation(
         turn_zero_probability=config.turn_zero_probability,
     )
     near_threshold_encounters = generate_near_threshold_suite(config.near_threshold_n, config.seed + 2, config)
+    just_unsafe_encounters = generate_just_unsafe_suite(config.just_unsafe_n, config.seed + 3, config)
 
     straight_results = run_straight_suite(straight_encounters, n_jobs=config.n_jobs)
     mixed_results = run_mixed_turn_suite(mixed_encounters, config=config)
     near_threshold_results = run_near_threshold_suite(near_threshold_encounters, config=config)
+    just_unsafe_results = run_just_unsafe_suite(just_unsafe_encounters, config=config)
     narrative = select_narrative_scenarios(
         straight_results["rows"],
         mixed_results["rows"],
@@ -275,6 +285,7 @@ def run_single_evaluation(
             "margin_summary": near_threshold_results["margin_summary"],
             "default_margin_summary": near_threshold_results["default_margin_summary"],
         },
+        "just_unsafe": just_unsafe_results["summary"],
         "narrative_scenarios": narrative,
         "kernel_runtime": kernel_runtime,
     }
@@ -284,6 +295,7 @@ def run_single_evaluation(
         output_dir / "near_threshold_default_margin_summary.csv",
         near_threshold_results["default_margin_summary"],
     )
+    write_csv(output_dir / "just_unsafe_rows.csv", just_unsafe_results["rows"])
 
     write_row_outputs(
         output_dir,
@@ -323,6 +335,7 @@ def run_single_evaluation(
         straight_results=straight_results,
         mixed_results=mixed_results,
         near_threshold_results=near_threshold_results,
+        just_unsafe_results=just_unsafe_results,
         kernel_runtime=kernel_runtime,
     )
     write_json(output_dir / "run_record.json", run_record)
@@ -335,6 +348,7 @@ def build_run_record(
     straight_results: dict[str, Any],
     mixed_results: dict[str, Any],
     near_threshold_results: dict[str, Any],
+    just_unsafe_results: dict[str, Any],
     kernel_runtime: dict[str, float],
 ) -> dict[str, Any]:
     straight_rows = straight_results["rows"]
@@ -372,7 +386,17 @@ def build_run_record(
             "nominal_proxy_disagreement_n": straight_nominal["disagreement_n"],
             "max_distance_error_m": float(straight_results["summary"]["max_distance_error_m"]),
             "max_time_error_s": float(straight_results["summary"]["max_time_error_s"]),
+            "independent_agreement_rate": float(
+                straight_results["summary"]["independent_vs_proposed_agreement_rate"]
+            ),
+            "max_distance_error_vs_independent_m": float(
+                straight_results["summary"]["max_distance_error_vs_independent_m"]
+            ),
+            "max_time_error_vs_independent_s": float(
+                straight_results["summary"]["max_time_error_vs_independent_s"]
+            ),
         },
+        "just_unsafe": dict(just_unsafe_results["summary"]),
         "mixed_turn": {
             "n": len(mixed_rows),
             "eligible_n": len(eligible_mixed_rows),
@@ -388,6 +412,8 @@ def build_run_record(
             "coarse_proxy_false_unsafe_n": mixed_coarse["false_unsafe_n"],
             "coarse_proxy_disagreement_n": mixed_coarse["disagreement_n"],
             "runtime": mixed_results["summary"]["runtime"],
+            "runtime_with_envelope": mixed_results["summary"]["runtime_with_envelope"],
+            "in_band": mixed_results["summary"]["in_band"],
         },
         "near_threshold": {
             "accepted_n": config.near_threshold_n,
@@ -874,6 +900,14 @@ def build_campaign_summary(
         int(record["near_threshold"]["default_local_dt3_certified_n"]) for record in run_records
     )
 
+    just_unsafe_total_n = sum(int(record["just_unsafe"]["n"]) for record in run_records)
+    just_unsafe_solver_false_safe_n = sum(
+        int(record["just_unsafe"]["solver_false_safe_n"]) for record in run_records
+    )
+    just_unsafe_nominal_false_safe_n = sum(
+        int(record["just_unsafe"]["nominal_proxy_false_safe_n"]) for record in run_records
+    )
+
     return {
         "profile": profile,
         "repeat_seeds": repeat_seeds,
@@ -914,6 +948,14 @@ def build_campaign_summary(
                 "proposed_certification_rate_given_reference_safe": (
                     1.0 - safe_divide(proposed_false_unsafe_n, mixed_reference_safe_n)
                 ),
+                "just_unsafe": {
+                    "total_n": just_unsafe_total_n,
+                    "solver_false_safe_n": just_unsafe_solver_false_safe_n,
+                    "nominal_proxy_false_safe_n": just_unsafe_nominal_false_safe_n,
+                    "solver_false_safe_upper_95_rate_rule_of_three": rule_of_three_upper_bound(
+                        just_unsafe_solver_false_safe_n, just_unsafe_total_n
+                    ),
+                },
                 "proposed_false_safe_upper_95_rate_rule_of_three": rule_of_three_upper_bound(
                     proposed_false_safe_n,
                     mixed_reference_unsafe_n,
