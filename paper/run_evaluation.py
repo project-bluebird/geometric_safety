@@ -225,6 +225,7 @@ def build_config(args: argparse.Namespace, *, seed: int) -> EvaluationConfig:
             straight_n=200,
             mixed_turn_n=120,
             near_threshold_n=24,
+            just_unsafe_n=24,
             seed=seed,
             threshold_m=threshold_m,
             coarse_proxy_dt_s=args.coarse_proxy_dt,
