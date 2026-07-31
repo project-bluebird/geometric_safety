@@ -53,7 +53,12 @@ SUITE_PROFILES = {
         "straight_n": 100_000,
         "mixed_turn_n": 100_000,
         "near_threshold_n": 100_000,
-        "just_unsafe_n": 100_000,
+        # The just-unsafe band accepts only a few percent of the generator's
+        # output and every candidate costs a dense-reference evaluation, so
+        # 20k per seed (100k pooled over five) buys the same rule-of-three
+        # strength as the sweep's unsafe population at a fraction of the
+        # sampling cost.
+        "just_unsafe_n": 20_000,
     },
 }
 MANUSCRIPT_FONT_FAMILY = ["Times New Roman", "Times", "Nimbus Roman", "Liberation Serif", "DejaVu Serif"]
