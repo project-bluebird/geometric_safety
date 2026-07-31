@@ -1,13 +1,14 @@
 """Sampling-interval sweep for the uniform-sampling baseline.
 
-The manuscript's TR-C reviews asked how the uniform-sampling baseline behaves
-across sampling intervals, not only at the radar-scan-aligned 6 s step, and how
-the published counterexample encounter was found. This runner answers both. For
-each sampling interval it scores the baseline against the dense reference on the
-broad mixed-turn suite and reports miss counts alongside the work of the
-certified solver measured in fixed-time hull evaluations. Encounters where the
-baseline is false-safe are recorded verbatim, which is exactly the search that
-produced the fixed counterexample in ``paper.evaluation``.
+For each sampling interval, the runner scores the uniform-sampling baseline
+and its certified variant against the dense reference on the broad mixed-turn
+suite. The certified variant clears samples against ``D + L*dt/2`` with the
+global Lipschitz constant, which makes uniform sampling a sound
+continuous-time certificate at a conservatism cost the sweep quantifies. Miss
+counts are reported alongside the work of the adaptive certified solver
+measured in fixed-time hull evaluations, and every false-safe baseline
+encounter is recorded verbatim so each miss is reproducible from the artifact
+alone.
 
     uv run python -m paper.run_sampling_sweep --quick \
         --output-dir paper_eval_outputs/sampling_sweep
@@ -137,9 +138,9 @@ def collect_misses(
 ) -> list[dict[str, Any]]:
     """Record every false-safe baseline encounter verbatim.
 
-    This search over the mixed-turn generator is how the manuscript's fixed
-    sampling-miss counterexample was obtained, so its output documents the
-    construction and the observed frequency in one artifact.
+    Each record carries the full encounter parameters and the intervals that
+    missed it, so any miss can be reproduced and inspected from the artifact
+    alone.
     """
     misses = []
     for row in rows:

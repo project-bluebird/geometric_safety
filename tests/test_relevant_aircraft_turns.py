@@ -560,8 +560,8 @@ class TestHelpers:
         expected = (50.0 * KT_TO_MPS) * 30.0 * (1.0 - math.cos(theta_a)) / theta_a
         assert envelope_m == pytest.approx(expected, rel=1e-12)
 
-    def test_turn_speed_schedule_envelope_dominated_by_old_buffer(self):
-        """The proven envelope should never exceed the previously shipped buffer."""
+    def test_turn_speed_schedule_envelope_never_exceeds_sine_buffer(self):
+        """The proven envelope never exceeds the coarser sin(theta/2) bound."""
         for sweep_deg in (10.0, 30.0, 60.0, 90.0):
             for t_s in (5.0, 15.0, 30.0, 120.0):
                 envelope_m = _turn_speed_schedule_envelope_m(
@@ -575,8 +575,8 @@ class TestHelpers:
                 )
                 t_active = min(t_s, sweep_deg / 3.0)
                 theta_active = 3.0 * DEG_TO_RAD * t_active
-                old_buffer_m = (25.0 * KT_TO_MPS) * t_active * math.sin(0.5 * theta_active)
-                assert envelope_m <= old_buffer_m + 1e-12
+                sine_buffer_m = (25.0 * KT_TO_MPS) * t_active * math.sin(0.5 * theta_active)
+                assert envelope_m <= sine_buffer_m + 1e-12
 
     def test_turn_speed_schedule_envelope_beyond_ninety_uses_fallback(self):
         """Sweeps beyond 90 degrees should use the unconditional fallback bound."""

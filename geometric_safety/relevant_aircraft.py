@@ -224,8 +224,8 @@ This is tighter than the simpler global bound
 
     L_global = s_A^+ + s_B^+,
 
-which remains available as an option but is no longer the default. The local
-bound is preferred because it uses the known heading profiles on the interval instead of
+which remains available as an opt-out for comparison. The local bound is the
+default because it uses the known heading profiles on the interval instead of
 assuming worst-case anti-parallel closing everywhere.
 
 The practical reason this is cheap is that each heading profile is piecewise linear in
@@ -1095,8 +1095,8 @@ def _turn_speed_schedule_envelope_m(
 
         delta * t_active * (1 - cos(theta_a)) / theta_a,
 
-    which is sharper than the previously shipped `delta * t_active * sin(theta_a / 2)`
-    buffer and is approached by extreme schedules in the long-horizon limit. For
+    which never exceeds the coarser `delta * t_active * sin(theta_a / 2)`
+    bound and is approached by extreme schedules in the long-horizon limit. For
     larger commanded sweeps the unconditional fallback
 
         min(2 * delta, width) * 4 * t_active * (1 - cos(theta_a / 2)) / theta_a

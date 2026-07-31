@@ -110,8 +110,8 @@ def sharp_envelope(theta_rad: float, t_over_tau: float) -> float:
     return t_active * (1.0 - math.cos(sweep)) / sweep
 
 
-def superseded_buffer(theta_rad: float, t_over_tau: float) -> float:
-    """The previously shipped sin(theta/2) buffer in the same units."""
+def sine_buffer(theta_rad: float, t_over_tau: float) -> float:
+    """The coarser sin(theta/2) buffer in the same units."""
     t_active = min(t_over_tau, 1.0)
     sweep = theta_rad * t_active
     return t_active * math.sin(0.5 * sweep)
@@ -126,7 +126,7 @@ def run_grid() -> list[dict[str, Any]]:
                 exact = exact_worst_case(theta_rad, t_over_tau, slack_lo, slack_hi)
                 envelope = proven_envelope(theta_rad, t_over_tau, slack_lo, slack_hi)
                 sharp = sharp_envelope(theta_rad, t_over_tau)
-                buffer_value = superseded_buffer(theta_rad, t_over_tau)
+                buffer_value = sine_buffer(theta_rad, t_over_tau)
                 sweep_rad = theta_rad * min(t_over_tau, 1.0)
                 rows.append(
                     {
@@ -139,7 +139,7 @@ def run_grid() -> list[dict[str, Any]]:
                         "exact_worst": exact,
                         "proven_envelope": envelope,
                         "sharp_envelope": sharp,
-                        "superseded_buffer": buffer_value,
+                        "sine_buffer": buffer_value,
                         "exact_over_envelope": exact / envelope if envelope > 0.0 else 0.0,
                         "exact_over_sharp": exact / sharp if sharp > 0.0 else 0.0,
                     }

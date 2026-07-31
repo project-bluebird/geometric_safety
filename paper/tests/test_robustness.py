@@ -165,7 +165,7 @@ class TestExecutionModelConfig:
         assert not ExecutionModelConfig(roll_time_s=5.0).is_in_class()
         assert not ExecutionModelConfig(heading_jitter_deg=0.5).is_in_class()
 
-    def test_default_config_matches_legacy_behaviour(self):
+    def test_default_config_leaves_simulation_unchanged(self):
         encounter = _turning_encounter(9.0, 45.0)
         bounds = PerturbationBounds(differential_wind_kt=3.0, schedule_uncertainty_kt=8.0)
         base = simulate_executed_min_separation(encounter, bounds, np.random.default_rng(5))
