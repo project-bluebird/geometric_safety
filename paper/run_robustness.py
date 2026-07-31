@@ -29,6 +29,7 @@ import csv
 from dataclasses import asdict, dataclass, fields
 import hashlib
 import json
+import math
 from pathlib import Path
 import time
 from typing import Any
@@ -399,8 +400,25 @@ def run_campaign(
     return rows
 
 
+def wilson_interval(successes: int, trials: int, z: float = 1.96) -> tuple[float, float]:
+    """Wilson 95 percent score interval for a binomial proportion."""
+    if trials <= 0:
+        return (0.0, 0.0)
+    p_hat = successes / trials
+    denom = 1.0 + z * z / trials
+    centre = (p_hat + z * z / (2.0 * trials)) / denom
+    half = (z / denom) * math.sqrt(p_hat * (1.0 - p_hat) / trials + z * z / (4.0 * trials * trials))
+    return (max(0.0, centre - half), min(1.0, centre + half))
+
+
 def summarise(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Aggregate per-config violation and certification statistics."""
+    """Aggregate per-config violation and certification statistics.
+
+    Violations cluster by encounter geometry, so realisation-level counts
+    overstate the number of independent trials; each summary therefore
+    carries the encounter-level breakdown and a Wilson interval on the
+    encounter-level violation rate alongside the realisation-level rate.
+    """
     grouped: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
     for row in rows:
         grouped.setdefault((row["campaign"], row["label"], row["suite"]), []).append(row)
@@ -414,6 +432,10 @@ def summarise(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         total_sims = sum(row["n_sims"] for row in group)
         total_violations = sum(row["n_violations"] for row in group)
         inflated_sims = sum(row["n_sims"] for row in group if row["inflated_certified_safe"])
+        inflated_encounters = sum(1 for row in group if row["inflated_certified_safe"])
+        max_violations_one_encounter = max((row["n_violations"] for row in group), default=0)
+        encounter_ci = wilson_interval(n_encounters_violated, inflated_encounters)
+        certified_ci = wilson_interval(n_certified_inflated, n)
         summaries.append(
             {
                 "campaign": campaign,
@@ -422,7 +444,15 @@ def summarise(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "n_encounters": n,
                 "certified_rate_plain": n_certified_plain / n if n else 0.0,
                 "certified_rate_inflated": n_certified_inflated / n if n else 0.0,
+                "certified_rate_inflated_ci95_low": certified_ci[0],
+                "certified_rate_inflated_ci95_high": certified_ci[1],
                 "n_encounters_with_violation": n_encounters_violated,
+                "encounter_violation_rate_over_certified": (
+                    n_encounters_violated / inflated_encounters if inflated_encounters else 0.0
+                ),
+                "encounter_violation_rate_ci95_low": encounter_ci[0],
+                "encounter_violation_rate_ci95_high": encounter_ci[1],
+                "max_violations_one_encounter": max_violations_one_encounter,
                 "violation_rate_over_certified_sims": (total_violations / inflated_sims) if inflated_sims else 0.0,
                 "total_violations": total_violations,
                 "total_sims": total_sims,

@@ -401,6 +401,15 @@ TURN_RATE_EPS_DEG_PER_S = 1e-6
 # interval is usually a good speed/precision balance.
 TURN_TIME_CERT_MIN_INTERVAL_S = 3.0
 
+# Conservative floating-point guard on the certification inequality. The proofs are
+# real-arithmetic statements; a safe verdict minted in double precision must survive
+# rounding of the evaluation chain, whose worst-case error at sector-scale magnitudes
+# (~1e5 m) is below 1e-9 m. The guard sits three orders of magnitude above that and
+# roughly eight below the smallest operationally meaningful distance in the paper
+# (the 93 m ambiguity band), so it changes no reported rate while making the safe
+# verdict one-sided under floating-point arithmetic as well as in exact arithmetic.
+TURN_CERT_FP_GUARD_M = 1e-6
+
 # The turn-aware certifier defaults to an interval-local Lipschitz bound because it is
 # less conservative than the simple global closing-rate bound while remaining easy to
 # justify. Passing `use_interval_local_lipschitz=False` switches to the simpler global
@@ -1397,7 +1406,7 @@ def _catch_up_projection_interval_with_turns_local(
         if has_envelope
         else 0.0
     )
-    if initial_lower_bound_m >= separation_threshold_m + eta_horizon_m:
+    if initial_lower_bound_m >= separation_threshold_m + eta_horizon_m + TURN_CERT_FP_GUARD_M:
         return True, best_sample_dist_m, best_sample_time_s
 
     # Depth-first interval subdivision uses an explicit stack because Numba handles
@@ -1489,7 +1498,7 @@ def _catch_up_projection_interval_with_turns_local(
         )
 
         # This whole interval is certified safe, so there is no need to look inside it.
-        if interval_lower_bound_m >= separation_threshold_m + interval_eta_m:
+        if interval_lower_bound_m >= separation_threshold_m + interval_eta_m + TURN_CERT_FP_GUARD_M:
             continue
 
         # At the minimum certification width we stop refining. If the interval still

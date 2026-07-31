@@ -959,6 +959,20 @@ def build_campaign_summary(
                 "proposed_certification_rate_given_reference_safe": (
                     1.0 - safe_divide(proposed_false_unsafe_n, mixed_reference_safe_n)
                 ),
+                "proposed_certification_rate_ci95": wilson_interval(
+                    mixed_reference_safe_n - proposed_false_unsafe_n, mixed_reference_safe_n
+                ),
+                "nominal_proxy_false_safe_rate_ci95": wilson_interval(
+                    nominal_false_safe_n, mixed_reference_unsafe_n
+                ),
+                "per_seed_certification_rate_given_reference_safe": [
+                    1.0
+                    - safe_divide(
+                        int(record["mixed_turn"]["proposed_false_unsafe_n"]),
+                        int(record["mixed_turn"]["reference_safe_n"]),
+                    )
+                    for record in run_records
+                ],
                 "just_unsafe": {
                     "total_n": just_unsafe_total_n,
                     "solver_false_safe_n": just_unsafe_solver_false_safe_n,
@@ -980,6 +994,9 @@ def build_campaign_summary(
                 "default_local_dt3_total_n": near_default_total_n,
                 "default_local_dt3_certified_n": near_default_certified_n,
                 "default_local_dt3_certification_rate": safe_divide(near_default_certified_n, near_default_total_n),
+                "default_local_dt3_certification_rate_ci95": wilson_interval(
+                    near_default_certified_n, near_default_total_n
+                ),
             },
         },
     }
@@ -1012,6 +1029,17 @@ def build_campaign_rows(run_records: list[dict[str, Any]]) -> list[dict[str, Any
 
 def safe_divide(numerator: int, denominator: int) -> float:
     return 0.0 if denominator <= 0 else float(numerator) / float(denominator)
+
+
+def wilson_interval(successes: int, trials: int, z: float = 1.96) -> tuple[float, float]:
+    """Wilson 95 percent score interval for a binomial proportion."""
+    if trials <= 0:
+        return (0.0, 0.0)
+    p_hat = successes / trials
+    denom = 1.0 + z * z / trials
+    centre = (p_hat + z * z / (2.0 * trials)) / denom
+    half = (z / denom) * math.sqrt(p_hat * (1.0 - p_hat) / trials + z * z / (4.0 * trials * trials))
+    return (max(0.0, centre - half), min(1.0, centre + half))
 
 
 def rule_of_three_upper_bound(failures: int, trials: int) -> float | None:

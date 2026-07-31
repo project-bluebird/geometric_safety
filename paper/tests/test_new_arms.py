@@ -131,6 +131,32 @@ class TestFlyableTurnRates:
             assert -0.5 * NMI_TO_M <= item.reference.margin_m <= -0.05 * NMI_TO_M
 
 
+class TestEnvelopeBudgetCurves:
+    def test_wind_curve_matches_worked_example(self):
+        from paper.render_envelope_budget_figure import build_budget_curves
+
+        curves = build_budget_curves(dt_s=100.0)
+        times = curves["times_s"]
+        idx_600 = int(np.argmin(np.abs(times - 600.0)))
+        # The manuscript's worked example: a 5 kt wind bound over 600 s is
+        # about 1543 m, 0.83 NMI.
+        assert curves["wind 5 kt"][idx_600] == pytest.approx(1543.0 / NMI_TO_M, rel=1e-3)
+        # Every curve is nondecreasing and the totals dominate each class.
+        for name in ("wind 5 kt", "position 150 m", "stated total", "adverse total"):
+            assert float(np.diff(curves[name]).min()) >= -1e-12
+        assert np.all(curves["stated total"] >= curves["wind 5 kt"] - 1e-12)
+        assert np.all(curves["adverse total"] >= curves["stated total"] - 1e-12)
+
+    def test_statistical_summary_fields(self):
+        from paper.run_robustness import wilson_interval
+
+        low, high = wilson_interval(0, 1000)
+        assert low == 0.0
+        assert 0.0 < high < 0.005
+        low, high = wilson_interval(300, 1000)
+        assert low < 0.3 < high
+
+
 class TestRuntimeWithEnvelope:
     def test_mixed_suite_reports_inflated_runtime(self):
         from paper.evaluation import run_mixed_turn_suite
