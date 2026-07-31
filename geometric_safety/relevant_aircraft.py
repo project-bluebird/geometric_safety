@@ -1082,18 +1082,23 @@ def _turn_speed_schedule_envelope_m(
     is essential: excursions beyond the admissible interval cannot be absorbed along
     track and admit no envelope of this shape (see the paper's robustness section).
 
-    For an active sweep `theta_a <= pi/2` the proven envelope is
+    For a commanded sweep `|dH| <= pi/2` the proven envelope is
 
         delta * t_active * (1 - cos(theta_a)) / theta_a,
 
     which is sharper than the previously shipped `delta * t_active * sin(theta_a / 2)`
-    buffer and is approached by extreme schedules in the long-horizon limit. Beyond
-    `pi/2` the unconditional fallback
+    buffer and is approached by extreme schedules in the long-horizon limit. For
+    larger commanded sweeps the unconditional fallback
 
         min(2 * delta, width) * 4 * t_active * (1 - cos(theta_a / 2)) / theta_a
 
-    applies, where `width` is the admissible interval width. Both bounds are evaluated
-    at the query time `t_s`, so the envelope is time-varying and nondecreasing.
+    applies, where `width` is the admissible interval width. The form is selected
+    once per aircraft from the TOTAL commanded sweep, not from the sweep completed
+    by the query time: a per-time switch could step downward at the pi/2 crossing
+    when `width < ~0.854 * delta`, breaking the nondecreasing-envelope hypothesis
+    of the inflated interval certificate. Each form on its own is nondecreasing in
+    `t_s` (it grows with the completed sweep and freezes at turn completion), so
+    the per-aircraft selection keeps the total envelope monotone.
     """
     if t_s <= 0.0 or schedule_uncertainty_kt <= 0.0:
         return 0.0
@@ -1109,9 +1114,10 @@ def _turn_speed_schedule_envelope_m(
         return 0.0
 
     delta_mps = schedule_uncertainty_kt * KT_TO_MPS
+    total_sweep_rad = turn_angle_deg * DEG_TO_RAD
     # The tolerance keeps the intended inclusive pi/2 boundary robust to floating-point
     # rounding of the sweep computation.
-    if sweep_rad <= 0.5 * math.pi + 1e-9:
+    if total_sweep_rad <= 0.5 * math.pi + 1e-9:
         return delta_mps * active_turn_time_s * (1.0 - math.cos(sweep_rad)) / sweep_rad
 
     width_mps = max(max_speed_mps - min_speed_mps, 0.0)

@@ -595,6 +595,47 @@ class TestHelpers:
         expected = amplitude * 4.0 * 50.0 * (1.0 - math.cos(0.5 * theta_a)) / theta_a
         assert envelope_m == pytest.approx(expected, rel=1e-12)
 
+    def test_turn_speed_schedule_envelope_selects_form_by_total_sweep(self):
+        """A wide commanded turn must use the fallback form at every query time.
+
+        A per-time switch at the pi/2 crossing can step DOWN when the admissible
+        interval width is below ~0.854 * delta, which would break the
+        nondecreasing-envelope hypothesis of the inflated interval certificate.
+        """
+        kwargs = {
+            "heading0_deg": 0.0,
+            "target_heading_deg": 180.0,
+            "turn_rate_deg_sec": 3.0,
+            "schedule_uncertainty_kt": 20.0,
+            "min_speed_mps": 133.0,
+            "max_speed_mps": 135.0,
+        }
+        # Before the pi/2 crossing (25 s -> 75 degrees completed) the value must
+        # already be the fallback form, selected from the 180-degree total sweep.
+        envelope_m = _turn_speed_schedule_envelope_m(t_s=25.0, **kwargs)
+        theta_a = 3.0 * DEG_TO_RAD * 25.0
+        amplitude = min(2.0 * 20.0 * KT_TO_MPS, 135.0 - 133.0)
+        expected = amplitude * 4.0 * 25.0 * (1.0 - math.cos(0.5 * theta_a)) / theta_a
+        assert envelope_m == pytest.approx(expected, rel=1e-12)
+
+    def test_turn_speed_schedule_envelope_is_nondecreasing_across_pi_over_two(self):
+        """Regression: the envelope must never decrease in time for any sweep."""
+        for width_mps in (2.0, 8.0, 60.0):
+            kwargs = {
+                "heading0_deg": 0.0,
+                "target_heading_deg": 180.0,
+                "turn_rate_deg_sec": 3.0,
+                "schedule_uncertainty_kt": 20.0,
+                "min_speed_mps": 134.0 - 0.5 * width_mps,
+                "max_speed_mps": 134.0 + 0.5 * width_mps,
+            }
+            values = [
+                _turn_speed_schedule_envelope_m(t_s=t_s, **kwargs)
+                for t_s in np.arange(0.5, 90.0, 0.5)
+            ]
+            diffs = np.diff(np.asarray(values))
+            assert float(diffs.min()) >= -1e-9
+
     def test_turn_speed_schedule_envelope_is_zero_for_straight_flight(self):
         """The envelope should vanish when no turn is flown."""
         envelope_m = _turn_speed_schedule_envelope_m(
