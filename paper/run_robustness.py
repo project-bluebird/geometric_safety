@@ -454,6 +454,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--campaign", choices=("inclass", "combined", "misspec", "exceedance", "all"), default="all"
     )
+    parser.add_argument(
+        "--boundary-band-nmi",
+        type=float,
+        default=BOUNDARY_BAND_M / NMI_TO_M,
+        help="Boundary-suite acceptance slack in NMI; the default 0.3 is the "
+        "manuscript setting and other values feed the slack sensitivity arm.",
+    )
     parser.add_argument("--quick", action="store_true", help="Small suite for smoke runs.")
     return parser.parse_args(argv)
 
@@ -492,6 +499,7 @@ def main(argv: list[str] | None = None) -> None:
                     n_boundary,
                     seed + 777,
                     config.bounds,
+                    band_m=args.boundary_band_nmi * NMI_TO_M,
                     n_jobs=args.n_jobs,
                     cache_dir=args.output_dir / "boundary_cache",
                     pool=pool,
@@ -506,13 +514,20 @@ def main(argv: list[str] | None = None) -> None:
         inclass_violations = sum(
             entry["total_violations"] for entry in summaries if entry["campaign"] == "inclass"
         )
+        certified_campaign_violations = sum(
+            entry["total_violations"]
+            for entry in summaries
+            if entry["campaign"] in ("inclass", "combined")
+        )
         summary_json = {
             "seed": seed,
             "n_encounters": n_encounters,
             "n_sims": n_sims,
             "n_configs": len(configs),
+            "boundary_band_m": args.boundary_band_nmi * NMI_TO_M,
             "elapsed_s": elapsed_s,
             "inclass_total_violations": inclass_violations,
+            "certified_campaign_total_violations": certified_campaign_violations,
             "summaries": summaries,
         }
         (run_dir / "robustness_summary.json").write_text(json.dumps(summary_json, indent=2))

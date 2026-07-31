@@ -29,6 +29,10 @@ NEAR_THRESHOLD_SAFE_MARGIN_MIN_M = 0.05 * NMI_TO_M
 NEAR_THRESHOLD_SAFE_MARGIN_MAX_M = 1.50 * NMI_TO_M
 JUST_UNSAFE_MARGIN_MIN_M = -0.50 * NMI_TO_M
 JUST_UNSAFE_MARGIN_MAX_M = -0.05 * NMI_TO_M
+BANK_LIMIT_DEG = 25.0
+GRAVITY_MPS2 = 9.80665
+TURN_RATE_DRAW_MIN_DEG_S = 1.0
+TURN_RATE_DRAW_MAX_DEG_S = 3.5
 MARGIN_BINS_NMI = (0.05, 0.25, 0.50, 0.75, 1.00, 1.50)
 TURN_ANGLE_BINS_DEG = (0.0, 10.0, 20.0, 35.0, 50.0, 60.0)
 SPEED_UNCERTAINTY_BINS_KT = (5.0, 10.0, 15.0, 20.0, 25.0, 30.0)
@@ -122,6 +126,7 @@ class EvaluationConfig:
     mixed_turn_n: int = 20_000
     near_threshold_n: int = 5_000
     just_unsafe_n: int = 5_000
+    threshold_m: float = DEFAULT_THRESHOLD_M
     seed: int = 20260325
     ref_lat: float = DEFAULT_REF_LAT
     ref_lon: float = DEFAULT_REF_LON
@@ -219,13 +224,34 @@ def generate_straight_suite(n: int, seed: int, threshold_m: float = DEFAULT_THRE
     return encounters
 
 
+def bank_limited_turn_rate_deg_s(max_speed_kt: float) -> float:
+    """Fastest coordinated-turn rate at the bank limit for the given speed.
+
+    A coordinated level turn satisfies tan(bank) = V * omega / g, so the
+    achievable rate falls with speed: about 1.1 deg/s at 450 kt against a
+    25 degree bank limit, where the commonly quoted 3 deg/s standard rate
+    would need over 50 degrees of bank. The cap uses the aircraft's maximum
+    admissible speed so the commanded rate stays flyable across its whole
+    speed interval.
+    """
+    speed_mps = max_speed_kt * KT_TO_MPS
+    omega_rad_s = GRAVITY_MPS2 * math.tan(math.radians(BANK_LIMIT_DEG)) / speed_mps
+    return math.degrees(omega_rad_s)
+
+
+def _sample_flyable_turn_rate_deg_s(rng: np.random.Generator, max_speed_kt: float) -> float:
+    """Draw a turn rate and cap it at the bank-limited rate for the speed."""
+    drawn = float(rng.uniform(TURN_RATE_DRAW_MIN_DEG_S, TURN_RATE_DRAW_MAX_DEG_S))
+    return min(drawn, bank_limited_turn_rate_deg_s(max_speed_kt))
+
+
 def generate_mixed_turn_suite(
     n: int,
     seed: int,
     threshold_m: float = DEFAULT_THRESHOLD_M,
     turn_zero_probability: float = TURN_ZERO_PROBABILITY,
 ) -> list[Encounter]:
-    """Generate the broad mixed-turn suite."""
+    """Generate the broad mixed-turn suite with aerodynamically flyable turns."""
     rng = np.random.default_rng(seed)
     encounters = []
     for _ in range(n):
@@ -234,19 +260,30 @@ def generate_mixed_turn_suite(
         b_heading0_deg = float(rng.uniform(0.0, 360.0))
         a_turn_angle_deg = _sample_turn_angle_deg(rng, turn_zero_probability)
         b_turn_angle_deg = _sample_turn_angle_deg(rng, turn_zero_probability)
+        a_speed_kt = float(rng.uniform(220.0, 450.0))
+        b_speed_kt = float(rng.uniform(220.0, 450.0))
+        speed_diff_kt = float(rng.uniform(5.0, 30.0))
         encounters.append(
             Encounter(
                 rel_east_m=rel_east_m,
                 rel_north_m=rel_north_m,
                 a_heading0_deg=a_heading0_deg,
                 a_target_heading_deg=(a_heading0_deg + a_turn_angle_deg) % 360.0,
-                a_speed_kt=float(rng.uniform(220.0, 450.0)),
-                a_turn_rate_deg_sec=0.0 if abs(a_turn_angle_deg) < 1e-9 else float(rng.uniform(1.0, 3.5)),
+                a_speed_kt=a_speed_kt,
+                a_turn_rate_deg_sec=(
+                    0.0
+                    if abs(a_turn_angle_deg) < 1e-9
+                    else _sample_flyable_turn_rate_deg_s(rng, a_speed_kt + speed_diff_kt)
+                ),
                 b_heading0_deg=b_heading0_deg,
                 b_target_heading_deg=(b_heading0_deg + b_turn_angle_deg) % 360.0,
-                b_speed_kt=float(rng.uniform(220.0, 450.0)),
-                b_turn_rate_deg_sec=0.0 if abs(b_turn_angle_deg) < 1e-9 else float(rng.uniform(1.0, 3.5)),
-                speed_diff_kt=float(rng.uniform(5.0, 30.0)),
+                b_speed_kt=b_speed_kt,
+                b_turn_rate_deg_sec=(
+                    0.0
+                    if abs(b_turn_angle_deg) < 1e-9
+                    else _sample_flyable_turn_rate_deg_s(rng, b_speed_kt + speed_diff_kt)
+                ),
+                speed_diff_kt=speed_diff_kt,
                 projection_time_s=float(rng.choice(np.asarray(DEFAULT_HORIZONS_S))),
                 separation_threshold_m=threshold_m,
             )
@@ -293,7 +330,7 @@ def _generate_near_threshold_chunk(
         batch = generate_mixed_turn_suite(
             n=batch_size,
             seed=int(rng.integers(0, 2**31 - 1)),
-            threshold_m=DEFAULT_THRESHOLD_M,
+            threshold_m=config.threshold_m,
             turn_zero_probability=config.turn_zero_probability,
         )
         for encounter in batch:
@@ -360,7 +397,7 @@ def _generate_just_unsafe_chunk(
         batch = generate_mixed_turn_suite(
             n=batch_size,
             seed=int(rng.integers(0, 2**31 - 1)),
-            threshold_m=DEFAULT_THRESHOLD_M,
+            threshold_m=config.threshold_m,
             turn_zero_probability=config.turn_zero_probability,
         )
         for encounter in batch:

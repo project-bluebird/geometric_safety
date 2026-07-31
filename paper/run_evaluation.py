@@ -115,6 +115,13 @@ def parse_args() -> argparse.Namespace:
         help="Sampling step in seconds for the sampled turn-aware heuristic baseline.",
     )
     parser.add_argument(
+        "--threshold-nmi",
+        type=float,
+        default=5.0,
+        help="Protected lateral separation threshold in NMI; 5 is the "
+        "manuscript setting and 3 feeds the threshold sensitivity arm.",
+    )
+    parser.add_argument(
         "--n-jobs",
         type=int,
         default=1,
@@ -212,12 +219,14 @@ def row_output_mode_for_run(row_output_mode: str, run_index: int) -> str:
 
 
 def build_config(args: argparse.Namespace, *, seed: int) -> EvaluationConfig:
+    threshold_m = args.threshold_nmi * NMI_TO_M
     if args.quick:
         return EvaluationConfig(
             straight_n=200,
             mixed_turn_n=120,
             near_threshold_n=24,
             seed=seed,
+            threshold_m=threshold_m,
             coarse_proxy_dt_s=args.coarse_proxy_dt,
             dt_min_values_s=tuple(args.dt_min_values),
             runtimes_rounds=2,
@@ -231,6 +240,7 @@ def build_config(args: argparse.Namespace, *, seed: int) -> EvaluationConfig:
         near_threshold_n=profile_sizes["near_threshold_n"] if args.near_threshold_n is None else args.near_threshold_n,
         just_unsafe_n=profile_sizes["just_unsafe_n"],
         seed=seed,
+        threshold_m=threshold_m,
         coarse_proxy_dt_s=args.coarse_proxy_dt,
         dt_min_values_s=tuple(args.dt_min_values),
         n_jobs=args.n_jobs,
@@ -253,10 +263,11 @@ def run_single_evaluation(
 
     warm_up_numba(config)
 
-    straight_encounters = generate_straight_suite(config.straight_n, config.seed)
+    straight_encounters = generate_straight_suite(config.straight_n, config.seed, threshold_m=config.threshold_m)
     mixed_encounters = generate_mixed_turn_suite(
         config.mixed_turn_n,
         config.seed + 1,
+        threshold_m=config.threshold_m,
         turn_zero_probability=config.turn_zero_probability,
     )
     near_threshold_encounters = generate_near_threshold_suite(config.near_threshold_n, config.seed + 2, config)

@@ -6,9 +6,17 @@ the combined-class campaign configuration.
 
 import numpy as np
 
+import dataclasses
+import math
+
+import pytest
+
 from geometric_safety.util import KT_TO_MPS, NMI_TO_M
 from paper.evaluation import (
+    BANK_LIMIT_DEG,
+    GRAVITY_MPS2,
     EvaluationConfig,
+    bank_limited_turn_rate_deg_s,
     generate_just_unsafe_suite,
     generate_mixed_turn_suite,
     run_just_unsafe_suite,
@@ -83,6 +91,44 @@ class TestCombinedConfigs:
             # The schedule class is excluded: no combined derivation with the
             # execution class exists.
             assert bounds.schedule_uncertainty_kt == 0.0
+
+
+class TestFlyableTurnRates:
+    def test_bank_limited_rate_formula(self):
+        speed_mps = 480.0 * KT_TO_MPS
+        expected = math.degrees(GRAVITY_MPS2 * math.tan(math.radians(BANK_LIMIT_DEG)) / speed_mps)
+        assert bank_limited_turn_rate_deg_s(480.0) == pytest.approx(expected, rel=1e-12)
+        # About 1.06 deg/s at the suite's fastest admissible speed: the 3 deg/s
+        # standard rate is unflyable at jet cruise under a 25 degree bank.
+        assert 1.0 < bank_limited_turn_rate_deg_s(480.0) < 1.1
+        assert bank_limited_turn_rate_deg_s(220.0) > 2.0
+
+    def test_generated_suites_are_flyable(self):
+        encounters = generate_mixed_turn_suite(500, 20260731)
+        turning = 0
+        for encounter in encounters:
+            for speed_kt, rate in (
+                (encounter.a_speed_kt, encounter.a_turn_rate_deg_sec),
+                (encounter.b_speed_kt, encounter.b_turn_rate_deg_sec),
+            ):
+                if rate == 0.0:
+                    continue
+                turning += 1
+                cap = bank_limited_turn_rate_deg_s(speed_kt + encounter.speed_diff_kt)
+                assert rate <= cap + 1e-9
+                assert 1.0 - 1e-9 <= rate <= 3.5
+        assert turning > 100
+
+    def test_threshold_flows_through_suites(self):
+        threshold_m = 3.0 * NMI_TO_M
+        encounters = generate_mixed_turn_suite(20, 7, threshold_m=threshold_m)
+        assert all(encounter.separation_threshold_m == threshold_m for encounter in encounters)
+
+        config = dataclasses.replace(EvaluationConfig.quick_defaults(), threshold_m=threshold_m)
+        referenced = generate_just_unsafe_suite(4, 11, config)
+        assert all(item.encounter.separation_threshold_m == threshold_m for item in referenced)
+        for item in referenced:
+            assert -0.5 * NMI_TO_M <= item.reference.margin_m <= -0.05 * NMI_TO_M
 
 
 class TestRuntimeWithEnvelope:
