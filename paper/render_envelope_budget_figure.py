@@ -94,9 +94,9 @@ def build_budget_curves(dt_s: float = 5.0) -> dict[str, np.ndarray]:
 
 
 def render(curves: dict[str, np.ndarray], output_pdf: Path) -> None:
-    import matplotlib
+    import matplotlib as mpl
 
-    matplotlib.use("Agg")
+    mpl.use("Agg")
     import matplotlib.pyplot as plt
 
     times_s = curves["times_s"]

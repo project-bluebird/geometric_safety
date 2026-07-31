@@ -417,11 +417,7 @@ def _generate_just_unsafe_chunk(
     return accepted
 
 
-def run_just_unsafe_suite(
-    referenced: list[ReferencedEncounter],
-    *,
-    config: EvaluationConfig,
-) -> dict[str, Any]:
+def run_just_unsafe_suite(referenced: list[ReferencedEncounter]) -> dict[str, Any]:
     """Score the solver and the nominal baseline on the just-unsafe suite.
 
     Every encounter is unsafe with a shallow incursion, so any solver-safe

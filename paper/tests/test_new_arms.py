@@ -4,11 +4,10 @@ Covers the certified uniform-sampling baseline, the just-unsafe suite, and
 the combined-class campaign configuration.
 """
 
-import numpy as np
-
 import dataclasses
 import math
 
+import numpy as np
 import pytest
 
 from geometric_safety.util import KT_TO_MPS, NMI_TO_M
@@ -64,7 +63,7 @@ class TestJustUnsafeSuite:
             assert not item.reference.is_safe
             assert -0.5 * NMI_TO_M <= item.reference.margin_m <= -0.05 * NMI_TO_M
 
-        results = run_just_unsafe_suite(referenced, config=config)
+        results = run_just_unsafe_suite(referenced)
         summary = results["summary"]
         assert summary["n"] == 10
         # Theorem-backed: the certified solver may never certify a genuinely

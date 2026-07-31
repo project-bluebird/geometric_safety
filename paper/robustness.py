@@ -493,7 +493,9 @@ def evaluate_robustness_case(
     executed_min = math.inf
     n_below = 0
     for _ in range(n_sims):
-        sim_min = simulate_executed_min_separation(encounter, sim_bounds, rng, adversarial=adversarial, execution=execution)
+        sim_min = simulate_executed_min_separation(
+            encounter, sim_bounds, rng, adversarial=adversarial, execution=execution
+        )
         executed_min = min(executed_min, sim_min)
         if sim_min < encounter.separation_threshold_m:
             n_below += 1

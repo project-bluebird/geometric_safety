@@ -276,7 +276,7 @@ def run_single_evaluation(
     straight_results = run_straight_suite(straight_encounters, n_jobs=config.n_jobs)
     mixed_results = run_mixed_turn_suite(mixed_encounters, config=config)
     near_threshold_results = run_near_threshold_suite(near_threshold_encounters, config=config)
-    just_unsafe_results = run_just_unsafe_suite(just_unsafe_encounters, config=config)
+    just_unsafe_results = run_just_unsafe_suite(just_unsafe_encounters)
     narrative = select_narrative_scenarios(
         straight_results["rows"],
         mixed_results["rows"],
