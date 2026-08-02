@@ -76,11 +76,6 @@ EMPIRICAL_FIGURES = [
         "rendered_figures/robustness/fig_robustness_misspec.pdf",
         "manuscript/figures/evaluation/fig_robustness_misspec.pdf",
     ),
-    (
-        "envelope budget against look-ahead time",
-        "rendered_figures/budget/fig_envelope_budget.pdf",
-        "manuscript/figures/evaluation/fig_envelope_budget.pdf",
-    ),
 ]
 
 
