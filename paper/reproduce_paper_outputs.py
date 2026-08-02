@@ -66,6 +66,21 @@ EMPIRICAL_FIGURES = [
         "rendered_figures/projection_deterministic_51_cap_100nmi/projection_min_error_vs_excursion.pdf",
         "manuscript/figures/evaluation/fig_projection_excursion.pdf",
     ),
+    (
+        "robustness exceedance degradation",
+        "rendered_figures/robustness/fig_robustness_exceedance.pdf",
+        "manuscript/figures/evaluation/fig_robustness_exceedance.pdf",
+    ),
+    (
+        "robustness misspecification comparison",
+        "rendered_figures/robustness/fig_robustness_misspec.pdf",
+        "manuscript/figures/evaluation/fig_robustness_misspec.pdf",
+    ),
+    (
+        "envelope budget against look-ahead time",
+        "rendered_figures/budget/fig_envelope_budget.pdf",
+        "manuscript/figures/evaluation/fig_envelope_budget.pdf",
+    ),
 ]
 
 
