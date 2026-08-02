@@ -80,12 +80,17 @@ def render_exceedance(aggregate: dict, output_pdf: Path) -> None:
     for key, label, colour in EXCEEDANCE_CLASSES:
         # The factor grid comes from the campaign labels themselves, so a
         # denser sweep in the runner shows up here without a matching edit.
+        # Only factors on the 0.1 grid are plotted, so the marker spacing is
+        # even; the off-grid 0.75 and 1.25 arms stay in the archive and the
+        # manuscript prose.
         factors = sorted(
-            float(config_label.rsplit("_x", 1)[1])
+            factor
             for campaign, config_label, suite in aggregate
             if campaign == "exceedance"
             and suite == "boundary"
             and config_label.startswith(f"{key}_x")
+            for factor in (float(config_label.rsplit("_x", 1)[1]),)
+            if abs(factor * 10.0 - round(factor * 10.0)) < 1e-9
         )
         if not factors:
             raise SystemExit(f"no exceedance arms found for class {key}")
