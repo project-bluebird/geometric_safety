@@ -93,6 +93,9 @@ def build_budget_curves(dt_s: float = 5.0) -> dict[str, np.ndarray]:
     return curves
 
 
+PLOT_HORIZON_S = 600.0
+
+
 def render(curves: dict[str, np.ndarray], output_pdf: Path) -> None:
     import matplotlib as mpl
 
@@ -100,26 +103,48 @@ def render(curves: dict[str, np.ndarray], output_pdf: Path) -> None:
     import matplotlib.pyplot as plt
 
     times_s = curves["times_s"]
+    mask = times_s <= PLOT_HORIZON_S + 1e-9
+    t = times_s[mask]
     fig, ax = plt.subplots(figsize=(5.4, 3.6))
     class_colours = ("#0072B2", "#009E73", "#D55E00", "#CC79A7")
-    for (name, _), colour in zip(STATED_CLASSES, class_colours, strict=True):
-        ax.plot(times_s, curves[name], color=colour, lw=1.1, alpha=0.85, label=name)
-    ax.plot(times_s, curves["stated total"], color="#1f2a44", lw=2.2, label="stated total")
-    ax.plot(times_s, curves["adverse total"], color="#C73E1D", lw=2.2, ls="--", label="adverse total")
+    series = [
+        (name, curves[name][mask], colour, 1.2)
+        for (name, _), colour in zip(STATED_CLASSES, class_colours, strict=True)
+    ]
+    series.append(("total, all four", curves["stated total"][mask], "#1f2a44", 2.2))
+    for _name, values, colour, lw in series:
+        ax.plot(t, values, color=colour, lw=lw)
+
+    # Direct labels at the right edge instead of a legend box, nudged apart
+    # where curve endpoints nearly coincide.
+    ends = sorted((float(values[-1]), name, colour) for name, values, colour, _ in series)
+    placed_y = -10.0
+    for y, name, colour in ends:
+        label_y = max(y, placed_y + 0.32)
+        placed_y = label_y
+        ax.annotate(
+            name,
+            xy=(float(t[-1]), y),
+            xytext=(float(t[-1]) + 12.0, label_y),
+            fontsize=8.0,
+            color=colour,
+            va="center",
+            annotation_clip=False,
+        )
+
     ax.axhline(5.0, color="#6b7280", lw=1.0, ls=":")
     ax.axhline(3.0, color="#9ca3af", lw=1.0, ls=":")
-    ax.text(20.0, 5.06, "D = 5 NMI", fontsize=8.0, color="#6b7280")
-    ax.text(20.0, 3.06, "D = 3 NMI", fontsize=8.0, color="#9ca3af")
-    ax.set_xlim(0.0, float(times_s[-1]))
-    ax.set_ylim(0.0, 8.0)
-    ax.set_xlabel("Horizon (s)", fontsize=9.5)
+    ax.text(15.0, 5.08, "D = 5 NMI", fontsize=8.0, color="#6b7280")
+    ax.text(15.0, 3.08, "D = 3 NMI", fontsize=8.0, color="#9ca3af")
+    ax.set_xlim(0.0, PLOT_HORIZON_S)
+    ax.set_ylim(0.0, 5.6)
+    ax.set_xlabel("Look-ahead time (s)", fontsize=9.5)
     ax.set_ylabel("Envelope allowance (NMI)", fontsize=9.5)
     ax.tick_params(axis="both", labelsize=8.6)
     ax.grid(True, color="#d7dbe0", lw=0.6, alpha=0.7)
     for spine in ("top", "right", "left", "bottom"):
         ax.spines[spine].set_color("#aeb7c2")
         ax.spines[spine].set_linewidth(0.8)
-    ax.legend(fontsize=7.4, loc="upper left", framealpha=0.9)
     fig.tight_layout()
     output_pdf.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_pdf, bbox_inches="tight")

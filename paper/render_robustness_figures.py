@@ -33,7 +33,6 @@ mpl.rcParams.update(
 
 import matplotlib.pyplot as plt
 
-EXCEEDANCE_FACTORS = (0.5, 0.75, 1.0, 1.25, 1.5, 2.0)
 EXCEEDANCE_CLASSES = (
     ("wind_5kt", "Differential wind 5 kt", "#0072B2"),
     ("heading_1deg", "Heading estimate 1$^\\circ$", "#D55E00"),
@@ -79,12 +78,23 @@ def rate_per_1k(bucket: dict[str, float]) -> float:
 def render_exceedance(aggregate: dict, output_pdf: Path) -> None:
     fig, ax = plt.subplots(figsize=(5.4, 3.6))
     for key, label, colour in EXCEEDANCE_CLASSES:
+        # The factor grid comes from the campaign labels themselves, so a
+        # denser sweep in the runner shows up here without a matching edit.
+        factors = sorted(
+            float(config_label.rsplit("_x", 1)[1])
+            for campaign, config_label, suite in aggregate
+            if campaign == "exceedance"
+            and suite == "boundary"
+            and config_label.startswith(f"{key}_x")
+        )
+        if not factors:
+            raise SystemExit(f"no exceedance arms found for class {key}")
         rates = [
             rate_per_1k(aggregate[("exceedance", f"{key}_x{factor:g}", "boundary")])
-            for factor in EXCEEDANCE_FACTORS
+            for factor in factors
         ]
         plotted = [max(rate, FLOOR_PER_1K) for rate in rates]
-        ax.plot(EXCEEDANCE_FACTORS, plotted, marker="o", ms=4.5, lw=1.6, color=colour, label=label)
+        ax.plot(factors, plotted, marker="o", ms=3.6, lw=1.6, color=colour, label=label)
 
     ax.axvline(1.0, color="#6b7280", lw=1.0, ls=":")
     ax.text(
