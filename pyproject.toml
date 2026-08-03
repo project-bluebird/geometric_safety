@@ -13,7 +13,7 @@ description = "Geometric reachability-based safety filtering for air traffic con
 license = "MIT"
 name = "geometric_safety"
 requires-python = ">=3.13,<3.14"
-version = "0.3.2"
+version = "0.3.3"
 
 [project.urls]
 Repository = "https://github.com/project-bluebird/geometric_safety"
