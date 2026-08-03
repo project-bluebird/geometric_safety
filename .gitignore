@@ -55,7 +55,7 @@ paper/results/*.tar.gz
 !paper/results/sampling_sweep_20260729.tar.gz
 !paper/results/schedule_enumeration_20260722.tar.gz
 !paper/results/paper_full_g2b_20260731.tar.gz
-!paper/results/robustness_compact_dense_20260801.tar.gz
+!paper/results/robustness_compact_dense2_20260802.tar.gz
 !paper/results/sampling_sweep_g2b_20260731.tar.gz
 !paper/results/schedule_enumeration_g2b_20260731.tar.gz
 !paper/results/slack_band_02_g2b_20260731.tar.gz

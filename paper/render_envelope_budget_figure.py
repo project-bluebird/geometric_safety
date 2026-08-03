@@ -138,7 +138,7 @@ def render(curves: dict[str, np.ndarray], output_pdf: Path) -> None:
     ax.text(
         12.0,
         -0.32,
-        "allowance exhausts the threshold",
+        "allowance exceeds the threshold",
         fontsize=8.0,
         color="#6b7280",
         va="top",
