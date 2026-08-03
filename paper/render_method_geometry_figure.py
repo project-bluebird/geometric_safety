@@ -371,7 +371,7 @@ def draw_straight_panel(ax: plt.Axes) -> None:
     ax.text(
         float(query_point[0] + 0.9),
         float(query_point[1] + 0.3),
-        "$-r_0$",
+        "$-\\boldsymbol{r}_0$",
         fontsize=9.5,
         ha="left",
         color=CONFLICT_COLOUR,
@@ -391,7 +391,7 @@ def draw_straight_panel(ax: plt.Axes) -> None:
     )
     corner_label = corner_displacements_nm[np.argmax(corner_displacements_nm[:, 0])]
     ax.annotate(
-        "$T v_i$",
+        "$T \\boldsymbol{v}_i$",
         xy=tuple(corner_label),
         xytext=(corner_label[0] + 1.2, corner_label[1] - 4.4),
         fontsize=9.5,
@@ -443,7 +443,7 @@ def draw_turn_panel(ax: plt.Axes, scenario: TurnScenario, hull_times_s: np.ndarr
     ax.text(
         float(start[0] + 1.3),
         float(start[1] + 0.2),
-        "$r_0$",
+        "$\\boldsymbol{r}_0$",
         fontsize=9.5,
         ha="left",
         color=A_COLOUR,
@@ -486,7 +486,7 @@ def draw_turn_panel(ax: plt.Axes, scenario: TurnScenario, hull_times_s: np.ndarr
         zorder=30,
     )
     ax.annotate(
-        "$\\|r\\| = D$",
+        "$\\|\\boldsymbol{r}\\| = D$",
         xy=(scenario.threshold_nm * np.sin(np.deg2rad(285.0)), scenario.threshold_nm * np.cos(np.deg2rad(285.0))),
         xytext=(-13.6, 3.4),
         fontsize=9.5,
