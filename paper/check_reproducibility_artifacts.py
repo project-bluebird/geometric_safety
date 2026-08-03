@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check that a paper reproducibility run contains the expected artifacts."""
+"""Check that a paper reproducibility run contains the expected artefacts."""
 
 from __future__ import annotations
 

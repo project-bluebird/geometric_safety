@@ -126,7 +126,7 @@ paper_eval_outputs/<run>/rendered_figures/
     ...
 ```
 
-It also writes the versioned supplementary projection artifact:
+It also writes the versioned supplementary projection artefact:
 
 ```text
 paper/results/projection_deterministic_51_cap_100nmi.tar.gz
@@ -138,9 +138,9 @@ and a compact archive of the full saved run:
 paper/results/<run>.tar.gz
 ```
 
-See `paper/reproducibility_manifest.md` for artifact-to-claim mappings.
+See `paper/reproducibility_manifest.md` for artefact-to-claim mappings.
 
-To check that a completed run contains the expected source artifacts:
+To check that a completed run contains the expected source artefacts:
 
 ```bash
 uv run python -m paper.check_reproducibility_artifacts paper_eval_outputs/<run>

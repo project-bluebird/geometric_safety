@@ -183,9 +183,9 @@ Supports both fixed-heading and turn-aware modes.
 
 - **Fixed heading mode** — sweeps aircraft B's initial position
   across a configurable grid, showing the straight-line reachable
-  envelopes over time.
+  hulls over time.
 - **Turn aware mode** — uses configured initial headings, target
-  headings, turn rates, and optional turn-speed robustness margin.
+  headings, turn rates, and an optional in-turn speed allowance.
   The detail view shows spatial trajectories, the relative hull at
   the selected time, and the distance-vs-time curve.
 

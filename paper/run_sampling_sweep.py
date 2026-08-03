@@ -139,7 +139,7 @@ def collect_misses(
     """Record every false-safe baseline encounter verbatim.
 
     Each record carries the full encounter parameters and the intervals that
-    missed it, so any miss can be reproduced and inspected from the artifact
+    missed it, so any miss can be reproduced and inspected from the artefact
     alone.
     """
     misses = []

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the manuscript evaluation package and write paper-ready artifacts."""
+"""Run the manuscript evaluation package and write paper-ready artefacts."""
 
 from __future__ import annotations
 
