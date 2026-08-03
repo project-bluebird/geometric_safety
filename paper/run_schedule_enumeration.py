@@ -2,12 +2,12 @@
 
 The manuscript's in-turn speed-variation proposition states a deviation envelope
 together with a conservatism remark. This module computes the exact worst case
-over the full measurable schedule class, not a discretisation of it, and writes
-the comparison against the proven envelope and the superseded buffer as a
-pipeline artifact.
+over the full measurable speed-profile class, not a discretisation of it, and
+writes the comparison against the proven envelope and the superseded buffer as
+a pipeline artefact.
 
 The computation: for one aircraft with unit turn duration and unit excursion
-bound, the deviation of a schedule ``f`` with ``f(xi)`` in ``[-beta, alpha]``
+bound, the deviation of a speed profile ``f`` with ``f(xi)`` in ``[-beta, alpha]``
 from the constant-speed position is ``v = integral f(xi) u(phi(xi)) dxi``. The
 distance from the perturbed position to the admissible constant-speed segment is
 a maximum over unit directions ``g`` of ``g . v`` minus the segment's support,

@@ -228,7 +228,7 @@ which remains available as an opt-out for comparison. The local bound is the
 default because it uses the known heading profiles on the interval instead of
 assuming worst-case anti-parallel closing everywhere.
 
-The practical reason this is cheap is that each heading profile is piecewise linear in
+The practical reason this is fast is that each heading profile is piecewise linear in
 time: turn at fixed rate until a known completion time, then hold the target heading.
 Hence the relative heading on any subinterval between turn-completion events is linear.
 For one speed corner pair,
@@ -915,7 +915,7 @@ def _interval_local_lipschitz_mps(
 
     Because each heading profile is piecewise linear in time, the relative heading on
     each subinterval is linear. Therefore the supremum is attained at a subinterval
-    endpoint or at an anti-parallel crossing, which makes the bound cheap to compute and
+    endpoint or at an anti-parallel crossing, which makes the bound quick to compute and
     straightforward to justify.
     """
     if t1_s <= t0_s:
@@ -1108,23 +1108,23 @@ def _turn_speed_schedule_envelope_m(
     Return the one-aircraft deviation envelope for bounded in-turn speed variation.
 
     The perturbed class holds the realised constant speed everywhere except during the
-    active turn, where the instantaneous speed may follow any measurable schedule inside
+    active turn, where the instantaneous speed may follow any measurable speed profile inside
     `[s - delta, s + delta]` intersected with the admissible interval. The intersection
     is essential: excursions beyond the admissible interval cannot be absorbed along
     track and admit no envelope of this shape (see the paper's robustness section).
 
-    For a commanded sweep `|dH| <= pi/2` the proven envelope is
+    For an instructed sweep `|dH| <= pi/2` the proven envelope is
 
         delta * t_active * (1 - cos(theta_a)) / theta_a,
 
     which never exceeds the coarser `delta * t_active * sin(theta_a / 2)`
-    bound and is approached by extreme schedules in the long-horizon limit. For
-    larger commanded sweeps the unconditional fallback
+    bound and is approached by extreme speed profiles in the long-horizon limit. For
+    larger instructed sweeps the unconditional fallback
 
         min(2 * delta, width) * 4 * t_active * (1 - cos(theta_a / 2)) / theta_a
 
     applies, where `width` is the admissible interval width. The form is selected
-    once per aircraft from the TOTAL commanded sweep, not from the sweep completed
+    once per aircraft from the TOTAL instructed sweep, not from the sweep completed
     by the query time: a per-time switch could step downward at the pi/2 crossing
     when `width < ~0.854 * delta`, breaking the nondecreasing-envelope hypothesis
     of the inflated interval certificate. Each form on its own is nondecreasing in
@@ -1171,13 +1171,13 @@ def _turn_execution_envelope_m(
 
     The perturbed class delays turn initiation by up to `turn_delay_max_s` seconds and
     scales the turn rate by `(1 + e)` with `|e| <= turn_rate_error_max < 1`, ending at
-    the commanded absolute target heading. The envelope integrates the worst-case
+    the instructed absolute target heading. The envelope integrates the worst-case
     heading-profile gap and multiplies by the maximum speed:
 
         s_max * [ min(|omega| t_d, |dH|) * min(t, tau + t_d)
                   + e * |dH| * min(t, tau / (1 - e)) ].
 
-    The value saturates shortly after the commanded turn completes.
+    The value saturates shortly after the instructed turn completes.
     """
     if t_s <= 0.0 or (turn_delay_max_s <= 0.0 and turn_rate_error_max <= 0.0):
         return 0.0
@@ -1303,7 +1303,7 @@ def _catch_up_projection_interval_with_turns_local(
 
     # Constant and linear envelope terms apply to straight motion too, so the exact
     # straight delegation is only taken when no envelope is configured. The turn-only
-    # envelope terms vanish without a commanded turn.
+    # envelope terms vanish without an instructed turn.
     if not a_is_turning and not b_is_turning and eta_const_m <= 0.0 and eta_rate_mps <= 0.0:
         return catch_up_projection_interval(
             a_lat=0.0,
@@ -1662,7 +1662,7 @@ def catch_up_projection_interval_with_turns(
         Total projection horizon in seconds.
     use_interval_local_lipschitz : bool, optional
         If True, use the tighter interval-local Lipschitz bound derived from the
-        commanded heading profiles. If False, use the simpler global bound
+        instructed heading profiles. If False, use the simpler global bound
         `a_max + b_max`.
     turn_speed_schedule_uncertainty_kt : float, optional
         Deviation-envelope bound for turning aircraft only. If positive, the decision

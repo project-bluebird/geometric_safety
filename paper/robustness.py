@@ -37,9 +37,9 @@ class ExecutionModelConfig:
     outside every stated class, which is where validation happens.
 
     ``exceedance_factor`` scales the applied perturbation magnitudes relative to the
-    bounds the certificate inflates for. In-turn speed schedules stay clipped to the
+    bounds the certificate inflates for. In-turn speed profiles stay clipped to the
     admissible interval regardless, since excursions beyond the interval belong to
-    the interval-widening remedy rather than the schedule class.
+    the interval-widening remedy rather than the in-turn speed class.
 
     ``ou_speed_sigma_kt`` enables mean-reverting speed drift over the whole horizon,
     clipped to the admissible interval. This violates the constant-speed assumption
@@ -287,7 +287,7 @@ def _perturbed_displacement(
     """Integrate one aircraft's perturbed displacement on a uniform time grid.
 
     The executed heading profile applies the sampled delay and rate scale toward the
-    commanded absolute target, the sampled speed schedule applies inside the executed
+    instructed absolute target, the sampled speed profile applies inside the executed
     turn window, and the whole path is rotated by the sampled heading error. Midpoint
     integration on the grid keeps the discretisation error far below envelope scale.
 
@@ -304,7 +304,7 @@ def _perturbed_displacement(
         executed_rate_deg_s = abs(turn_rate_deg_sec) * draw.turn_rate_scale
         if draw.roll_time_s > 0.0:
             # Trapezoidal rate transient: the rate ramps in over roll_time_s and the
-            # cumulative angle is clamped at the commanded turn angle. The ramp-in lag
+            # cumulative angle is clamped at the instructed turn angle. The ramp-in lag
             # is the out-of-class element; the clamp approximates the roll-out.
             ramp = np.clip((mid_times - draw.turn_delay_s) / draw.roll_time_s, 0.0, 1.0)
             cumulative_angle_deg = np.minimum(

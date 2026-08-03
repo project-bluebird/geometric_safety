@@ -87,7 +87,7 @@ class TestCombinedConfigs:
             assert bounds.heading_error_deg > 0.0
             assert bounds.turn_delay_max_s > 0.0
             assert bounds.turn_rate_error_max > 0.0
-            # The schedule class is excluded: no combined derivation with the
+            # The in-turn speed class is excluded: no combined derivation with the
             # execution class exists.
             assert bounds.schedule_uncertainty_kt == 0.0
 

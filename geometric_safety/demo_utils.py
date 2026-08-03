@@ -197,7 +197,7 @@ def local_xy_to_latlon(east_m: float, north_m: float, ref_lat: float, ref_lon: f
 
 
 def turn_duration_s(heading0_deg: float, target_heading_deg: float, turn_rate_deg_sec: float) -> float:
-    """Return the deterministic duration of a commanded constant-rate turn."""
+    """Return the deterministic duration of an instructed constant-rate turn."""
     if turn_rate_deg_sec == 0.0 or heading0_deg == target_heading_deg:
         return 0.0
     return abs(heading_diff(heading0_deg, target_heading_deg, abs_diff=True)) / abs(turn_rate_deg_sec)

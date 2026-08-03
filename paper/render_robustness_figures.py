@@ -1,6 +1,6 @@
-"""Render the robustness-study figures from campaign summaries.
+"""Render the robustness-study figures from run summaries.
 
-Reads the per-seed ``robustness_summary.json`` files of a campaign output tree
+Reads the per-seed ``robustness_summary.json`` files of a robustness output tree
 (full or compact) and renders the exceedance degradation curves and the
 misspecification comparison. Aggregation across seeds is encounter-weighted.
 
@@ -42,12 +42,12 @@ EXCEEDANCE_CLASSES = (
 )
 MISSPEC_GROUPS = (
     ("roll", "Roll-in transient", ("3", "6", "10"), "s"),
-    ("jitter", "Heading jitter", ("0.5", "1", "2"), "$^\\circ$"),
+    ("jitter", "Track-keeping error", ("0.5", "1", "2"), "$^\\circ$"),
     ("ou", "OU speed drift", ("5", "10", "20"), " kt"),
 )
 # Exact zeros are drawn at this value, which is also the axis tick labelled
 # "0", so zero markers sit on the zero line rather than left of it. The
-# smallest nonzero rate in the campaigns is 0.04 per 1000, so the clamp is
+# smallest nonzero rate in the runs is 0.04 per 1000, so the clamp is
 # unambiguous.
 FLOOR_PER_1K = 1e-2
 
@@ -78,7 +78,7 @@ def rate_per_1k(bucket: dict[str, float]) -> float:
 def render_exceedance(aggregate: dict, output_pdf: Path) -> None:
     fig, ax = plt.subplots(figsize=(5.4, 3.6))
     for key, label, colour in EXCEEDANCE_CLASSES:
-        # The factor grid comes from the campaign labels themselves, so a
+        # The factor grid comes from the configuration labels themselves, so a
         # denser sweep in the runner shows up here without a matching edit.
         # Only factors on the 0.1 grid are plotted, so the marker spacing is
         # even; the off-grid 0.75 and 1.25 arms stay in the archive and the

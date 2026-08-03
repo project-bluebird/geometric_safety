@@ -60,7 +60,7 @@ reduce `N_JOBS` or run the smoke test first with `QUICK=1`.
 
 #### Full data stage
 
-Run the expensive data/log generation stage with:
+Run the slow data/log generation stage with:
 
 ```bash
 N_JOBS=128 ./paper/run_full_results.sh \
@@ -182,7 +182,7 @@ uv run python -m paper.run_projection_sweep \
 #### Step 3: Render figures
 
 This reads the saved outputs and renders figures without rerunning the
-expensive evaluation. The path below is the first seed run produced by
+slow evaluation. The path below is the first seed run produced by
 the default full pipeline; use the matching `run_00_seed_<seed>` path if
 the seed is changed.
 
@@ -356,9 +356,9 @@ For a non-default seed, replace `run_00_seed_20260325` with the first
 per-seed run directory in `main_evaluation/`. For a single-seed run,
 use `paper_eval_outputs/<run>/main_evaluation` directly.
 
-## Robustness campaigns
+## Robustness experiments
 
-The out-of-model robustness study runs three campaign layers over the broad
+The out-of-model robustness study runs three experiment sets over the broad
 mixed-turn suite plus per-configuration boundary suites (encounters certified
 safe with margin near the deviation envelope, where violations can actually
 occur): `inclass` verification of the envelope implementation, `misspec`
@@ -372,7 +372,7 @@ uv run python -m paper.run_robustness --quick --n-jobs 8 \
     --output-dir paper_eval_outputs/robustness_smoke
 ```
 
-Full five-seed campaign (about two hours on a 96-worker server):
+Full five-seed run (about two hours on a 96-worker server):
 
 ```bash
 uv run python -m paper.run_robustness \
@@ -388,7 +388,7 @@ config, suite, and encounter), `robustness_summary.csv`, and
 runs. In-class total violations must be zero; the runner prints a warning
 otherwise.
 
-To archive a campaign compactly for the repository and render its figures:
+To archive a run compactly for the repository and render its figures:
 
 ```bash
 uv run python -m paper.archive_robustness \

@@ -621,7 +621,7 @@ class TestHelpers:
         assert envelope_m == pytest.approx(expected, rel=1e-12)
 
     def test_turn_speed_schedule_envelope_selects_form_by_total_sweep(self):
-        """A wide commanded turn must use the fallback form at every query time.
+        """A wide instructed turn must use the fallback form at every query time.
 
         A per-time switch at the pi/2 crossing can step DOWN when the admissible
         interval width is below ~0.854 * delta, which would break the

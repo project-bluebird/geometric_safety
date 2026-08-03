@@ -231,7 +231,7 @@ def bank_limited_turn_rate_deg_s(max_speed_kt: float) -> float:
     achievable rate falls with speed: about 1.1 deg/s at 450 kt against a
     25 degree bank limit, where the commonly quoted 3 deg/s standard rate
     would need over 50 degrees of bank. The cap uses the aircraft's maximum
-    admissible speed so the commanded rate stays flyable across its whole
+    admissible speed so the instructed rate stays flyable across its whole
     speed interval.
     """
     speed_mps = max_speed_kt * KT_TO_MPS
@@ -824,9 +824,9 @@ def benchmark_solver_runtimes(
 
     With ``envelope_bounds`` set (a ``paper.robustness.PerturbationBounds``),
     each decision runs with the corresponding threshold inflation active, which
-    is the configuration a robust deployment would actually pay for: inflation
-    can force extra subdivision, so the un-inflated timing alone understates
-    the deployed cost.
+    is the configuration a deployment with envelopes enabled would actually
+    run: inflation can force extra subdivision, so the un-inflated timing
+    alone understates the deployed runtime.
     """
     if envelope_bounds is not None:
         from paper.robustness import solver_envelope_kwargs

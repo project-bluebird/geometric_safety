@@ -203,9 +203,9 @@ class TestExecutionModelConfig:
         assert rolled != pytest.approx(base, abs=1e-6)
 
     def test_straight_ou_drift_never_violates_plain_certificate(self):
-        """Proposition 2.1 in action: whole-horizon speed variation is free when straight.
+        """Proposition 2.1 in action: whole-horizon speed variation is harmless when straight.
 
-        For straight-heading pairs, any measurable speed schedule inside the interval
+        For straight-heading pairs, any measurable speed profile inside the interval
         reaches only positions the constant-speed hull already covers, so even the
         uninflated certificate must survive OU speed drift.
         """
@@ -330,7 +330,7 @@ class TestMisspecDrawDecoupling:
         ids=["roll_delay_env", "jitter_heading_env"],
     )
     def test_roll_and_jitter_dominated_by_matching_envelopes(self, execution, bounds):
-        """The delay/heading envelopes are valid for pure roll/jitter: zero violations."""
+        """The delay/heading envelopes are valid for pure roll and track-keeping error: zero violations."""
         encounters = [
             _turning_encounter(9.0, 45.0),
             _turning_encounter(12.0, 60.0),

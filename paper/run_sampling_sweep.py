@@ -4,10 +4,10 @@ For each sampling interval, the runner scores the uniform-sampling baseline
 and its certified variant against the dense reference on the broad mixed-turn
 suite. The certified variant clears samples against ``D + L*dt/2`` with the
 global Lipschitz constant, which makes uniform sampling a sound
-continuous-time certificate at a conservatism cost the sweep quantifies. Miss
+continuous-time certificate with a conservatism the sweep quantifies. Miss
 counts are reported alongside the work of the adaptive certified solver
 measured in fixed-time hull evaluations, and every false-safe baseline
-encounter is recorded verbatim so each miss is reproducible from the artifact
+encounter is recorded verbatim so each miss is reproducible from the archive
 alone.
 
     uv run python -m paper.run_sampling_sweep --quick \
@@ -57,11 +57,11 @@ def _evaluate_chunk(args: tuple[list[tuple[int, Encounter]], tuple[float, ...]])
             encounter, dt_min_s=CERT_DT_MIN_S, use_interval_local_lipschitz=True
         )
         # Global Lipschitz constant: the pair can close no faster than the two
-        # speed caps combined. Clearing D + L*dt/2 at every sample certifies
-        # the whole horizon, so uniform sampling plus this shift is itself a
-        # sound continuous-time certificate; the sweep reports what that
-        # certified variant costs in conservatism relative to the adaptive
-        # search.
+        # upper speed bounds combined. Clearing D + L*dt/2 at every sample
+        # certifies the whole horizon, so uniform sampling plus this shift is
+        # itself a sound continuous-time certificate; the sweep reports how
+        # much conservatism that certified variant adds relative to the
+        # adaptive search.
         lipschitz_mps = (
             (encounter.a_speed_kt + encounter.speed_diff_kt)
             + (encounter.b_speed_kt + encounter.speed_diff_kt)

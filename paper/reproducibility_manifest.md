@@ -10,7 +10,7 @@ paper/results/paper_full_20260502_0738.tar.gz
 ```
 
 Use this archive to verify the manuscript figures and numerical claims without
-rerunning the expensive full data stage.
+rerunning the slow full data stage.
 
 ## Full Data Stage
 
@@ -32,7 +32,7 @@ Primary outputs:
 | --- | --- |
 | `paper_eval_outputs/<run>/logs/main_evaluation.log` | Terminal log for the five-seed main evaluation. |
 | `paper_eval_outputs/<run>/main_evaluation/campaign_summary.json` | Source for aggregate robustness claims and rule-of-three bound. |
-| `paper_eval_outputs/<run>/main_evaluation/campaign_runs.csv` | Per-seed compact campaign table. |
+| `paper_eval_outputs/<run>/main_evaluation/campaign_runs.csv` | Per-seed compact summary table. |
 | `paper_eval_outputs/<run>/main_evaluation/run_*_seed_*/summary.json` | Per-seed summaries, narrative scenarios, ablation rows, and runtime summaries. |
 | `paper_eval_outputs/<run>/main_evaluation/run_*_seed_*/run_record.json` | Per-seed count-level records used to build aggregate summaries. |
 | `paper_eval_outputs/<run>/main_evaluation/run_*_seed_*/stress_map_source.csv` | Cell counts and rates for the mixed-turn stress-map figure. |

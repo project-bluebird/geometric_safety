@@ -1,6 +1,6 @@
-"""Build a compact, repo-committable archive from a full robustness campaign run.
+"""Build a compact, repo-committable archive from a full robustness run.
 
-The full campaign output carries wide per-row CSVs whose config columns repeat on
+The full run output carries wide per-row CSVs whose config columns repeat on
 every row. This tool keeps the per-run summaries and boundary caches verbatim and
 slims the rows to the columns the figures and the manuscript fact checker consume,
 compressed per run. Usage:

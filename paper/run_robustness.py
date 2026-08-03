@@ -1,16 +1,16 @@
-"""Robustness campaign runner for the manuscript's out-of-model study.
+"""Robustness experiment runner for the manuscript's out-of-model study.
 
-Three campaign layers, run over the broad mixed-turn suite:
+Three experiment sets, run over the broad mixed-turn suite:
 
 1. ``inclass``: executed motion drawn from the stated perturbation classes with adversarial
    draws. The propositions require zero violations of the inflated certificate, so
-   this layer verifies the envelope implementation and measures the certification
-   cost of inflation.
-2. ``misspec``: executed motion drawn from outside the commanded model (OU speed drift over
-   the whole horizon, turn-rate roll-in transients, track-keeping heading jitter),
+   this set verifies the envelope implementation and measures the certification-rate
+   reduction from inflation.
+2. ``misspec``: executed motion drawn from outside the instructed profile (OU speed drift over
+   the whole horizon, turn-rate roll-in transients, track-keeping error),
    with no in-class perturbation added. Each configuration is scored against the
    plain certificate and against one inflated with the matching envelope: valid by
-   domination for roll and jitter (zero violations required), a genuine
+   domination for roll and track-keeping error (zero violations required), a genuine
    misspecified proxy for OU drift (violations possible and informative).
 3. ``exceedance``: applied perturbations scaled past the stated bounds while the
    certificate inflates for the stated bounds, producing graceful-degradation
@@ -159,7 +159,7 @@ def generate_boundary_suite(
 
 @dataclass(frozen=True)
 class CampaignConfig:
-    """One named configuration inside a campaign layer.
+    """One named configuration inside an experiment set.
 
     ``bounds`` drives the certificate inflation. ``draw_bounds``, when set,
     replaces ``bounds`` for the simulator's in-class draws; misspec configs set
@@ -217,9 +217,9 @@ def build_misspec_configs() -> list[CampaignConfig]:
     envelope. The executed motion is exactly the out-of-model behaviour in both
     arms (``draw_bounds`` is null), so the inflation covers the behaviour alone.
     The delay envelope with ``t_d`` equal to the ramp time dominates the roll-in
-    transient, and the heading envelope dominates bounded track-keeping jitter,
+    transient, and the heading envelope dominates bounded track-keeping error,
     so the manuscript's domination remarks make those two certificates valid and
-    the propositions require zero violations. The schedule envelope remains a
+    the propositions require zero violations. The in-turn speed envelope remains a
     genuine misspecified proxy for OU drift, which acts on straight segments the
     envelope does not cover.
     """
@@ -290,8 +290,8 @@ def build_combined_configs() -> list[CampaignConfig]:
     The manuscript's composition lemma licenses exactly this sum: the
     offset-type envelopes (wind, position) add to any valid envelope, and the
     heading envelope adds to the execution envelope because its proof needs
-    only that the executed path is unit-speed. The in-turn schedule class is
-    deliberately excluded, since its envelope is derived against the commanded
+    only that the executed path is unit-speed. The in-turn speed class is
+    deliberately excluded, since its envelope is derived against the instructed
     rate and no combined derivation with the execution class exists. The
     propositions therefore require zero violations in both configurations.
     """

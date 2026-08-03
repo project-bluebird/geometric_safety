@@ -1,7 +1,7 @@
 """Export paper figure files from the public reproduction pipeline.
 
-The expensive empirical source data are produced by this repository's
-``paper`` pipeline. This wrapper regenerates the explanatory application
+The empirical source data are produced by this repository's ``paper``
+pipeline in its slow full-data stage. This wrapper regenerates the explanatory application
 figures from the public code and copies the rendered empirical PDFs from a
 saved paper run into a local ``manuscript/figures/...`` output tree.
 """

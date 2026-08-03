@@ -180,7 +180,7 @@ def small_convex_hull(pts: np.ndarray) -> np.ndarray:
         return np.empty((0, 2), dtype=np.float64)
 
     # Deduplicate in-place; these structured point sets are tiny enough that an O(n^2)
-    # pass is cheaper than setting up a more general sorting pipeline.
+    # pass is quicker than setting up a more general sorting pipeline.
     unique_pts = np.empty((n, 2), dtype=np.float64)
     unique_len = 0
     for i in range(n):
@@ -216,7 +216,7 @@ def small_convex_hull(pts: np.ndarray) -> np.ndarray:
             out[1, :] = unique_pts[1]
         return out
 
-    # Gift-wrap the hull. For <= 5 points this is simpler and cheaper than invoking the
+    # Gift-wrap the hull. For <= 5 points this is simpler and faster than invoking the
     # fully generic hull builder.
     start = 0
     for i in range(1, unique_len):

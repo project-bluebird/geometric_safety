@@ -54,10 +54,10 @@ SUITE_PROFILES = {
         "mixed_turn_n": 100_000,
         "near_threshold_n": 100_000,
         # The just-unsafe band accepts only a few percent of the generator's
-        # output and every candidate costs a dense-reference evaluation, so
-        # 20k per seed (100k pooled over five) buys the same rule-of-three
-        # strength as the sweep's unsafe population at a fraction of the
-        # sampling cost.
+        # output and every candidate takes a dense-reference evaluation, so
+        # 20k per seed (100k pooled over five) gives the same rule-of-three
+        # strength as the sweep's unsafe population for a fraction of the
+        # sampling work.
         "just_unsafe_n": 20_000,
     },
 }
@@ -73,7 +73,7 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         nargs="+",
         default=None,
-        help="Aggregate exact campaign outputs from existing evaluation run directories.",
+        help="Aggregate the multi-seed summary outputs from existing evaluation run directories.",
     )
     parser.add_argument(
         "--render-figures-from",
@@ -1103,7 +1103,7 @@ def build_table_1(config: EvaluationConfig) -> list[dict[str, Any]]:
         {
             "section": "Comparators",
             "item": "Nominal-motion proxy",
-            "definition": "Same commanded turn law, one nominal speed per aircraft, no speed envelope.",
+            "definition": "Same instructed turn law, one nominal speed per aircraft, no speed envelope.",
         },
         {
             "section": "Comparators",
