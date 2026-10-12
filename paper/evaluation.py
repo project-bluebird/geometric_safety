@@ -611,14 +611,14 @@ def count_fixed_time_evals(
     """Count fixed-time hull evaluations using the Python shadow of the local core."""
     py_func = ra._catch_up_projection_interval_with_turns_local.py_func
     globals_dict = py_func.__globals__
-    original = globals_dict["_min_distance_to_relative_hull_at_time"]
+    original = globals_dict["_sample_relative_hull_at_time"]
     counter = {"n": 0}
 
     def wrapped(*args: object, **kwargs: object) -> object:
         counter["n"] += 1
         return original(*args, **kwargs)
 
-    globals_dict["_min_distance_to_relative_hull_at_time"] = wrapped
+    globals_dict["_sample_relative_hull_at_time"] = wrapped
     try:
         result = py_func(
             rel_pos0=encounter.rel_pos0(),
@@ -638,7 +638,7 @@ def count_fixed_time_evals(
             min_cert_interval_s=dt_min_s,
         )
     finally:
-        globals_dict["_min_distance_to_relative_hull_at_time"] = original
+        globals_dict["_sample_relative_hull_at_time"] = original
     return counter["n"], MethodOutcome.from_tuple(result, encounter.separation_threshold_m)
 
 

@@ -220,6 +220,31 @@ class TestStraightStraightRegression:
         assert ref_dist == pytest.approx(turn_dist, abs=1e-6), f"min_dist mismatch: ref={ref_dist}, turn={turn_dist}"
         assert ref_time == pytest.approx(turn_time, abs=1e-6), f"time mismatch: ref={ref_time}, turn={turn_time}"
 
+    def test_sliver_hull_closest_time(self):
+        """Near-antiparallel headings collapse the reachable hull to a razor-thin
+        sliver, and the closest-time recovery must still report the time that
+        attains the minimum rather than clipping to the horizon end. The values
+        are pinned against an arbitrary-precision reimplementation."""
+        import numpy as np
+
+        is_separated, min_dist_m, closest_time_s = catch_up_projection_interval(
+            a_lat=0.0,
+            a_lon=0.0,
+            a_heading=32.61553945503712,
+            a_speed_kt=234.3488541869565,
+            b_lat=0.0,
+            b_lon=0.0,
+            b_heading=212.6143910177294,
+            b_speed_kt=368.7382526298944,
+            separation_threshold_m=5.0 * NMI_TO_M,
+            speed_diff_kt=27.836888098896647,
+            projection_time_s=1200.0,
+            rel_pos_override=np.array([-21453.687270485607, -56678.73631862431]),
+        )
+        assert is_separated
+        assert min_dist_m == pytest.approx(12478.440009027207, abs=1e-4)
+        assert closest_time_s == pytest.approx(191.1478471721988, abs=1e-3)
+
     @pytest.mark.parametrize("speed_diff_kt", [10, 25, 50])
     @pytest.mark.parametrize("proj_time_min", [5, 15, 30])
     @pytest.mark.parametrize("sep_nmi", [3, 5, 7])
@@ -560,8 +585,8 @@ class TestHelpers:
         expected = (50.0 * KT_TO_MPS) * 30.0 * (1.0 - math.cos(theta_a)) / theta_a
         assert envelope_m == pytest.approx(expected, rel=1e-12)
 
-    def test_turn_speed_schedule_envelope_dominated_by_old_buffer(self):
-        """The proven envelope should never exceed the previously shipped buffer."""
+    def test_turn_speed_schedule_envelope_never_exceeds_sine_buffer(self):
+        """The proven envelope never exceeds the coarser sin(theta/2) bound."""
         for sweep_deg in (10.0, 30.0, 60.0, 90.0):
             for t_s in (5.0, 15.0, 30.0, 120.0):
                 envelope_m = _turn_speed_schedule_envelope_m(
@@ -575,8 +600,8 @@ class TestHelpers:
                 )
                 t_active = min(t_s, sweep_deg / 3.0)
                 theta_active = 3.0 * DEG_TO_RAD * t_active
-                old_buffer_m = (25.0 * KT_TO_MPS) * t_active * math.sin(0.5 * theta_active)
-                assert envelope_m <= old_buffer_m + 1e-12
+                sine_buffer_m = (25.0 * KT_TO_MPS) * t_active * math.sin(0.5 * theta_active)
+                assert envelope_m <= sine_buffer_m + 1e-12
 
     def test_turn_speed_schedule_envelope_beyond_ninety_uses_fallback(self):
         """Sweeps beyond 90 degrees should use the unconditional fallback bound."""
@@ -594,6 +619,44 @@ class TestHelpers:
         amplitude = min(2.0 * 10.0 * KT_TO_MPS, 100.0)
         expected = amplitude * 4.0 * 50.0 * (1.0 - math.cos(0.5 * theta_a)) / theta_a
         assert envelope_m == pytest.approx(expected, rel=1e-12)
+
+    def test_turn_speed_schedule_envelope_selects_form_by_total_sweep(self):
+        """A wide instructed turn must use the fallback form at every query time.
+
+        A per-time switch at the pi/2 crossing can step DOWN when the admissible
+        interval width is below ~0.854 * delta, which would break the
+        nondecreasing-envelope hypothesis of the inflated interval certificate.
+        """
+        kwargs = {
+            "heading0_deg": 0.0,
+            "target_heading_deg": 180.0,
+            "turn_rate_deg_sec": 3.0,
+            "schedule_uncertainty_kt": 20.0,
+            "min_speed_mps": 133.0,
+            "max_speed_mps": 135.0,
+        }
+        # Before the pi/2 crossing (25 s -> 75 degrees completed) the value must
+        # already be the fallback form, selected from the 180-degree total sweep.
+        envelope_m = _turn_speed_schedule_envelope_m(t_s=25.0, **kwargs)
+        theta_a = 3.0 * DEG_TO_RAD * 25.0
+        amplitude = min(2.0 * 20.0 * KT_TO_MPS, 135.0 - 133.0)
+        expected = amplitude * 4.0 * 25.0 * (1.0 - math.cos(0.5 * theta_a)) / theta_a
+        assert envelope_m == pytest.approx(expected, rel=1e-12)
+
+    def test_turn_speed_schedule_envelope_is_nondecreasing_across_pi_over_two(self):
+        """Regression: the envelope must never decrease in time for any sweep."""
+        for width_mps in (2.0, 8.0, 60.0):
+            kwargs = {
+                "heading0_deg": 0.0,
+                "target_heading_deg": 180.0,
+                "turn_rate_deg_sec": 3.0,
+                "schedule_uncertainty_kt": 20.0,
+                "min_speed_mps": 134.0 - 0.5 * width_mps,
+                "max_speed_mps": 134.0 + 0.5 * width_mps,
+            }
+            values = [_turn_speed_schedule_envelope_m(t_s=t_s, **kwargs) for t_s in np.arange(0.5, 90.0, 0.5)]
+            diffs = np.diff(np.asarray(values))
+            assert float(diffs.min()) >= -1e-9
 
     def test_turn_speed_schedule_envelope_is_zero_for_straight_flight(self):
         """The envelope should vanish when no turn is flown."""
@@ -1514,47 +1577,6 @@ class TestEdgeCases:
         assert result_turn[1] == pytest.approx(result_ref[1], abs=1e-6)
         assert result_turn[2] == pytest.approx(result_ref[2], abs=1e-6)
 
-    def test_very_small_turn(self):
-        """Turn angle < 1 deg should be treated as straight."""
-        a_lat, a_lon = 51.0, -1.0
-        b_lat, b_lon = 51.02, -0.98
-
-        result_turn = catch_up_projection_interval_with_turns(
-            a_lat=a_lat,
-            a_lon=a_lon,
-            a_heading0_deg=45.0,
-            a_target_heading_deg=45.5,  # 0.5 deg turn
-            a_speed_kt=350.0,
-            a_turn_rate_deg_sec=3.0,
-            b_lat=b_lat,
-            b_lon=b_lon,
-            b_heading0_deg=135.0,
-            b_target_heading_deg=135.0,
-            b_speed_kt=350.0,
-            b_turn_rate_deg_sec=3.0,
-            separation_threshold_m=5.0 * NMI_TO_M,
-            speed_diff_kt=25.0,
-            projection_time_s=600.0,
-        )
-
-        result_ref = catch_up_projection_interval(
-            a_lat=a_lat,
-            a_lon=a_lon,
-            a_heading=45.5,  # uses target heading
-            a_speed_kt=350.0,
-            b_lat=b_lat,
-            b_lon=b_lon,
-            b_heading=135.0,
-            b_speed_kt=350.0,
-            separation_threshold_m=5.0 * NMI_TO_M,
-            speed_diff_kt=25.0,
-            projection_time_s=600.0,
-        )
-
-        assert result_turn[0] == result_ref[0]
-        assert result_turn[1] == pytest.approx(result_ref[1], abs=1e-6)
-        assert result_turn[2] == pytest.approx(result_ref[2], abs=1e-6)
-
     def test_large_turn_180(self):
         """180 degree turn (reversal) should work."""
         a_lat, a_lon = 51.0, -1.0
@@ -1581,48 +1603,6 @@ class TestEdgeCases:
         # Basic sanity
         assert min_dist >= 0.0
         assert 0.0 <= closest_time <= 1200.0
-
-    def test_omega_zero_with_nonzero_turn(self):
-        """`turn_rate_deg_sec = 0` with different headings should treat the path as straight."""
-        a_lat, a_lon = 51.0, -1.0
-        b_lat, b_lon = 51.02, -0.98
-
-        result_turn = catch_up_projection_interval_with_turns(
-            a_lat=a_lat,
-            a_lon=a_lon,
-            a_heading0_deg=0.0,
-            a_target_heading_deg=30.0,
-            a_speed_kt=350.0,
-            a_turn_rate_deg_sec=0.0,  # no turn rate => treated as straight
-            b_lat=b_lat,
-            b_lon=b_lon,
-            b_heading0_deg=90.0,
-            b_target_heading_deg=90.0,
-            b_speed_kt=350.0,
-            b_turn_rate_deg_sec=0.0,
-            separation_threshold_m=5.0 * NMI_TO_M,
-            speed_diff_kt=25.0,
-            projection_time_s=600.0,
-        )
-
-        # Should use target headings for the straight-line solver.
-        result_ref = catch_up_projection_interval(
-            a_lat=a_lat,
-            a_lon=a_lon,
-            a_heading=30.0,
-            a_speed_kt=350.0,
-            b_lat=b_lat,
-            b_lon=b_lon,
-            b_heading=90.0,
-            b_speed_kt=350.0,
-            separation_threshold_m=5.0 * NMI_TO_M,
-            speed_diff_kt=25.0,
-            projection_time_s=600.0,
-        )
-
-        assert result_turn[0] == result_ref[0]
-        assert result_turn[1] == pytest.approx(result_ref[1], abs=1e-6)
-        assert result_turn[2] == pytest.approx(result_ref[2], abs=1e-6)
 
     def test_projection_time_less_than_turn(self):
         """If projection_time < turn_duration, only the turning portion is relevant."""

@@ -17,7 +17,7 @@ from typing import Any
 import numpy as np
 
 from geometric_safety import relevant_aircraft as ra
-from geometric_safety.util import DEG_TO_RAD, KT_TO_MPS, heading_diff
+from geometric_safety.util import DEG_TO_RAD, KT_TO_MPS, shortest_turn_parameters
 from paper.evaluation import Encounter
 
 SIM_COARSE_DT_S = 0.25
@@ -99,9 +99,7 @@ def solver_envelope_kwargs(encounter: Encounter, bounds: PerturbationBounds) -> 
     a_max_speed_mps = (encounter.a_speed_kt + encounter.speed_diff_kt) * KT_TO_MPS
     b_max_speed_mps = (encounter.b_speed_kt + encounter.speed_diff_kt) * KT_TO_MPS
     heading_error_rad = bounds.heading_error_deg * DEG_TO_RAD
-    eta_rate_mps = bounds.differential_wind_kt * KT_TO_MPS + heading_error_rad * (
-        a_max_speed_mps + b_max_speed_mps
-    )
+    eta_rate_mps = bounds.differential_wind_kt * KT_TO_MPS + heading_error_rad * (a_max_speed_mps + b_max_speed_mps)
     return {
         "eta_const_m": bounds.position_error_m,
         "eta_rate_mps": eta_rate_mps,
@@ -224,8 +222,9 @@ def _sample_aircraft_draw(
         else:
             turn_rate_scale = float(1.0 + rng.uniform(-bound, bound))
 
-    turn_angle_deg = abs(heading_diff(heading0_deg, target_heading_deg))
-    is_turning = turn_angle_deg >= ra.TURN_HEADING_EPS_DEG and abs(turn_rate_deg_sec) > ra.TURN_RATE_EPS_DEG_PER_S
+    turn_angle_deg, _, _ = shortest_turn_parameters(heading0_deg, target_heading_deg, turn_rate_deg_sec)
+    turn_angle_deg = abs(turn_angle_deg)
+    is_turning = turn_angle_deg != 0.0
 
     if execution.ou_speed_sigma_kt > 0.0:
         schedule_times_s, schedule_speeds_mps = _ou_speed_path_mps(
@@ -298,8 +297,8 @@ def _perturbed_displacement(
     dts_s = np.diff(times_s)
     mid_times = times_s[:-1] + 0.5 * dts_s
 
-    turn_angle_deg = heading_diff(heading0_deg, target_heading_deg)
-    is_turning = abs(turn_angle_deg) >= ra.TURN_HEADING_EPS_DEG and abs(turn_rate_deg_sec) > ra.TURN_RATE_EPS_DEG_PER_S
+    turn_angle_deg, _, _ = shortest_turn_parameters(heading0_deg, target_heading_deg, turn_rate_deg_sec)
+    is_turning = turn_angle_deg != 0.0
     if is_turning:
         executed_rate_deg_s = abs(turn_rate_deg_sec) * draw.turn_rate_scale
         if draw.roll_time_s > 0.0:
@@ -307,9 +306,7 @@ def _perturbed_displacement(
             # cumulative angle is clamped at the commanded turn angle. The ramp-in lag
             # is the out-of-class element; the clamp approximates the roll-out.
             ramp = np.clip((mid_times - draw.turn_delay_s) / draw.roll_time_s, 0.0, 1.0)
-            cumulative_angle_deg = np.minimum(
-                np.cumsum(executed_rate_deg_s * ramp * dts_s), abs(turn_angle_deg)
-            )
+            cumulative_angle_deg = np.minimum(np.cumsum(executed_rate_deg_s * ramp * dts_s), abs(turn_angle_deg))
             headings_deg = heading0_deg + math.copysign(1.0, turn_angle_deg) * cumulative_angle_deg
         else:
             turn_duration_s = abs(turn_angle_deg) / executed_rate_deg_s

@@ -224,11 +224,11 @@ This is tighter than the simpler global bound
 
     L_global = s_A^+ + s_B^+,
 
-which remains available as an option but is no longer the default. The local
-bound is preferred because it uses the known heading profiles on the interval instead of
+which remains available as an opt-out for comparison. The local bound is the
+default because it uses the known heading profiles on the interval instead of
 assuming worst-case anti-parallel closing everywhere.
 
-The practical reason this is cheap is that each heading profile is piecewise linear in
+The practical reason this is fast is that each heading profile is piecewise linear in
 time: turn at fixed rate until a known completion time, then hold the target heading.
 Hence the relative heading on any subinterval between turn-completion events is linear.
 For one speed corner pair,
@@ -255,7 +255,13 @@ Therefore:
     if (d_0 + d_1 - L_I (t_1 - t_0)) / 2 >= D,
     the entire interval is certified safe.
 
-The algorithm starts with [0, T]. If that interval cannot be certified, it samples the
+When the scalar bound fails, the solver also tests fixed separating directions from
+the endpoint hulls and their combined hull. Along each direction, bounds on the
+projected velocities give two affine lower bounds for every speed corner, one from
+each interval endpoint. Their maximum bounds that corner throughout the interval.
+Taking the minimum over the four corners covers every admissible speed pair.
+
+The algorithm starts with [0, T]. If neither certificate succeeds, it samples the
 midpoint exactly, splits the interval in two, and repeats. Refinement continues until
 each interval is either:
 
@@ -376,30 +382,79 @@ import math
 
 import numba
 import numpy as np
+from numpy.typing import NDArray
 
 from geometric_safety.util import (
     DEG_TO_RAD,
     KT_TO_MPS,
     clip_value,
     closest_point_on_convex_polygon,
-    heading_diff,
+    convex_hull,
     heading_to_unit_vector,
     latlon_to_local_xy,
+    shortest_turn_parameters,
     small_convex_hull,
 )
-
-# Headings within this tolerance are treated as straight flight so tiny numerical turns
-# do not trigger the slower turn-aware path.
-TURN_HEADING_EPS_DEG = 1.0
-
-# Turn rates below this threshold are treated as zero to avoid dividing by effectively
-# vanishing angular velocity.
-TURN_RATE_EPS_DEG_PER_S = 1e-6
 
 # The adaptive certifier stops subdividing once an interval is this short. We use 3 s
 # because radar updates arrive every 6 s in practice, so certifying below half a scan
 # interval is usually a good speed/precision balance.
 TURN_TIME_CERT_MIN_INTERVAL_S = 3.0
+
+# Extra numerical margin on turn-certification comparisons. This is a precaution,
+# not a proved bound on the complete floating-point evaluation chain. The mathematical
+# safety theorem assumes exact arithmetic; numerical regression checks do not extend
+# that theorem to every floating-point input.
+TURN_CERT_FP_GUARD_M = 1e-6
+
+# Supported numerical domain: retain at least 512 binary64 relative-resolution
+# units within the comparison margin at the largest evaluated length scale.
+# This engineering policy is not a proved error bound for the evaluation chain.
+TURN_CERT_GUARD_RESOLUTION_FACTOR = 512.0
+NUMERICAL_GEOMETRY_LIMIT_M = TURN_CERT_FP_GUARD_M / (TURN_CERT_GUARD_RESOLUTION_FACTOR * 2.0**-52)
+NUMERICAL_SCALAR_LIMIT = math.sqrt(np.finfo(np.float64).max) / 64.0
+
+DIAGNOSTIC_STRAIGHT_MINIMUM = 0
+DIAGNOSTIC_SAMPLED_MINIMUM = 1
+DIAGNOSTIC_INTERVAL_BOUND = 2
+DIAGNOSTIC_UNAVAILABLE = 3
+
+
+@numba.njit(cache=True, fastmath={"contract"})
+def _geometry_within_numerical_domain(
+    relative_position: NDArray[np.float64], travel_m: float, threshold_m: float
+) -> bool:
+    """Bound initial position plus total travel and the inflated threshold.
+
+    Every evaluated relative position and displacement then has length at most
+    NUMERICAL_GEOMETRY_LIMIT_M. Nonfinite or negative bounds are unsupported.
+    """
+    if not math.isfinite(relative_position[0]) or not math.isfinite(relative_position[1]):
+        return False
+    if not math.isfinite(travel_m) or travel_m < 0.0 or not math.isfinite(threshold_m) or threshold_m < 0.0:
+        return False
+    return (
+        math.hypot(relative_position[0], relative_position[1]) + travel_m <= NUMERICAL_GEOMETRY_LIMIT_M
+        and threshold_m <= NUMERICAL_GEOMETRY_LIMIT_M
+    )
+
+
+@numba.njit(cache=True, fastmath={"contract"})
+def _scalar_within_numerical_range(value: float) -> bool:
+    """Keep speed and time products away from overflow in the reused kernel."""
+    return math.isfinite(value) and 0.0 <= value <= NUMERICAL_SCALAR_LIMIT
+
+
+@numba.njit(cache=True)
+def _record_solver_diagnostic(
+    diagnostic_out: NDArray[np.float64] | None, kind: int, left_s: float, right_s: float
+) -> None:
+    """Fill optional provenance without changing the legacy solver return tuple."""
+    if diagnostic_out is not None:
+        diagnostic_out[0] = kind
+        diagnostic_out[1] = left_s
+        diagnostic_out[2] = right_s
+
 
 # The turn-aware certifier defaults to an interval-local Lipschitz bound because it is
 # less conservative than the simple global closing-rate bound while remaining easy to
@@ -508,7 +563,17 @@ def _closest_time_from_projection(closest_vec: np.ndarray, hull: np.ndarray, T: 
     #
     # The corresponding time is then `t = T (u + v)`. We therefore search all hull
     # vertex pairs and keep the smallest valid `u + v`.
-    best_alpha = np.inf
+    #
+    # The not-found sentinel is a finite value above every valid alpha, never an
+    # infinity: this function can be compiled into fastmath callers, whose
+    # no-infinities assumption makes any comparison against `np.inf` unreliable.
+    best_alpha = 2.0
+
+    # Tolerances are scale-relative, not absolute: this function is also compiled
+    # inside fastmath callers, where reassociation and FMA contraction perturb the
+    # cross products by amounts far above one ulp, and an absolute 1e-12 test then
+    # rejects genuinely collinear configurations on sliver hulls.
+    collinear_tol = 1e-9
 
     # Degenerate ray case: if `p` lies on the segment from the origin to a hull vertex,
     # then only one outer vertex is needed in the representation.
@@ -519,7 +584,7 @@ def _closest_time_from_projection(closest_vec: np.ndarray, hull: np.ndarray, T: 
             continue
 
         cross = a[0] * closest_vec[1] - a[1] * closest_vec[0]
-        if abs(cross) > eps * max(a_norm, norm_closest):
+        if abs(cross) > collinear_tol * a_norm * norm_closest:
             continue
 
         dot = float(np.dot(a, closest_vec))
@@ -530,7 +595,10 @@ def _closest_time_from_projection(closest_vec: np.ndarray, hull: np.ndarray, T: 
         if alpha <= 1.0 + eps and alpha < best_alpha:
             best_alpha = alpha
 
-    # General 2-D case: solve `closest_vec = u a + v b` for each vertex pair.
+    # General 2-D case: solve `closest_vec = u a + v b` for each vertex pair. On
+    # nearly parallel vertex pairs the solve is ill-conditioned, so every candidate
+    # must also reconstruct `closest_vec` before it is accepted; without this guard
+    # a cancellation-corrupted solution can slip through the sign tests.
     for i in range(n):
         a = hull_arr[i]
         for j in range(i + 1, n):
@@ -543,14 +611,20 @@ def _closest_time_from_projection(closest_vec: np.ndarray, hull: np.ndarray, T: 
             u = (closest_vec[0] * b[1] - closest_vec[1] * b[0]) / det
             v = (a[0] * closest_vec[1] - a[1] * closest_vec[0]) / det
 
-            if u < -eps or v < -eps:
+            if u < -collinear_tol or v < -collinear_tol:
+                continue
+
+            residual_x = u * a[0] + v * b[0] - closest_vec[0]
+            residual_y = u * a[1] + v * b[1] - closest_vec[1]
+            residual_tol = collinear_tol * (norm_closest + 1.0)
+            if residual_x * residual_x + residual_y * residual_y > residual_tol * residual_tol:
                 continue
 
             alpha = u + v
             if alpha <= 1.0 + eps and alpha < best_alpha:
                 best_alpha = alpha
 
-    if best_alpha == np.inf:
+    if best_alpha > 1.0 + eps:
         # Numerical fallback: recover the radial gauge from the furthest projection of
         # the hull on the displacement direction. This should rarely be needed.
         direction = closest_vec / norm_closest
@@ -629,7 +703,10 @@ def compute_relative_velocity_hull(
     return small_convex_hull(reachable_points)
 
 
-@numba.njit(cache=True, fastmath=True)
+# No fastmath here: this top-level query is not a hot loop, and the closest-time
+# recovery it calls depends on exact sign tests and would inherit the relaxed
+# semantics if compiled within a fastmath caller.
+@numba.njit(cache=True)
 def catch_up_projection_interval(
     a_lat: float,
     a_lon: float,
@@ -689,6 +766,17 @@ def catch_up_projection_interval(
     else:
         rel_pos0 = np.asarray(rel_pos_override, dtype=np.float64)
 
+    if not _scalar_within_numerical_range(projection_time_s):
+        return False, math.nan, math.nan
+    if velocity_hull is None:
+        a_max_speed_mps = (a_speed_kt + speed_diff_kt) * KT_TO_MPS
+        b_max_speed_mps = (b_speed_kt + speed_diff_kt) * KT_TO_MPS
+        if not _scalar_within_numerical_range(a_max_speed_mps + b_max_speed_mps):
+            return False, math.nan, math.nan
+        travel_m = (a_max_speed_mps + b_max_speed_mps) * projection_time_s
+        if not _geometry_within_numerical_domain(rel_pos0, travel_m, separation_threshold_m):
+            return False, math.nan, math.nan
+
     hull = (
         np.asarray(velocity_hull, dtype=np.float64)
         if velocity_hull is not None
@@ -701,6 +789,15 @@ def catch_up_projection_interval(
             projection_time_s=projection_time_s,
         )
     )
+
+    hull_travel_m = 0.0
+    for vertex in hull:
+        radius_m = math.hypot(vertex[0], vertex[1])
+        if not math.isfinite(radius_m):
+            return False, math.nan, math.nan
+        hull_travel_m = max(hull_travel_m, radius_m)
+    if not _geometry_within_numerical_domain(rel_pos0, hull_travel_m, separation_threshold_m):
+        return False, math.nan, math.nan
 
     # Project the negative initial relative position onto the reachable displacement
     # hull. The resulting displacement is the one that brings the pair as close together
@@ -724,8 +821,8 @@ def _turn_displacement_basis(
     Return the unit-speed displacement basis up to time `t_s`.
 
     The returned vector has units of seconds; multiplying by a speed in m/s gives a
-    displacement in metres. Small/no-turn cases fall back to straight flight on the
-    target heading so the same heading law covers both turning and straight motion.
+    displacement in metres. Every nonzero instructed turn is retained. A changed
+    target with a zero turn rate is invalid.
 
     Notes
     -----
@@ -739,11 +836,11 @@ def _turn_displacement_basis(
     set affine in speed.
     """
     out = np.empty(2, dtype=np.float64)
-    turn_angle_deg = heading_diff(heading0_deg, target_heading_deg)
+    turn_angle_deg, signed_turn_rate_deg_sec, turn_duration_s = shortest_turn_parameters(
+        heading0_deg, target_heading_deg, turn_rate_deg_sec
+    )
 
-    # When the heading change is negligible or the turn rate is effectively zero, the
-    # motion law reduces to straight flight on the target heading.
-    if abs(turn_angle_deg) < TURN_HEADING_EPS_DEG or abs(turn_rate_deg_sec) <= TURN_RATE_EPS_DEG_PER_S:
+    if turn_angle_deg == 0.0:
         d = heading_to_unit_vector(target_heading_deg)
         out[0] = d[0] * t_s
         out[1] = d[1] * t_s
@@ -751,16 +848,16 @@ def _turn_displacement_basis(
 
     # The sign of the heading difference chooses left vs. right turn; the magnitude of
     # the supplied turn rate gives the angular speed.
-    signed_turn_rate_rad_per_s = math.copysign(abs(turn_rate_deg_sec) * DEG_TO_RAD, turn_angle_deg)
-    turn_duration_s = abs(turn_angle_deg) / abs(turn_rate_deg_sec)
+    signed_turn_rate_rad_per_s = signed_turn_rate_deg_sec * DEG_TO_RAD
     turn_time_s = clip_value(t_s, 0.0, turn_duration_s)
     heading0_rad = heading0_deg * DEG_TO_RAD
-    heading_turn_end_rad = heading0_rad + signed_turn_rate_rad_per_s * turn_time_s
-
-    # Integrate the unit heading vector analytically over the turn interval. Because
-    # speed is factored out, this gives a displacement basis in "seconds".
-    out[0] = (math.cos(heading0_rad) - math.cos(heading_turn_end_rad)) / signed_turn_rate_rad_per_s
-    out[1] = (math.sin(heading_turn_end_rad) - math.sin(heading0_rad)) / signed_turn_rate_rad_per_s
+    half_sweep = 0.5 * signed_turn_rate_rad_per_s * turn_time_s
+    # The chord has the midpoint heading and length t * sinc(half_sweep).
+    # This avoids subtracting almost equal trigonometric values or dividing by rate.
+    sinc = math.sin(half_sweep) / half_sweep if half_sweep != 0.0 else 1.0
+    chord_length = turn_time_s * sinc
+    out[0] = chord_length * math.sin(heading0_rad + half_sweep)
+    out[1] = chord_length * math.cos(heading0_rad + half_sweep)
 
     # If the requested time extends past the turn, append the straight segment flown
     # on the target heading.
@@ -771,6 +868,20 @@ def _turn_displacement_basis(
         out[1] += d[1] * straight_time_s
 
     return out
+
+
+@numba.njit(cache=True, fastmath=True)
+def _heading_at_time_from_turn_parameters(
+    heading0_deg: float,
+    target_heading_deg: float,
+    signed_turn_rate_deg_sec: float,
+    turn_duration_s: float,
+    t_s: float,
+) -> float:
+    """Evaluate a heading using an already resolved shortest-turn law."""
+    if signed_turn_rate_deg_sec == 0.0:
+        return target_heading_deg
+    return heading0_deg + signed_turn_rate_deg_sec * clip_value(t_s, 0.0, turn_duration_s)
 
 
 @numba.njit(cache=True, fastmath=True)
@@ -787,15 +898,12 @@ def _unwrapped_heading_deg_at_time(
     relative heading then varies piecewise linearly in time. A wrapped heading would
     introduce artificial discontinuities at 0/360 deg.
     """
-    turn_angle_deg = heading_diff(heading0_deg, target_heading_deg)
-
-    if abs(turn_angle_deg) < TURN_HEADING_EPS_DEG or abs(turn_rate_deg_sec) <= TURN_RATE_EPS_DEG_PER_S:
-        return target_heading_deg
-
-    signed_turn_rate_deg_sec = math.copysign(abs(turn_rate_deg_sec), turn_angle_deg)
-    turn_duration_s = abs(turn_angle_deg) / abs(turn_rate_deg_sec)
-    turn_time_s = clip_value(t_s, 0.0, turn_duration_s)
-    return heading0_deg + signed_turn_rate_deg_sec * turn_time_s
+    _, signed_turn_rate_deg_sec, turn_duration_s = shortest_turn_parameters(
+        heading0_deg, target_heading_deg, turn_rate_deg_sec
+    )
+    return _heading_at_time_from_turn_parameters(
+        heading0_deg, target_heading_deg, signed_turn_rate_deg_sec, turn_duration_s, t_s
+    )
 
 
 @numba.njit(cache=True, fastmath=True)
@@ -810,8 +918,8 @@ def _relative_speed_mps(a_speed_mps: float, b_speed_mps: float, delta_heading_de
     This quantity controls how quickly any one speed-corner trajectory can move inside
     the turn-aware reachable set.
     """
-    cos_delta = math.cos(delta_heading_deg * DEG_TO_RAD)
-    sq = a_speed_mps * a_speed_mps + b_speed_mps * b_speed_mps - 2.0 * a_speed_mps * b_speed_mps * cos_delta
+    half_sine = math.sin(0.5 * delta_heading_deg * DEG_TO_RAD)
+    sq = (a_speed_mps - b_speed_mps) ** 2 + 4.0 * a_speed_mps * b_speed_mps * half_sine**2
     return math.sqrt(max(0.0, sq))
 
 
@@ -884,7 +992,7 @@ def _interval_local_lipschitz_mps(
 
     Because each heading profile is piecewise linear in time, the relative heading on
     each subinterval is linear. Therefore the supremum is attained at a subinterval
-    endpoint or at an anti-parallel crossing, which makes the bound cheap to compute and
+    endpoint or at an anti-parallel crossing, which makes the bound quick to compute and
     straightforward to justify.
     """
     if t1_s <= t0_s:
@@ -895,19 +1003,19 @@ def _interval_local_lipschitz_mps(
     breakpoints[breakpoint_count] = t0_s
     breakpoint_count += 1
 
-    a_turn_angle_deg = heading_diff(a_heading0_deg, a_target_heading_deg)
-    if abs(a_turn_angle_deg) >= TURN_HEADING_EPS_DEG and abs(a_turn_rate_deg_sec) > TURN_RATE_EPS_DEG_PER_S:
-        a_turn_end_s = abs(a_turn_angle_deg) / abs(a_turn_rate_deg_sec)
-        if t0_s < a_turn_end_s < t1_s:
-            breakpoints[breakpoint_count] = a_turn_end_s
-            breakpoint_count += 1
+    a_turn_angle_deg, a_signed_rate_deg_sec, a_turn_end_s = shortest_turn_parameters(
+        a_heading0_deg, a_target_heading_deg, a_turn_rate_deg_sec
+    )
+    if a_turn_angle_deg != 0.0 and t0_s < a_turn_end_s < t1_s:
+        breakpoints[breakpoint_count] = a_turn_end_s
+        breakpoint_count += 1
 
-    b_turn_angle_deg = heading_diff(b_heading0_deg, b_target_heading_deg)
-    if abs(b_turn_angle_deg) >= TURN_HEADING_EPS_DEG and abs(b_turn_rate_deg_sec) > TURN_RATE_EPS_DEG_PER_S:
-        b_turn_end_s = abs(b_turn_angle_deg) / abs(b_turn_rate_deg_sec)
-        if t0_s < b_turn_end_s < t1_s:
-            breakpoints[breakpoint_count] = b_turn_end_s
-            breakpoint_count += 1
+    b_turn_angle_deg, b_signed_rate_deg_sec, b_turn_end_s = shortest_turn_parameters(
+        b_heading0_deg, b_target_heading_deg, b_turn_rate_deg_sec
+    )
+    if b_turn_angle_deg != 0.0 and t0_s < b_turn_end_s < t1_s:
+        breakpoints[breakpoint_count] = b_turn_end_s
+        breakpoint_count += 1
 
     breakpoints[breakpoint_count] = t1_s
     breakpoint_count += 1
@@ -926,7 +1034,8 @@ def _interval_local_lipschitz_mps(
     unique_breakpoints = np.empty(4, dtype=np.float64)
     unique_count = 0
     for i in range(breakpoint_count):
-        if unique_count == 0 or abs(breakpoints[i] - unique_breakpoints[unique_count - 1]) > 1e-12:
+        # Every distinct endpoint matters, even when the interval is very short.
+        if unique_count == 0 or breakpoints[i] != unique_breakpoints[unique_count - 1]:
             unique_breakpoints[unique_count] = breakpoints[i]
             unique_count += 1
 
@@ -936,12 +1045,16 @@ def _interval_local_lipschitz_mps(
         if right_t_s <= left_t_s:
             continue
 
-        delta_left_deg = _unwrapped_heading_deg_at_time(
-            a_heading0_deg, a_target_heading_deg, a_turn_rate_deg_sec, left_t_s
-        ) - _unwrapped_heading_deg_at_time(b_heading0_deg, b_target_heading_deg, b_turn_rate_deg_sec, left_t_s)
-        delta_right_deg = _unwrapped_heading_deg_at_time(
-            a_heading0_deg, a_target_heading_deg, a_turn_rate_deg_sec, right_t_s
-        ) - _unwrapped_heading_deg_at_time(b_heading0_deg, b_target_heading_deg, b_turn_rate_deg_sec, right_t_s)
+        delta_left_deg = _heading_at_time_from_turn_parameters(
+            a_heading0_deg, a_target_heading_deg, a_signed_rate_deg_sec, a_turn_end_s, left_t_s
+        ) - _heading_at_time_from_turn_parameters(
+            b_heading0_deg, b_target_heading_deg, b_signed_rate_deg_sec, b_turn_end_s, left_t_s
+        )
+        delta_right_deg = _heading_at_time_from_turn_parameters(
+            a_heading0_deg, a_target_heading_deg, a_signed_rate_deg_sec, a_turn_end_s, right_t_s
+        ) - _heading_at_time_from_turn_parameters(
+            b_heading0_deg, b_target_heading_deg, b_signed_rate_deg_sec, b_turn_end_s, right_t_s
+        )
 
         for a_speed_mps in (a_min_speed_mps, a_max_speed_mps):
             for b_speed_mps in (b_min_speed_mps, b_max_speed_mps):
@@ -960,7 +1073,7 @@ def _interval_local_lipschitz_mps(
 
 
 @numba.njit(cache=True, fastmath=True)
-def _relative_position_hull_at_time(
+def _relative_position_corners_at_time(
     rel_pos0: np.ndarray,
     a_heading0_deg: float,
     a_target_heading_deg: float,
@@ -975,7 +1088,7 @@ def _relative_position_hull_at_time(
     t_s: float,
 ) -> np.ndarray:
     """
-    Build the exact reachable relative-position hull at a single time `t_s`.
+    Build the four speed corners at a single time `t_s`, retaining their order.
 
     With fixed turn-rate profiles, each aircraft position is linear in its constant
     speed. The relative position set is therefore the affine image of a speed rectangle,
@@ -984,14 +1097,14 @@ def _relative_position_hull_at_time(
     Returns
     -------
     np.ndarray
-        Convex hull of all reachable relative positions `r(t_s)` over the speed bounds.
+        Four speed corners, including duplicates or collinear points.
     """
     # For a fixed time, position = start + speed * basis(time). The speed bounds for A
     # and B therefore generate a four-corner rectangle in speed space, which maps to at
     # most four corner points in relative-position space.
     a_basis = _turn_displacement_basis(a_heading0_deg, a_target_heading_deg, a_turn_rate_deg_sec, t_s)
     b_basis = _turn_displacement_basis(b_heading0_deg, b_target_heading_deg, b_turn_rate_deg_sec, t_s)
-    pts = _speed_rectangle_corner_points(
+    return _speed_rectangle_corner_points(
         base=rel_pos0,
         a_basis=a_basis,
         a_min_speed=a_min_speed_mps,
@@ -1001,9 +1114,73 @@ def _relative_position_hull_at_time(
         b_max_speed=b_max_speed_mps,
     )
 
-    # Collapse duplicate/collinear corners so downstream projection logic can assume a
-    # clean convex polygon representation.
-    return small_convex_hull(pts)
+
+@numba.njit(cache=True, fastmath=True)
+def _relative_position_hull_at_time(
+    rel_pos0: np.ndarray,
+    a_heading0_deg: float,
+    a_target_heading_deg: float,
+    a_turn_rate_deg_sec: float,
+    a_min_speed_mps: float,
+    a_max_speed_mps: float,
+    b_heading0_deg: float,
+    b_target_heading_deg: float,
+    b_turn_rate_deg_sec: float,
+    b_min_speed_mps: float,
+    b_max_speed_mps: float,
+    t_s: float,
+) -> np.ndarray:
+    """Exact fixed-time hull with duplicate and collinear corners removed."""
+    return small_convex_hull(
+        _relative_position_corners_at_time(
+            rel_pos0,
+            a_heading0_deg,
+            a_target_heading_deg,
+            a_turn_rate_deg_sec,
+            a_min_speed_mps,
+            a_max_speed_mps,
+            b_heading0_deg,
+            b_target_heading_deg,
+            b_turn_rate_deg_sec,
+            b_min_speed_mps,
+            b_max_speed_mps,
+            t_s,
+        )
+    )
+
+
+@numba.njit(cache=True, fastmath=True)
+def _sample_relative_hull_at_time(
+    rel_pos0: np.ndarray,
+    a_heading0_deg: float,
+    a_target_heading_deg: float,
+    a_turn_rate_deg_sec: float,
+    a_min_speed_mps: float,
+    a_max_speed_mps: float,
+    b_heading0_deg: float,
+    b_target_heading_deg: float,
+    b_turn_rate_deg_sec: float,
+    b_min_speed_mps: float,
+    b_max_speed_mps: float,
+    t_s: float,
+) -> tuple[float, NDArray[np.float64], NDArray[np.float64]]:
+    """Retain the corners and closest point for interval certification."""
+    points = _relative_position_corners_at_time(
+        rel_pos0,
+        a_heading0_deg,
+        a_target_heading_deg,
+        a_turn_rate_deg_sec,
+        a_min_speed_mps,
+        a_max_speed_mps,
+        b_heading0_deg,
+        b_target_heading_deg,
+        b_turn_rate_deg_sec,
+        b_min_speed_mps,
+        b_max_speed_mps,
+        t_s,
+    )
+    closest, distance = closest_point_on_convex_polygon(np.zeros(2), small_convex_hull(points))
+    return distance, points, closest
 
 
 @numba.njit(cache=True, fastmath=True)
@@ -1063,6 +1240,188 @@ def _interval_distance_lower_bound(start_dist_m: float, end_dist_m: float, lipsc
     return max(0.0, 0.5 * (start_dist_m + end_dist_m - lipschitz_mps * dt_s))
 
 
+@numba.njit(cache=True)
+def _projected_heading_range(
+    heading0_deg: float,
+    target_heading_deg: float,
+    turn_rate_deg_sec: float,
+    normal: np.ndarray,
+    left_s: float,
+    right_s: float,
+) -> tuple[float, float]:
+    """Range of the unit velocity projected on a fixed separating direction."""
+    _, signed_rate_deg_sec, duration_s = shortest_turn_parameters(heading0_deg, target_heading_deg, turn_rate_deg_sec)
+    left = (
+        _heading_at_time_from_turn_parameters(heading0_deg, target_heading_deg, signed_rate_deg_sec, duration_s, left_s)
+        * DEG_TO_RAD
+    )
+    right = (
+        _heading_at_time_from_turn_parameters(
+            heading0_deg, target_heading_deg, signed_rate_deg_sec, duration_s, right_s
+        )
+        * DEG_TO_RAD
+    )
+    lo, hi = min(left, right), max(left, right)
+    v0 = normal[0] * math.sin(lo) + normal[1] * math.cos(lo)
+    v1 = normal[0] * math.sin(hi) + normal[1] * math.cos(hi)
+    lower, upper = min(v0, v1), max(v0, v1)
+    phase = math.atan2(normal[0], normal[1])
+    amplitude = math.hypot(normal[0], normal[1])
+    # The prescribed heading is monotone and then constant. Its complete range
+    # includes both endpoints and any stationary projections between them.
+    if phase + 2.0 * math.pi * math.ceil((lo - phase) / (2.0 * math.pi)) <= hi:
+        upper = max(upper, amplitude)
+    minimum_phase = phase + math.pi
+    if minimum_phase + 2.0 * math.pi * math.ceil((lo - minimum_phase) / (2.0 * math.pi)) <= hi:
+        lower = min(lower, -amplitude)
+    return lower, upper
+
+
+@numba.njit(cache=True)
+def _projected_motion_lower_bound(qa: float, qb: float, lower: float, upper: float, duration: float) -> float:
+    """Minimise the two affine lower bounds obtained from the interval ends."""
+    best = min(max(qa, qb - upper * duration), max(qa + lower * duration, qb))
+    if upper > lower:
+        crossing = (qa - qb + upper * duration) / (upper - lower)
+        if 0.0 < crossing < duration:
+            best = min(best, max(qa + lower * crossing, qb - upper * (duration - crossing)))
+    return best
+
+
+@numba.njit(cache=True)
+def _interval_directional_lower_bound(
+    rel_pos0: np.ndarray,
+    a_heading0_deg: float,
+    a_target_heading_deg: float,
+    a_turn_rate_deg_sec: float,
+    a_min_speed_mps: float,
+    a_max_speed_mps: float,
+    b_heading0_deg: float,
+    b_target_heading_deg: float,
+    b_turn_rate_deg_sec: float,
+    b_min_speed_mps: float,
+    b_max_speed_mps: float,
+    left_s: float,
+    right_s: float,
+    required_m: float,
+    include_hull: bool = True,
+) -> float:
+    """Certify a whole interval using fixed directions and projected velocities.
+
+    Each speed corner has q(t) >= max(q(a)+m*(t-a), q(b)-M*(b-t)),
+    where m and M bound its projected derivative throughout the interval.
+    The minimum over corners also bounds every convex combination. Candidate
+    directions come from the two endpoint hulls and their combined hull.
+    Direction selection need not be exact: validity follows from evaluating
+    all four corners along the same fixed direction, normalised to unit length.
+
+    Stop once required_m is reached. Passing infinity evaluates all directions.
+    The caller applies the deviation envelope and numerical comparison margin.
+    """
+    points = np.empty((2, 4, 2))
+    for index, t_s in enumerate((left_s, right_s)):
+        a_basis = _turn_displacement_basis(a_heading0_deg, a_target_heading_deg, a_turn_rate_deg_sec, t_s)
+        b_basis = _turn_displacement_basis(b_heading0_deg, b_target_heading_deg, b_turn_rate_deg_sec, t_s)
+        points[index] = _speed_rectangle_corner_points(
+            rel_pos0,
+            a_basis,
+            a_min_speed_mps,
+            a_max_speed_mps,
+            b_basis,
+            b_min_speed_mps,
+            b_max_speed_mps,
+        )
+    closest_points = np.empty((2, 2))
+    for index in range(2):
+        closest_points[index], _ = closest_point_on_convex_polygon(np.zeros(2), small_convex_hull(points[index]))
+    return _directional_lower_bound_from_samples(
+        points,
+        closest_points,
+        a_heading0_deg,
+        a_target_heading_deg,
+        a_turn_rate_deg_sec,
+        a_min_speed_mps,
+        a_max_speed_mps,
+        b_heading0_deg,
+        b_target_heading_deg,
+        b_turn_rate_deg_sec,
+        b_min_speed_mps,
+        b_max_speed_mps,
+        left_s,
+        right_s,
+        required_m,
+        include_hull,
+    )
+
+
+@numba.njit(cache=True)
+def _directional_lower_bound_from_samples(
+    points: np.ndarray,
+    closest_points: np.ndarray,
+    a_heading0_deg: float,
+    a_target_heading_deg: float,
+    a_turn_rate_deg_sec: float,
+    a_min_speed_mps: float,
+    a_max_speed_mps: float,
+    b_heading0_deg: float,
+    b_target_heading_deg: float,
+    b_turn_rate_deg_sec: float,
+    b_min_speed_mps: float,
+    b_max_speed_mps: float,
+    left_s: float,
+    right_s: float,
+    required_m: float,
+    include_hull: bool,
+) -> float:
+    """Evaluate projected-motion bounds using cached endpoint geometry."""
+    best = 0.0
+    for index in range(3 if include_hull else 2):
+        if index < 2:
+            closest = closest_points[index]
+        else:
+            closest, _ = closest_point_on_convex_polygon(np.zeros(2), convex_hull(points.reshape((8, 2))))
+        length = math.hypot(closest[0], closest[1])
+        if length == 0.0:
+            continue
+        normal = closest / length
+        al, au = _projected_heading_range(
+            a_heading0_deg,
+            a_target_heading_deg,
+            a_turn_rate_deg_sec,
+            normal,
+            left_s,
+            right_s,
+        )
+        bl, bu = _projected_heading_range(
+            b_heading0_deg,
+            b_target_heading_deg,
+            b_turn_rate_deg_sec,
+            normal,
+            left_s,
+            right_s,
+        )
+        directional = math.inf
+        for corner in range(4):
+            sa = a_max_speed_mps if corner == 1 or corner == 2 else a_min_speed_mps
+            sb = b_max_speed_mps if corner >= 2 else b_min_speed_mps
+            qa = points[0, corner, 0] * normal[0] + points[0, corner, 1] * normal[1]
+            qb = points[1, corner, 0] * normal[0] + points[1, corner, 1] * normal[1]
+            directional = min(
+                directional,
+                _projected_motion_lower_bound(
+                    qa,
+                    qb,
+                    sa * al - sb * bu,
+                    sa * au - sb * bl,
+                    right_s - left_s,
+                ),
+            )
+        best = max(best, directional)
+        if best >= required_m:
+            break
+    return best
+
+
 @numba.njit(cache=True, fastmath=True)
 def _turn_speed_schedule_envelope_m(
     heading0_deg: float,
@@ -1077,46 +1436,51 @@ def _turn_speed_schedule_envelope_m(
     Return the one-aircraft deviation envelope for bounded in-turn speed variation.
 
     The perturbed class holds the realised constant speed everywhere except during the
-    active turn, where the instantaneous speed may follow any measurable schedule inside
+    active turn, where the instantaneous speed may follow any measurable speed profile inside
     `[s - delta, s + delta]` intersected with the admissible interval. The intersection
     is essential: excursions beyond the admissible interval cannot be absorbed along
     track and admit no envelope of this shape (see the paper's robustness section).
 
-    For an active sweep `theta_a <= pi/2` the proven envelope is
+    For an instructed sweep `|dH| <= pi/2` the proven envelope is
 
         delta * t_active * (1 - cos(theta_a)) / theta_a,
 
-    which is sharper than the previously shipped `delta * t_active * sin(theta_a / 2)`
-    buffer and is approached by extreme schedules in the long-horizon limit. Beyond
-    `pi/2` the unconditional fallback
+    which never exceeds the coarser `delta * t_active * sin(theta_a / 2)`
+    bound and is approached by extreme speed profiles in the long-horizon limit. For
+    larger instructed sweeps the unconditional fallback
 
         min(2 * delta, width) * 4 * t_active * (1 - cos(theta_a / 2)) / theta_a
 
-    applies, where `width` is the admissible interval width. Both bounds are evaluated
-    at the query time `t_s`, so the envelope is time-varying and nondecreasing.
+    applies, where `width` is the admissible interval width. The form is selected
+    once per aircraft from the TOTAL instructed sweep, not from the sweep completed
+    by the query time: a per-time switch could step downward at the pi/2 crossing
+    when `width < ~0.854 * delta`, breaking the nondecreasing-envelope hypothesis
+    of the inflated interval certificate. Each form on its own is nondecreasing in
+    `t_s` (it grows with the completed sweep and freezes at turn completion), so
+    the per-aircraft selection keeps the total envelope monotone.
     """
     if t_s <= 0.0 or schedule_uncertainty_kt <= 0.0:
         return 0.0
 
-    turn_angle_deg = abs(heading_diff(heading0_deg, target_heading_deg))
-    if turn_angle_deg < TURN_HEADING_EPS_DEG or abs(turn_rate_deg_sec) <= TURN_RATE_EPS_DEG_PER_S:
+    signed_angle_deg, signed_rate_deg_sec, turn_duration_s = shortest_turn_parameters(
+        heading0_deg, target_heading_deg, turn_rate_deg_sec
+    )
+    turn_angle_deg = abs(signed_angle_deg)
+    if turn_angle_deg == 0.0:
         return 0.0
 
-    turn_duration_s = turn_angle_deg / abs(turn_rate_deg_sec)
     active_turn_time_s = min(t_s, turn_duration_s)
-    sweep_rad = abs(turn_rate_deg_sec) * DEG_TO_RAD * active_turn_time_s
-    if active_turn_time_s <= 0.0 or sweep_rad <= 1e-12:
+    sweep_rad = abs(signed_rate_deg_sec) * DEG_TO_RAD * active_turn_time_s
+    if active_turn_time_s <= 0.0 or sweep_rad == 0.0:
         return 0.0
 
     delta_mps = schedule_uncertainty_kt * KT_TO_MPS
-    # The tolerance keeps the intended inclusive pi/2 boundary robust to floating-point
-    # rounding of the sweep computation.
-    if sweep_rad <= 0.5 * math.pi + 1e-9:
-        return delta_mps * active_turn_time_s * (1.0 - math.cos(sweep_rad)) / sweep_rad
+    if turn_angle_deg <= 90.0:
+        return delta_mps * active_turn_time_s * 2.0 * math.sin(0.5 * sweep_rad) ** 2 / sweep_rad
 
     width_mps = max(max_speed_mps - min_speed_mps, 0.0)
     amplitude_mps = min(2.0 * delta_mps, width_mps)
-    return amplitude_mps * 4.0 * active_turn_time_s * (1.0 - math.cos(0.5 * sweep_rad)) / sweep_rad
+    return amplitude_mps * 8.0 * active_turn_time_s * math.sin(0.25 * sweep_rad) ** 2 / sweep_rad
 
 
 @numba.njit(cache=True, fastmath=True)
@@ -1134,24 +1498,26 @@ def _turn_execution_envelope_m(
 
     The perturbed class delays turn initiation by up to `turn_delay_max_s` seconds and
     scales the turn rate by `(1 + e)` with `|e| <= turn_rate_error_max < 1`, ending at
-    the commanded absolute target heading. The envelope integrates the worst-case
+    the instructed absolute target heading. The envelope integrates the worst-case
     heading-profile gap and multiplies by the maximum speed:
 
         s_max * [ min(|omega| t_d, |dH|) * min(t, tau + t_d)
                   + e * |dH| * min(t, tau / (1 - e)) ].
 
-    The value saturates shortly after the commanded turn completes.
+    The value saturates shortly after the instructed turn completes.
     """
     if t_s <= 0.0 or (turn_delay_max_s <= 0.0 and turn_rate_error_max <= 0.0):
         return 0.0
 
-    turn_angle_deg = abs(heading_diff(heading0_deg, target_heading_deg))
-    if turn_angle_deg < TURN_HEADING_EPS_DEG or abs(turn_rate_deg_sec) <= TURN_RATE_EPS_DEG_PER_S:
+    signed_angle_deg, signed_rate_deg_sec, turn_duration_s = shortest_turn_parameters(
+        heading0_deg, target_heading_deg, turn_rate_deg_sec
+    )
+    turn_angle_deg = abs(signed_angle_deg)
+    if turn_angle_deg == 0.0:
         return 0.0
 
-    omega_rad_s = abs(turn_rate_deg_sec) * DEG_TO_RAD
+    omega_rad_s = abs(signed_rate_deg_sec) * DEG_TO_RAD
     turn_angle_rad = turn_angle_deg * DEG_TO_RAD
-    turn_duration_s = turn_angle_rad / omega_rad_s
 
     phi_delay = 0.0
     if turn_delay_max_s > 0.0:
@@ -1160,9 +1526,7 @@ def _turn_execution_envelope_m(
 
     phi_rate = 0.0
     if 0.0 < turn_rate_error_max < 1.0:
-        phi_rate = turn_rate_error_max * turn_angle_rad * min(
-            t_s, turn_duration_s / (1.0 - turn_rate_error_max)
-        )
+        phi_rate = turn_rate_error_max * turn_angle_rad * min(t_s, turn_duration_s / (1.0 - turn_rate_error_max))
 
     return max_speed_mps * (phi_delay + phi_rate)
 
@@ -1257,18 +1621,45 @@ def _catch_up_projection_interval_with_turns_local(
     eta_rate_mps: float = 0.0,
     turn_delay_max_s: float = 0.0,
     turn_rate_error_max: float = 0.0,
+    directional_mode: int = 2,
+    diagnostic_out: NDArray[np.float64] | None = None,
 ) -> tuple[bool, float, float]:
-    """Internal local-coordinate entrypoint for the turn-aware solver."""
-    a_turn_angle_deg = heading_diff(a_heading0_deg, a_target_heading_deg)
-    b_turn_angle_deg = heading_diff(b_heading0_deg, b_target_heading_deg)
-    a_is_turning = abs(a_turn_angle_deg) >= TURN_HEADING_EPS_DEG and abs(a_turn_rate_deg_sec) > TURN_RATE_EPS_DEG_PER_S
-    b_is_turning = abs(b_turn_angle_deg) >= TURN_HEADING_EPS_DEG and abs(b_turn_rate_deg_sec) > TURN_RATE_EPS_DEG_PER_S
+    """Local solver; directional_mode 0 retains the scalar reference path.
+
+    Mode 1 adds endpoint directions; mode 2 also tests the combined hull.
+    These private switches support matched verification and timing.
+    diagnostic_out optionally receives [kind, left_s, right_s]. Codes distinguish
+    a straight minimum, a sampled minimum, an interval bound and unavailable
+    diagnostics. The legacy return tuple remains unchanged.
+    """
+    if diagnostic_out is not None and diagnostic_out.size < 3:
+        raise ValueError("diagnostic_out must contain at least three elements")
+    _record_solver_diagnostic(diagnostic_out, DIAGNOSTIC_UNAVAILABLE, math.nan, math.nan)
+    a_turn_angle_deg, _, _ = shortest_turn_parameters(a_heading0_deg, a_target_heading_deg, a_turn_rate_deg_sec)
+    b_turn_angle_deg, _, _ = shortest_turn_parameters(b_heading0_deg, b_target_heading_deg, b_turn_rate_deg_sec)
+    a_is_turning = a_turn_angle_deg != 0.0
+    b_is_turning = b_turn_angle_deg != 0.0
+
+    # Convert the speed envelope once; the remaining geometry uses metres and seconds.
+    a_min_speed_mps = max((a_speed_kt - speed_diff_kt), 0.0) * KT_TO_MPS
+    a_max_speed_mps = (a_speed_kt + speed_diff_kt) * KT_TO_MPS
+    b_min_speed_mps = max((b_speed_kt - speed_diff_kt), 0.0) * KT_TO_MPS
+    b_max_speed_mps = (b_speed_kt + speed_diff_kt) * KT_TO_MPS
+    global_lipschitz_mps = a_max_speed_mps + b_max_speed_mps
+    if not _scalar_within_numerical_range(projection_time_s) or not _scalar_within_numerical_range(
+        global_lipschitz_mps
+    ):
+        return False, math.nan, math.nan
+    if not _geometry_within_numerical_domain(
+        rel_pos0, global_lipschitz_mps * projection_time_s, separation_threshold_m + eta_const_m
+    ):
+        return False, math.nan, math.nan
 
     # Constant and linear envelope terms apply to straight motion too, so the exact
     # straight delegation is only taken when no envelope is configured. The turn-only
-    # envelope terms vanish without a commanded turn.
+    # envelope terms vanish without an instructed turn.
     if not a_is_turning and not b_is_turning and eta_const_m <= 0.0 and eta_rate_mps <= 0.0:
-        return catch_up_projection_interval(
+        result = catch_up_projection_interval(
             a_lat=0.0,
             a_lon=0.0,
             a_heading=a_target_heading_deg,
@@ -1282,19 +1673,14 @@ def _catch_up_projection_interval_with_turns_local(
             projection_time_s=projection_time_s,
             rel_pos_override=rel_pos0,
         )
-
-    # Convert the speed envelope once up front; all later geometry is done in metres and
-    # seconds.
-    a_min_speed_mps = max((a_speed_kt - speed_diff_kt), 0.0) * KT_TO_MPS
-    a_max_speed_mps = (a_speed_kt + speed_diff_kt) * KT_TO_MPS
-    b_min_speed_mps = max((b_speed_kt - speed_diff_kt), 0.0) * KT_TO_MPS
-    b_max_speed_mps = (b_speed_kt + speed_diff_kt) * KT_TO_MPS
+        if _scalar_within_numerical_range(result[1]) and _scalar_within_numerical_range(result[2]):
+            _record_solver_diagnostic(diagnostic_out, DIAGNOSTIC_STRAIGHT_MINIMUM, result[2], result[2])
+        return result
 
     # A conservative global Lipschitz constant for distance is the maximum possible
     # closing rate, bounded by the sum of the two maximum speeds. The default path
     # tightens this per interval using the known heading profiles, but the simple global
     # bound is retained as an opt-out option for debugging and comparison.
-    global_lipschitz_mps = a_max_speed_mps + b_max_speed_mps
 
     # Deviation envelopes inflate the required threshold per evaluated time. The
     # geometry and certification logic are unchanged, and the zero-envelope fast path
@@ -1309,6 +1695,7 @@ def _catch_up_projection_interval_with_turns_local(
 
     if projection_time_s <= 0.0:
         min_dist_now = float(np.linalg.norm(rel_pos0))
+        _record_solver_diagnostic(diagnostic_out, DIAGNOSTIC_SAMPLED_MINIMUM, 0.0, 0.0)
         return min_dist_now >= separation_threshold_m + eta_const_m, min_dist_now, 0.0
 
     if min_cert_interval_s <= 0.0:
@@ -1318,9 +1705,10 @@ def _catch_up_projection_interval_with_turns_local(
     # At t = 0 only the constant envelope term is active.
     start_dist_m = float(np.linalg.norm(rel_pos0))
     if start_dist_m < separation_threshold_m + eta_const_m:
+        _record_solver_diagnostic(diagnostic_out, DIAGNOSTIC_SAMPLED_MINIMUM, 0.0, 0.0)
         return False, start_dist_m, 0.0
 
-    end_dist_m = _min_distance_to_relative_hull_at_time(
+    end_dist_m, end_points, end_closest = _sample_relative_hull_at_time(
         rel_pos0=rel_pos0,
         a_heading0_deg=a_heading0_deg,
         a_target_heading_deg=a_target_heading_deg,
@@ -1391,7 +1779,12 @@ def _catch_up_projection_interval_with_turns_local(
         if has_envelope
         else 0.0
     )
-    if initial_lower_bound_m >= separation_threshold_m + eta_horizon_m:
+    if not _geometry_within_numerical_domain(
+        rel_pos0, global_lipschitz_mps * projection_time_s, separation_threshold_m + eta_horizon_m
+    ):
+        return False, math.nan, math.nan
+    if initial_lower_bound_m >= separation_threshold_m + eta_horizon_m + TURN_CERT_FP_GUARD_M:
+        _record_solver_diagnostic(diagnostic_out, DIAGNOSTIC_SAMPLED_MINIMUM, best_sample_time_s, best_sample_time_s)
         return True, best_sample_dist_m, best_sample_time_s
 
     # Depth-first interval subdivision uses an explicit stack because Numba handles
@@ -1406,18 +1799,26 @@ def _catch_up_projection_interval_with_turns_local(
     right_t_stack = np.empty(stack_capacity, dtype=np.float64)
     left_d_stack = np.empty(stack_capacity, dtype=np.float64)
     right_d_stack = np.empty(stack_capacity, dtype=np.float64)
+    point_stack = np.empty((stack_capacity, 2, 4, 2))
+    closest_stack = np.empty((stack_capacity, 2, 2))
 
     top = 0
     left_t_stack[top] = 0.0
     right_t_stack[top] = projection_time_s
     left_d_stack[top] = start_dist_m
     right_d_stack[top] = end_dist_m
+    point_stack[top, 0] = rel_pos0
+    point_stack[top, 1] = end_points
+    closest_stack[top, 0] = rel_pos0
+    closest_stack[top, 1] = end_closest
     top += 1
 
     # If we fail to certify a tiny interval, report the most critical lower bound we saw
     # rather than an arbitrary large sampled distance.
     most_critical_lower_bound_m = initial_lower_bound_m
     most_critical_time_s = 0.5 * projection_time_s
+    most_critical_left_s = 0.0
+    most_critical_right_s = projection_time_s
 
     while top > 0:
         top -= 1
@@ -1425,6 +1826,10 @@ def _catch_up_projection_interval_with_turns_local(
         right_t_s = right_t_stack[top]
         left_dist_m = left_d_stack[top]
         right_dist_m = right_d_stack[top]
+        # The left child is stored above the parent before the right child reuses
+        # its slot, so these endpoint views need no temporary copies.
+        interval_points = point_stack[top]
+        interval_closest = closest_stack[top]
         dt_s = right_t_s - left_t_s
         interval_lipschitz_mps = (
             _interval_local_lipschitz_mps(
@@ -1455,6 +1860,8 @@ def _catch_up_projection_interval_with_turns_local(
         if interval_lower_bound_m < most_critical_lower_bound_m:
             most_critical_lower_bound_m = interval_lower_bound_m
             most_critical_time_s = 0.5 * (left_t_s + right_t_s)
+            most_critical_left_s = left_t_s
+            most_critical_right_s = right_t_s
 
         # The envelope is nondecreasing, so evaluating it at the interval's right
         # endpoint bounds it over the whole interval, matching the inflated interval
@@ -1483,20 +1890,48 @@ def _catch_up_projection_interval_with_turns_local(
         )
 
         # This whole interval is certified safe, so there is no need to look inside it.
-        if interval_lower_bound_m >= separation_threshold_m + interval_eta_m:
+        if interval_lower_bound_m >= separation_threshold_m + interval_eta_m + TURN_CERT_FP_GUARD_M:
             continue
+
+        if directional_mode:
+            directional_lower_bound_m = _directional_lower_bound_from_samples(
+                interval_points,
+                interval_closest,
+                a_heading0_deg,
+                a_target_heading_deg,
+                a_turn_rate_deg_sec,
+                a_min_speed_mps,
+                a_max_speed_mps,
+                b_heading0_deg,
+                b_target_heading_deg,
+                b_turn_rate_deg_sec,
+                b_min_speed_mps,
+                b_max_speed_mps,
+                left_t_s,
+                right_t_s,
+                separation_threshold_m + interval_eta_m + TURN_CERT_FP_GUARD_M,
+                directional_mode >= 2,
+            )
+            if directional_lower_bound_m >= separation_threshold_m + interval_eta_m + TURN_CERT_FP_GUARD_M:
+                continue
 
         # At the minimum certification width we stop refining. If the interval still
         # cannot be certified, we conservatively report it as potentially unsafe.
         if dt_s <= min_cert_interval_s:
             if best_sample_dist_m < separation_threshold_m:
+                _record_solver_diagnostic(
+                    diagnostic_out, DIAGNOSTIC_SAMPLED_MINIMUM, best_sample_time_s, best_sample_time_s
+                )
                 return False, best_sample_dist_m, best_sample_time_s
+            _record_solver_diagnostic(
+                diagnostic_out, DIAGNOSTIC_INTERVAL_BOUND, most_critical_left_s, most_critical_right_s
+            )
             return False, most_critical_lower_bound_m, most_critical_time_s
 
         # Sample the midpoint to tighten both halves of the interval. If the midpoint
         # itself is already within the threshold, we have a direct witness of conflict.
         mid_t_s = 0.5 * (left_t_s + right_t_s)
-        mid_dist_m = _min_distance_to_relative_hull_at_time(
+        mid_dist_m, mid_points, mid_closest = _sample_relative_hull_at_time(
             rel_pos0=rel_pos0,
             a_heading0_deg=a_heading0_deg,
             a_target_heading_deg=a_target_heading_deg,
@@ -1539,22 +1974,28 @@ def _catch_up_projection_interval_with_turns_local(
             else 0.0
         )
         if mid_dist_m < separation_threshold_m + mid_eta_m:
+            _record_solver_diagnostic(
+                diagnostic_out, DIAGNOSTIC_SAMPLED_MINIMUM, best_sample_time_s, best_sample_time_s
+            )
             return False, best_sample_dist_m, best_sample_time_s
 
         # Push the two child intervals. DFS keeps memory small and tends to find nearby
         # conflicts quickly once an interval starts looking critical.
+        left_t_stack[top + 1] = left_t_s
+        right_t_stack[top + 1] = mid_t_s
+        left_d_stack[top + 1] = left_dist_m
+        right_d_stack[top + 1] = mid_dist_m
+        point_stack[top + 1, 0], point_stack[top + 1, 1] = interval_points[0], mid_points
+        closest_stack[top + 1, 0], closest_stack[top + 1, 1] = interval_closest[0], mid_closest
+
         left_t_stack[top] = mid_t_s
-        right_t_stack[top] = right_t_s
         left_d_stack[top] = mid_dist_m
-        right_d_stack[top] = right_dist_m
-        top += 1
+        point_stack[top, 0] = mid_points
+        closest_stack[top, 0] = mid_closest
+        # The right child's right endpoint already occupies the reused slot.
+        top += 2
 
-        left_t_stack[top] = left_t_s
-        right_t_stack[top] = mid_t_s
-        left_d_stack[top] = left_dist_m
-        right_d_stack[top] = mid_dist_m
-        top += 1
-
+    _record_solver_diagnostic(diagnostic_out, DIAGNOSTIC_SAMPLED_MINIMUM, best_sample_time_s, best_sample_time_s)
     return True, best_sample_dist_m, best_sample_time_s
 
 
@@ -1587,13 +2028,13 @@ def catch_up_projection_interval_with_turns(
 
     For turning cases, this function is exact in speed and conservative in time:
     at each sampled time it computes the exact reachable relative-position hull for
-    the constant-speed envelope, then uses an adaptive time search with a Lipschitz
-    bound to certify intervals as safe. Intervals that cannot be certified at the
+    the constant-speed envelope, then uses scalar Lipschitz and directional
+    projected-motion bounds to certify intervals as safe. Intervals that cannot be certified at the
     configured minimum width are treated as unsafe.
 
-    For pairs where neither aircraft triggers the turn-aware path under
-    `TURN_HEADING_EPS_DEG` and `TURN_RATE_EPS_DEG_PER_S`, it delegates directly to the
-    exact straight-line `catch_up_projection_interval`.
+    When both target headings equal their initial headings, it delegates to the
+    exact straight-line `catch_up_projection_interval`. A changed target heading
+    requires a nonzero turn rate, however small the instructed turn.
 
     Parameters
     ----------
@@ -1625,8 +2066,9 @@ def catch_up_projection_interval_with_turns(
         Total projection horizon in seconds.
     use_interval_local_lipschitz : bool, optional
         If True, use the tighter interval-local Lipschitz bound derived from the
-        commanded heading profiles. If False, use the simpler global bound
-        `a_max + b_max`.
+        instructed heading profiles. If False, use the simpler global bound
+        `a_max + b_max`. Directional certification is applied after either scalar
+        bound fails.
     turn_speed_schedule_uncertainty_kt : float, optional
         Deviation-envelope bound for turning aircraft only. If positive, the decision
         covers instantaneous in-turn speed variation within
@@ -1667,9 +2109,12 @@ def catch_up_projection_interval_with_turns(
        interval is already certified safe. By default this Lipschitz constant is the
        exact interval-local supremum of the corner relative speeds; the simpler global
        bound `a_max + b_max` remains available as an option.
-    3. If not, split the interval at its midpoint, evaluate that fixed-time hull
+    3. If needed, test projected-motion bounds along fixed directions from the two
+       endpoint hulls and their combined hull. All speed corners must satisfy the
+       threshold along the same direction throughout the interval.
+    4. If neither bound certifies the interval, split it at its midpoint, evaluate that fixed-time hull
        exactly, and continue with the two child intervals using an explicit DFS stack.
-    4. Treat any interval shorter than `TURN_TIME_CERT_MIN_INTERVAL_S` that still
+    5. Treat any interval at or below `TURN_TIME_CERT_MIN_INTERVAL_S` that still
        cannot be certified as potentially unsafe.
 
     So the boolean return value is a certificate about the whole horizon, while the

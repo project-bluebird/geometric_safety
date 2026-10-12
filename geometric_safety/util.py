@@ -6,6 +6,8 @@ projections, point-in-polygon) plus a handful of aviation coordinate helpers
 (heading vectors, local tangent-plane projection, heading arithmetic).
 """
 
+import math
+
 import numba
 import numpy as np
 
@@ -112,31 +114,65 @@ def latlon_to_local_xy(lat: float, lon: float, ref_lat: float, ref_lon: float) -
     return out
 
 
-@numba.jit(nopython=True, fastmath=True, cache=True)
+# TwoDiff has no products, so contraction alone leaves its arithmetic strict.
+# Explicit flags prevent a fastmath caller from adding reassociation flags.
+@numba.jit(nopython=True, fastmath={"contract"}, cache=True)
 def heading_diff(h1: float, h2: float, abs_diff: bool = False) -> float:
     """
-    Return the wrapped heading difference `h2 - h1` in degrees.
+    Return the shortest signed difference of the supplied binary64 headings.
 
-    Parameters
-    ----------
-    h1 : float
-        First heading in degrees.
-    h2 : float
-        Second heading in degrees.
-    abs_diff : bool, optional
-        If True, return the absolute difference, by default False
+    The result is in [-180, 180), or its absolute value when abs_diff=True.
+    Exact half-turn ties use -180. A compensated difference preserves the side
+    of a half-turn or wrap even when ordinary subtraction rounds onto it.
+    Headings are reduced separately to avoid overflow of their difference.
 
-    Returns
-    -------
-    float
-        Heading difference in `[-180, 180)`, or its absolute value if `abs_diff=True`.
+    The output remains binary64. If a positive difference just below 180 rounds
+    to 180, return the adjacent float below 180 to retain its positive direction.
+    Other results use normal rounding. Non-finite inputs return NaN.
     """
-    diff = (h2 - h1 + 180.0) % 360.0 - 180.0
+    if not math.isfinite(h1) or not math.isfinite(h2):
+        return math.nan
 
-    if abs_diff:
-        diff = abs(diff)
+    a = np.fmod(h2, 360.0)
+    b = np.fmod(h1, 360.0)
+    difference = a - b
+    # Knuth TwoDiff: difference + residual is the exact difference of a and b.
+    b_virtual = a - difference
+    a_virtual = difference + b_virtual
+    b_roundoff = b_virtual - b
+    a_roundoff = a - a_virtual
+    residual = a_roundoff + b_roundoff
 
-    return diff
+    remainder = np.fmod(difference, 360.0)
+    if remainder > 180.0 or (remainder == 180.0 and residual >= 0.0):
+        remainder -= 360.0
+    elif remainder < -180.0 or (remainder == -180.0 and residual < 0.0):
+        remainder += 360.0
+    result = remainder + residual
+    if result == 180.0:
+        result = np.nextafter(180.0, 0.0)
+    return abs(result) if abs_diff else result
+
+
+@numba.njit(cache=True, fastmath={"contract"})
+def shortest_turn_parameters(
+    heading0_deg: float, target_heading_deg: float, turn_rate_deg_sec: float
+) -> tuple[float, float, float]:
+    """Return signed angle, signed rate and duration for a shortest fixed-rate turn.
+
+    The angle and rate are degrees and degrees per second; duration is seconds.
+    Exact half-turn ties turn left. Equal headings have zero rate and duration.
+    A changed heading requires a finite, nonzero supplied rate magnitude.
+    """
+    angle_deg = heading_diff(heading0_deg, target_heading_deg)
+    if not math.isfinite(angle_deg) or not math.isfinite(turn_rate_deg_sec):
+        raise ValueError("Headings and turn rate must be finite")
+    if angle_deg == 0.0:
+        return 0.0, 0.0, 0.0
+    if turn_rate_deg_sec == 0.0:
+        raise ValueError("A changed target heading requires a nonzero turn rate")
+    signed_rate_deg_sec = math.copysign(abs(turn_rate_deg_sec), angle_deg)
+    return angle_deg, signed_rate_deg_sec, abs(angle_deg) / abs(turn_rate_deg_sec)
 
 
 # ---------------------------------------------------------------------------
@@ -180,7 +216,7 @@ def small_convex_hull(pts: np.ndarray) -> np.ndarray:
         return np.empty((0, 2), dtype=np.float64)
 
     # Deduplicate in-place; these structured point sets are tiny enough that an O(n^2)
-    # pass is cheaper than setting up a more general sorting pipeline.
+    # pass is quicker than setting up a more general sorting pipeline.
     unique_pts = np.empty((n, 2), dtype=np.float64)
     unique_len = 0
     for i in range(n):
@@ -216,7 +252,7 @@ def small_convex_hull(pts: np.ndarray) -> np.ndarray:
             out[1, :] = unique_pts[1]
         return out
 
-    # Gift-wrap the hull. For <= 5 points this is simpler and cheaper than invoking the
+    # Gift-wrap the hull. For <= 5 points this is simpler and faster than invoking the
     # fully generic hull builder.
     start = 0
     for i in range(1, unique_len):
@@ -376,7 +412,7 @@ def convex_hull(pts: np.ndarray) -> np.ndarray:
     return hull
 
 
-@numba.njit(cache=True, fastmath=True)
+@numba.njit(cache=True, fastmath=False)
 def _point_in_convex_polygon(pt: np.ndarray, hull: np.ndarray) -> bool:
     """
     Check whether a point lies inside or on the boundary of a convex polygon.
@@ -391,30 +427,41 @@ def _point_in_convex_polygon(pt: np.ndarray, hull: np.ndarray) -> bool:
     Returns
     -------
     bool
-        `True` if the point is inside or on the boundary.
+        `True` if the point is inside or its edge orientations are unresolved
+        at floating-point precision.
     """
     hull_len = hull.shape[0]
     if hull_len < 3:
         return False
 
-    sign = 0
+    # These comparisons also reject points beyond a collapsed hull's endpoints.
+    min_x = max_x = hull[0, 0]
+    min_y = max_y = hull[0, 1]
+    for i in range(1, hull_len):
+        min_x = min(min_x, hull[i, 0])
+        max_x = max(max_x, hull[i, 0])
+        min_y = min(min_y, hull[i, 1])
+        max_y = max(max_y, hull[i, 1])
+    if pt[0] < min_x or pt[0] > max_x or pt[1] < min_y or pt[1] > max_y:
+        return False
 
-    # Use a scale-aware collinearity tolerance so very small and very large polygons are
-    # handled consistently.
-    max_norm = 0.0
-    for i in range(hull_len):
-        norm_val = np.sqrt(hull[i, 0] * hull[i, 0] + hull[i, 1] * hull[i, 1])
-        if norm_val > max_norm:
-            max_norm = norm_val
-    scale = max(max_norm, 1.0)
+    sign = 0
+    # Shewchuk's orient2d first-stage error filter, with binary64 unit roundoff.
+    # https://www.cs.cmu.edu/~quake/robust.html
+    # Uncertain orientations count as boundary; no exact-predicate claim is made.
+    # Keep fastmath disabled so reassociation cannot invalidate the filter.
+    unit_roundoff = 2.0**-53
+    orientation_error_factor = (3.0 + 16.0 * unit_roundoff) * unit_roundoff
 
     for i in range(hull_len):
         a = hull[i]
         b = hull[(i + 1) % hull_len]
-        cross = cross_2d(a, b, pt)
+        left = (b[0] - a[0]) * (pt[1] - a[1])
+        right = (b[1] - a[1]) * (pt[0] - a[0])
+        cross = left - right
+        error = orientation_error_factor * (abs(left) + abs(right))
 
-        # Points exactly on an edge are treated as inside.
-        if abs(cross) <= 1e-12 * scale:
+        if abs(cross) <= error:
             continue
 
         # For a convex polygon with consistent winding, the cross-product sign must not
@@ -425,6 +472,26 @@ def _point_in_convex_polygon(pt: np.ndarray, hull: np.ndarray) -> bool:
             return False
 
     return True
+
+
+@numba.njit(cache=True, fastmath=True, inline="always")
+def _segment_projection_coordinates(
+    px: float, py: float, ax: float, ay: float, bx: float, by: float
+) -> tuple[float, float, float]:
+    """Project onto a segment without allocating arrays for individual edges."""
+    ab_x = bx - ax
+    ab_y = by - ay
+    denom = ab_x * ab_x + ab_y * ab_y
+    x, y = ax, ay
+    if denom != 0.0:
+        t = ((px - ax) * ab_x + (py - ay) * ab_y) / denom
+        if t < 0.0:
+            t = 0.0
+        elif t > 1.0:
+            t = 1.0
+        x = ax + t * ab_x
+        y = ay + t * ab_y
+    return x, y, math.hypot(px - x, py - y)
 
 
 @numba.njit(cache=True, fastmath=True)
@@ -444,20 +511,10 @@ def _closest_point_on_segment(pt: np.ndarray, a: np.ndarray, b: np.ndarray) -> t
     tuple[np.ndarray, float]
         Closest point on the segment and its Euclidean distance from `pt`.
     """
-    ab = b - a
-    denom = np.dot(ab, ab)
-
-    if denom == 0.0:
-        return a, float(np.linalg.norm(pt - a))
-
-    t = np.dot(pt - a, ab) / denom
-    if t < 0.0:
-        t = 0.0
-    elif t > 1.0:
-        t = 1.0
-    proj = a + t * ab  # pyright: ignore[reportOperatorIssue]
-
-    return proj, float(np.linalg.norm(pt - proj))
+    x, y, distance = _segment_projection_coordinates(pt[0], pt[1], a[0], a[1], b[0], b[1])
+    proj = np.empty(2, dtype=np.float64)
+    proj[0], proj[1] = x, y
+    return proj, distance
 
 
 @numba.njit(cache=True, fastmath=True)
@@ -496,14 +553,17 @@ def closest_point_on_convex_polygon(pt: np.ndarray, hull: np.ndarray) -> tuple[n
         return pt, 0.0
 
     # Otherwise the projection must lie on one of the polygon edges.
+    best_x, best_y = best_point[0], best_point[1]
     for i in range(hull_len):
         a = hull[i]
         b = hull[(i + 1) % hull_len]
 
-        cand_point, cand_dist = _closest_point_on_segment(pt, a, b)
+        x, y, cand_dist = _segment_projection_coordinates(pt[0], pt[1], a[0], a[1], b[0], b[1])
 
         if cand_dist < best_dist:
             best_dist = cand_dist
-            best_point = cand_point
+            best_x, best_y = x, y
 
+    best_point = np.empty(2, dtype=np.float64)
+    best_point[0], best_point[1] = best_x, best_y
     return best_point, best_dist
