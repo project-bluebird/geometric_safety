@@ -102,6 +102,9 @@ the legacy turn solver and returns `unsupported` from the heading interface.
 An exact 180-degree heading difference selects a left turn; values on either
 side retain their direction, including near a heading wrap.
 
+The module constants `TURN_HEADING_EPS_DEG` and `TURN_RATE_EPS_DEG_PER_S` are
+removed. Callers that applied these cut-offs must retain nonzero instructed turns.
+
 Legacy turn-aware distance and time values are solver diagnostics, not a
 guaranteed continuous-time minimum. Use the heading interface when the caller
 needs to distinguish a sampled distance from an interval lower bound. Consumers
@@ -268,6 +271,18 @@ uv run pytest tests/test_relevant_aircraft_turns.py
 uv run pytest tests/test_vertical_safety.py
 uv run pytest tests/test_relevant_aircraft_app.py
 ```
+
+Run the independent numerical audit as a module from the repository root:
+
+```bash
+uv run --locked python -m paper.validate_performance_numerics --output numerical_reference.json
+```
+
+The audit rejects missing instrumentation and empty expected coverage. Benchmark
+and parity validation uses explicit exceptions, so Python optimisation does not
+disable its checks. Reports derive host details, decision changes and recorded
+check outcomes from their input data. See [numerical validation and timing](paper/validation.md)
+for the reference assumptions, fixed inputs and package comparison commands.
 
 ## Relevant-aircraft visualiser
 
