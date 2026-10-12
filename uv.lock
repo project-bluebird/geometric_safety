@@ -474,7 +474,7 @@ wheels = [
 
 [[package]]
 name = "geometric-safety"
-version = "0.3.2"
+version = "0.3.4"
 source = { editable = "." }
 dependencies = [
     { name = "matplotlib" },
@@ -490,6 +490,7 @@ apps = [
 dev = [
     { name = "httpx" },
     { name = "jupyter" },
+    { name = "mpmath" },
     { name = "pytest" },
     { name = "ruff" },
     { name = "ty" },
@@ -508,6 +509,7 @@ apps = [{ name = "fastapi", extras = ["all"], specifier = ">=0.136.1" }]
 dev = [
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "jupyter", specifier = ">=1.1.1" },
+    { name = "mpmath", specifier = ">=1.4.1" },
     { name = "pytest", specifier = ">=9.0.3" },
     { name = "ruff", specifier = ">=0.15.12" },
     { name = "ty", specifier = ">=0.0.32" },
@@ -1132,6 +1134,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/7b/92/328a294a6de83bacb95bed01f04e0eaff4e3616ee359fc821a5dfc539b02/mistune-3.3.4.tar.gz", hash = "sha256:58b5c96d6fcb61190dfe5fae498d2b2065f99cf61e9649418fd54cf1ada86dfe", size = 121426, upload-time = "2026-07-22T05:22:30.89Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/77/e4/288365afae98953bc01de09f686f40d8ee84578135aa7767d5d4e60b5278/mistune-3.3.4-py3-none-any.whl", hash = "sha256:ee015381e955e370962968befe1d729ab60fafb6a715ac6751763fbce38c8d4a", size = 66862, upload-time = "2026-07-22T05:22:29.419Z" },
+]
+
+[[package]]
+name = "mpmath"
+version = "1.4.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/c5/b0/6de8e78014ff1842a90cc9a56da6ccfb598a5390ed0257fcdb7d9680c18b/mpmath-1.4.1.tar.gz", hash = "sha256:efd6d1b75f09d69524a67609949812668b28e81ecbfe0ab449ced8c13e92642e", size = 2093211, upload-time = "2026-03-15T01:17:38.245Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/13/f2/abeec3db71d221ccd3cd89d206be1fabf5a3ee7178862f5fba23a59607e0/mpmath-1.4.1-py3-none-any.whl", hash = "sha256:dc4f0ea2304480d4a9a48a94c1020571558ade522b44a6912efac63a586e140f", size = 567787, upload-time = "2026-03-15T01:17:36.392Z" },
 ]
 
 [[package]]
