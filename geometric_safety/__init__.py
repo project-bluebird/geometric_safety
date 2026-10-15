@@ -6,6 +6,10 @@ from geometric_safety.combined import (
     catch_up_projection_interval_with_vertical,
     certify_heading_separation_with_vertical,
 )
+from geometric_safety.geographic import (
+    certify_heading_separation_from_latlon,
+    certify_heading_separation_with_vertical_from_latlon,
+)
 from geometric_safety.heading import HeadingAssuranceResult, HeadingMotion, certify_heading_separation
 from geometric_safety.relevant_aircraft import (
     catch_up_projection_interval,
@@ -29,7 +33,9 @@ __all__ = [
     "catch_up_projection_interval_with_turns_and_vertical",
     "catch_up_projection_interval_with_vertical",
     "certify_heading_separation",
+    "certify_heading_separation_from_latlon",
     "certify_heading_separation_with_vertical",
+    "certify_heading_separation_with_vertical_from_latlon",
     "level_at_time_fl",
     "time_to_vertical_overlap_resolution",
     "vertical_band_gap_fl",
