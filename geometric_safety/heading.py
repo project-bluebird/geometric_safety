@@ -130,6 +130,25 @@ def _require_nonnegative_finite(name: str, value: float) -> None:
         raise ValueError(f"{name} must be finite and nonnegative")
 
 
+def _validate_heading_query(
+    relative_position_m: tuple[float, float],
+    separation_threshold_m: float,
+    horizon_s: float,
+    relative_position_error_m: float,
+    relative_velocity_error_mps: float,
+) -> None:
+    """Validate query values before either a lateral or vertical acceptance."""
+    if len(relative_position_m) != 2 or not all(math.isfinite(value) for value in relative_position_m):
+        raise ValueError("relative_position_m must contain two finite coordinates")
+    for name, value in (
+        ("separation_threshold_m", separation_threshold_m),
+        ("horizon_s", horizon_s),
+        ("relative_position_error_m", relative_position_error_m),
+        ("relative_velocity_error_mps", relative_velocity_error_mps),
+    ):
+        _require_nonnegative_finite(name, value)
+
+
 def _turn_angle_deg(motion: HeadingMotion) -> float:
     # Passing abs_diff explicitly avoids repeated Numba dispatch after JIT warm-up.
     # heading_diff preserves the exact input-difference side at wrap boundaries.
@@ -274,15 +293,13 @@ def certify_heading_separation(
     outside the kernel's numerical domain is unresolved. The domain ensures
     resolution of the empirical guard, not a proved floating-point error bound.
     """
-    if len(relative_position_m) != 2 or not all(math.isfinite(value) for value in relative_position_m):
-        raise ValueError("relative_position_m must contain two finite coordinates")
-    for name, value in (
-        ("separation_threshold_m", separation_threshold_m),
-        ("horizon_s", horizon_s),
-        ("relative_position_error_m", relative_position_error_m),
-        ("relative_velocity_error_mps", relative_velocity_error_mps),
-    ):
-        _require_nonnegative_finite(name, value)
+    _validate_heading_query(
+        relative_position_m,
+        separation_threshold_m,
+        horizon_s,
+        relative_position_error_m,
+        relative_velocity_error_mps,
+    )
     for label, motion in (("a", a), ("b", b)):
         reason = _unsupported_reason(motion)
         if reason is not None:

@@ -1,5 +1,6 @@
 """Vertical cleared-band timing for aircraft level changes."""
 
+from fractions import Fraction
 import math
 
 import numba
@@ -11,6 +12,9 @@ SECONDS_PER_MINUTE = 60.0
 DEFAULT_VERTICAL_RATE_FPM = 1000.0
 DEFAULT_VERTICAL_SEPARATION_FL = 10.0
 DEFAULT_VERTICAL_ROUNDING_FL = 10
+# Grid comparisons snap edges within this tolerance towards the boundary.
+# That can enlarge a reported gap by up to twice this value in exact arithmetic;
+# it is not a bound on errors in the floating-point motion calculation.
 _ROUNDING_GRID_EPSILON_FL = 1.0e-9
 
 # A real resolution time is always non-negative, so a negative sentinel can represent
@@ -104,13 +108,13 @@ def _directional_compared_levels_fl(
 
 @numba.njit(cache=True, fastmath=True)
 def _rounded_lower_index(level_fl: float, rounded: int) -> int:
-    """Return the conservative rounded-grid index for the lower compared level."""
+    """Round the lower compared edge upward, with the stated grid tolerance."""
     return math.ceil((level_fl - _ROUNDING_GRID_EPSILON_FL) / rounded)
 
 
 @numba.njit(cache=True, fastmath=True)
 def _rounded_higher_index(level_fl: float, rounded: int) -> int:
-    """Return the conservative rounded-grid index for the higher compared level."""
+    """Round the higher compared edge downward, with the stated grid tolerance."""
     return math.floor((level_fl + _ROUNDING_GRID_EPSILON_FL) / rounded)
 
 
@@ -136,9 +140,8 @@ def _directional_band_gap_fl(
         b_above_a=b_above_a,
     )
 
-    # Rounding is deliberately conservative: close the tested gap before comparing it
-    # with the required separation. The small grid epsilon avoids one-index flicker
-    # when floating-point arithmetic lands just beside a rounding boundary.
+    # Close the gap to the grid, allowing each edge the documented 1e-9 FL
+    # boundary tolerance. The guarded certificate separately checks the raw gap.
     if rounded > 0:
         lower_level_fl = _rounded_lower_index(lower_level_fl, rounded) * rounded
         higher_level_fl = _rounded_higher_index(higher_level_fl, rounded) * rounded
@@ -162,7 +165,10 @@ def vertical_band_gap_fl(
     example, means the bands are separated by 10 flight levels, i.e. 1000 ft. When the
     bands overlap, the returned value is negative by the amount of overlap. Compared
     band edges are rounded toward each other to multiples of `rounded` before the gap is
-    measured; pass `rounded <= 0` to use the exact band edges.
+    measured; pass `rounded <= 0` to use unrounded floating-point band edges.
+    With rounding enabled, a 1e-9 FL tolerance per edge can snap an edge to a
+    nearby grid boundary and enlarge the reported gap by up to 2e-9 FL, apart
+    from arithmetic error. This helper does not independently bound that error.
 
     Parameters
     ----------
@@ -182,7 +188,7 @@ def vertical_band_gap_fl(
     rounded : int, optional
         Flight-level rounding step used before measuring the gap. The lower compared
         level is rounded upward and the higher compared level is rounded downward.
-        Values less than or equal to zero disable rounding and use exact band edges.
+        Values less than or equal to zero use unrounded floating-point band edges.
 
     Returns
     -------
@@ -226,7 +232,11 @@ def vertical_bands_are_resolved(
     rounded: int = DEFAULT_VERTICAL_ROUNDING_FL,
 ) -> bool:
     """
-    Return whether the remaining vertical bands are distinct by `required_gap_fl`.
+    Return whether the computed band gap reaches `required_gap_fl`.
+
+    This comparison inherits vertical_band_gap_fl's 1e-9 FL tolerance per
+    rounded edge and floating-point arithmetic. It is not an independent
+    numerical verification of the underlying unrounded separation.
 
     Parameters
     ----------
@@ -248,12 +258,12 @@ def vertical_bands_are_resolved(
     rounded : int, optional
         Flight-level rounding step used before measuring the gap. The lower compared
         level is rounded upward and the higher compared level is rounded downward.
-        Values less than or equal to zero disable rounding and use exact band edges.
+        Values less than or equal to zero use unrounded floating-point band edges.
 
     Returns
     -------
     bool
-        True if the remaining vertical bands are separated by at least
+        True if the computed gap, including the grid tolerance, reaches
         `required_gap_fl`.
     """
     if required_gap_fl < 0.0:
@@ -299,7 +309,7 @@ def _first_directional_gap_crossing_in_interval_s(
     """Return when one directional band gap first reaches `required_gap_fl`."""
     # Between two adjacent "aircraft reaches selected level" events, each band edge is
     # linear in time. Without rounding that leaves one linear gap; with rounding, the
-    # conservative directional gap changes only at rounding-grid boundary events.
+    # directional gap with grid rounding changes only at grid boundary events.
     start_lower_level_fl, start_higher_level_fl = _directional_compared_levels_fl(
         a_current_fl=a_current_fl,
         a_selected_fl=a_selected_fl,
@@ -311,7 +321,7 @@ def _first_directional_gap_crossing_in_interval_s(
     )
 
     # Express the starting rounded gap as a difference in grid indices. This is the
-    # same conservative rounding used by `vertical_band_gap_fl`, just kept as indices
+    # same grid rounding used by `vertical_band_gap_fl`, just kept as indices
     # so the rounded branch can count how many boundary events are still needed.
     if rounded > 0:
         start_higher_index = _rounded_higher_index(start_higher_level_fl, rounded)
@@ -423,12 +433,12 @@ def time_to_vertical_overlap_resolution(
     rounded: int = DEFAULT_VERTICAL_ROUNDING_FL,
 ) -> float:
     """
-    Return the first time at which the remaining vertical bands are resolved.
+    Estimate the first time at which the remaining vertical bands are resolved.
 
     Each aircraft is assumed to fly from current level toward selected level at
     `vertical_rate_fpm`, stopping once selected level is reached. At any time, its
     vertical band is the interval between its current level at that time and its
-    selected level. The returned time is the first second at which those two bands are
+    selected level. The returned time estimates when those two bands are
     separated by at least `required_gap_fl`, after rounding compared band edges toward
     each other to multiples of `rounded`.
 
@@ -455,12 +465,12 @@ def time_to_vertical_overlap_resolution(
     rounded : int, optional
         Flight-level rounding step used before measuring the gap. The lower compared
         level is rounded upward and the higher compared level is rounded downward.
-        Pass `rounded <= 0` to use exact band edges.
+        Pass `rounded <= 0` to use unrounded floating-point band edges.
 
     Returns
     -------
     float
-        First time in seconds at which the remaining vertical bands are separated by
+        Estimated first time in seconds at which the remaining vertical bands are separated by
         `required_gap_fl`; `0.0` if already resolved; or
         `VERTICAL_OVERLAP_NEVER_RESOLVES_S` if they never resolve.
 
@@ -468,12 +478,14 @@ def time_to_vertical_overlap_resolution(
     -----
     Band edges are piecewise linear in time, and their slopes can only change when one
     aircraft reaches its selected level. The function therefore checks at most two
-    intervals and both possible vertical orderings. Exact edge checks use direct linear
+    intervals and both possible vertical orderings. Unrounded checks use direct linear
     interpolation; rounded checks count the rounding-grid boundary events needed to
     satisfy the required gap.
-    The model does not include vertical-rate uncertainty: because the same rate is used
-    for both aircraft, callers using this as a safety filter should pass a conservative
-    low value that all filtered aircraft are expected to meet or exceed.
+    Passing a shared minimum rate encloses independent, faster rates when both
+    aircraft progress immediately towards their selected levels without overshoot
+    and remain there on arrival. The remaining bands shrink as time increases.
+    Rounded comparisons use a 1e-9 FL tolerance per edge, as documented by
+    vertical_band_gap_fl. The returned boundary is a floating-point estimate.
     """
     if required_gap_fl < 0.0:
         required_gap_fl = 0.0
@@ -546,3 +558,161 @@ def time_to_vertical_overlap_resolution(
     # If neither linear interval crossed the required gap, both aircraft are level by
     # `second_done_s` and the selected-level bands remain fixed from then on.
     return VERTICAL_OVERLAP_NEVER_RESOLVES_S
+
+
+def _exact_gap_deficit(
+    levels: tuple[int, int, int, int],
+    required_gap: int,
+    level_denominator: int,
+    rate_ratio: tuple[int, int],
+    time_ratio: tuple[int, int],
+) -> int:
+    """Return an exact deficit numerator; positive means insufficient separation.
+
+    Levels and required_gap share level_denominator. The returned numerator
+    has denominator level_denominator * progress_den, defined below.
+    """
+    lower_current, lower_selected, higher_current, higher_selected = levels
+    rate_num, rate_den = rate_ratio
+    time_num, time_den = time_ratio
+    conversion = int(FT_PER_FL * SECONDS_PER_MINUTE)
+    progress_num = rate_num * time_num * level_denominator
+    progress_den = conversion * rate_den * time_den
+    lower_top = max(lower_selected * progress_den, lower_current * progress_den - progress_num)
+    higher_bottom = min(higher_selected * progress_den, higher_current * progress_den + progress_num)
+    return required_gap * progress_den - (higher_bottom - lower_top)
+
+
+def _conservative_vertical_resolution_time_s(
+    a_current_fl: float,
+    a_selected_fl: float,
+    b_current_fl: float,
+    b_selected_fl: float,
+    minimum_vertical_rate_fpm: float,
+    required_vertical_gap_fl: float,
+    vertical_rounding_fl: int,
+) -> float | None:
+    """Verify a proposed vertical shortcut, or return None to retain lateral checking.
+
+    Inputs have already passed the heading interface's numeric validation.
+    The floating-point timing kernel proposes a time using its rounding grid.
+    Exact integer arithmetic on the supplied binary64 values then checks the
+    unrounded gap, without the kernel's grid tolerance. If necessary,
+    the time is increased and verified again. This can return a later boundary
+    than the first mathematical resolution time, including with rounding off.
+    """
+    levels = (a_current_fl, a_selected_fl, b_current_fl, b_selected_fl)
+    # Keep the proposal's grid-index products within binary64/int64 range.
+    # This bound protects arithmetic range; exact verification below protects
+    # acceptance from loss of precision within that range.
+    if max(*(abs(level) for level in levels), required_vertical_gap_fl, vertical_rounding_fl) > 2**52:
+        return None
+    if vertical_bands_are_resolved(
+        a_current_fl,
+        a_selected_fl,
+        b_current_fl,
+        b_selected_fl,
+        0.0,
+        required_vertical_gap_fl,
+        0.0,
+        vertical_rounding_fl,
+    ):
+        resolution_s = 0.0
+    else:
+        rate_flps = minimum_vertical_rate_fpm / FT_PER_FL / SECONDS_PER_MINUTE
+        if rate_flps == 0.0:
+            return None
+        for current_fl, selected_fl in ((a_current_fl, a_selected_fl), (b_current_fl, b_selected_fl)):
+            if current_fl != selected_fl:
+                completion_s = abs(selected_fl - current_fl) / rate_flps
+                if not math.isfinite(completion_s) or completion_s == 0.0:
+                    return None
+        resolution_s = float(
+            time_to_vertical_overlap_resolution(
+                a_current_fl,
+                a_selected_fl,
+                b_current_fl,
+                b_selected_fl,
+                minimum_vertical_rate_fpm,
+                required_vertical_gap_fl,
+                vertical_rounding_fl,
+            )
+        )
+        if not math.isfinite(resolution_s) or resolution_s < 0.0:
+            return None
+        if not vertical_bands_are_resolved(
+            a_current_fl,
+            a_selected_fl,
+            b_current_fl,
+            b_selected_fl,
+            minimum_vertical_rate_fpm,
+            required_vertical_gap_fl,
+            resolution_s,
+            vertical_rounding_fl,
+        ):
+            return None
+
+    # Selected levels determine the only possible separated final ordering.
+    # When they coincide and the required gap is zero, current levels choose
+    # the ordering that can become disjoint first.
+    if (a_selected_fl, a_current_fl) <= (b_selected_fl, b_current_fl):
+        ordered_levels = (a_current_fl, a_selected_fl, b_current_fl, b_selected_fl)
+    else:
+        ordered_levels = (b_current_fl, b_selected_fl, a_current_fl, a_selected_fl)
+
+    # Binary64 denominators are powers of two, so the largest is a common
+    # denominator. Scaling to it preserves each supplied value exactly.
+    ratios = tuple(float(value).as_integer_ratio() for value in (*ordered_levels, required_vertical_gap_fl))
+    level_denominator = max(denominator for _, denominator in ratios)
+    lower_current, lower_selected, higher_current, higher_selected, required_gap = (
+        numerator * (level_denominator // denominator) for numerator, denominator in ratios
+    )
+    scaled_levels = (lower_current, lower_selected, higher_current, higher_selected)
+    if higher_selected - lower_selected < required_gap:
+        return None
+    rate_ratio = float(minimum_vertical_rate_fpm).as_integer_ratio()
+    time_ratio = resolution_s.as_integer_ratio()
+    deficit = _exact_gap_deficit(scaled_levels, required_gap, level_denominator, rate_ratio, time_ratio)
+    if deficit <= 0:
+        return resolution_s
+    rate_num, _ = rate_ratio
+    if rate_num == 0:
+        return None
+
+    # Until the required gap is reached, at least one compared edge must keep
+    # moving at the minimum rate: otherwise the separated selected levels
+    # could never be reached. Dividing the deficit by one aircraft's rate
+    # therefore gives a conservative delay, also when both edges are moving.
+    # Dividing the deficit by the rate cancels the unit conversion and the
+    # rate denominator, leaving level_denominator * time_den * rate_num.
+    time_num, time_den = time_ratio
+    corrected_num = time_num * level_denominator * rate_num + deficit
+    corrected_den = level_denominator * time_den * rate_num
+    try:
+        resolution_s = float(Fraction(corrected_num, corrected_den))
+    except OverflowError:
+        return None
+    if not math.isfinite(resolution_s):
+        return None
+    final_time_num, final_time_den = resolution_s.as_integer_ratio()
+    if final_time_num * corrected_den < corrected_num * final_time_den:
+        resolution_s = math.nextafter(resolution_s, math.inf)
+    if not math.isfinite(resolution_s):
+        return None
+    if (
+        _exact_gap_deficit(scaled_levels, required_gap, level_denominator, rate_ratio, resolution_s.as_integer_ratio())
+        > 0
+    ):
+        return None
+    if not vertical_bands_are_resolved(
+        a_current_fl,
+        a_selected_fl,
+        b_current_fl,
+        b_selected_fl,
+        minimum_vertical_rate_fpm,
+        required_vertical_gap_fl,
+        resolution_s,
+        vertical_rounding_fl,
+    ):
+        return None
+    return resolution_s

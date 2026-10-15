@@ -1,7 +1,18 @@
 """Combined lateral and vertical safety checks."""
 
+from dataclasses import dataclass
+import math
+from typing import Literal
+
 import numba
 
+from geometric_safety.heading import (
+    HeadingAssuranceResult,
+    HeadingMotion,
+    _require_nonnegative_finite,
+    _validate_heading_query,
+    certify_heading_separation,
+)
 from geometric_safety.relevant_aircraft import (
     TURN_SPEED_SCHEDULE_UNCERTAINTY_KT_DEFAULT,
     TURN_USE_INTERVAL_LOCAL_LIPSCHITZ_DEFAULT,
@@ -13,8 +24,142 @@ from geometric_safety.vertical import (
     DEFAULT_VERTICAL_ROUNDING_FL,
     DEFAULT_VERTICAL_SEPARATION_FL,
     VERTICAL_OVERLAP_NEVER_RESOLVES_S,
+    _conservative_vertical_resolution_time_s,
     time_to_vertical_overlap_resolution,
 )
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class CombinedHeadingAssuranceResult:
+    """Combined acceptance over the requested horizon and its supporting checks.
+
+    vertical_resolution_time_s is a time from which the declared altitude bands
+    stay separated, or None when no usable resolution time was established.
+    It can exceed the requested horizon. lateral_horizon_s is the interval end
+    passed to the heading solver, capped at the requested horizon.
+
+    lateral_result contains the heading solver's result over that interval.
+    It is None only when vertical separation suffices from time zero, in which
+    case lateral_horizon_s is zero. Its diagnostics and inflation describe only
+    the lateral interval, not the entire combined encounter. unresolved does
+    not establish a conflict; unsupported comes from a required lateral check.
+    """
+
+    status: Literal["certified_safe", "unresolved", "unsupported"]
+    reason: str
+    vertical_resolution_time_s: float | None
+    lateral_horizon_s: float
+    lateral_result: HeadingAssuranceResult | None
+
+
+def certify_heading_separation_with_vertical(
+    relative_position_m: tuple[float, float],
+    a: HeadingMotion,
+    b: HeadingMotion,
+    *,
+    a_current_fl: float,
+    a_selected_fl: float,
+    b_current_fl: float,
+    b_selected_fl: float,
+    minimum_vertical_rate_fpm: float,
+    separation_threshold_m: float,
+    horizon_s: float,
+    required_vertical_gap_fl: float = DEFAULT_VERTICAL_SEPARATION_FL,
+    vertical_rounding_fl: int = DEFAULT_VERTICAL_ROUNDING_FL,
+    relative_position_error_m: float = 0.0,
+    relative_velocity_error_mps: float = 0.0,
+) -> CombinedHeadingAssuranceResult:
+    """Certify lateral or vertical separation throughout [0, horizon_s].
+
+    Each aircraft progresses monotonically from its current flight level to
+    its selected level at no less than minimum_vertical_rate_fpm, with no
+    overshoot, then stays there. Rates may differ and vary above that shared
+    minimum. The lower bound applies immediately until the selected level is
+    reached; a response delay or ramp below it is outside this contract. A zero
+    minimum supplies no progress guarantee, but separated initial bands still
+    suffice. Flight levels are exact inputs to this model, without an altitude
+    error allowance. Lateral speed bounds must include climb/descent changes.
+
+    Remaining altitude bands enclose all faster progress and shrink over time.
+    The vertical calculation proposes a time at which they become separated.
+    Exact verification of the unrounded gap can move this time later. The
+    heading solver checks up to the verified time, capped at the requested
+    horizon. If no usable vertical time is found, it checks the whole
+    horizon. Already separated bands suffice without a lateral check, even
+    when the declared horizontal law is unsupported by the heading solver.
+
+    Positions use the same A-minus-B Cartesian east/north frame as
+    certify_heading_separation. Invalid finite/nonnegative inputs raise
+    ValueError even when vertical separation alone would suffice. Negative
+    minimum rates are rejected; direction follows current and selected levels.
+    vertical_rounding_fl is a nonnegative integer; zero disables rounding.
+    The grid tolerance cannot reduce the requested vertical gap. Required
+    lateral checks retain the heading solver's numerical limitations.
+    """
+    _validate_heading_query(
+        relative_position_m,
+        separation_threshold_m,
+        horizon_s,
+        relative_position_error_m,
+        relative_velocity_error_mps,
+    )
+    for name, level in (
+        ("a_current_fl", a_current_fl),
+        ("a_selected_fl", a_selected_fl),
+        ("b_current_fl", b_current_fl),
+        ("b_selected_fl", b_selected_fl),
+    ):
+        if not math.isfinite(level):
+            raise ValueError(f"{name} must be finite")
+    _require_nonnegative_finite("minimum_vertical_rate_fpm", minimum_vertical_rate_fpm)
+    _require_nonnegative_finite("required_vertical_gap_fl", required_vertical_gap_fl)
+    if not isinstance(vertical_rounding_fl, int) or vertical_rounding_fl < 0:
+        raise ValueError("vertical_rounding_fl must be a nonnegative integer")
+
+    resolution_s = _conservative_vertical_resolution_time_s(
+        a_current_fl,
+        a_selected_fl,
+        b_current_fl,
+        b_selected_fl,
+        minimum_vertical_rate_fpm,
+        required_vertical_gap_fl,
+        vertical_rounding_fl,
+    )
+    if resolution_s == 0.0:
+        return CombinedHeadingAssuranceResult(
+            status="certified_safe",
+            reason="declared altitude bands are separated throughout the horizon",
+            vertical_resolution_time_s=0.0,
+            lateral_horizon_s=0.0,
+            lateral_result=None,
+        )
+    lateral_horizon_s = float(
+        _combined_projection_horizon_s(
+            horizon_s, VERTICAL_OVERLAP_NEVER_RESOLVES_S if resolution_s is None else resolution_s
+        )
+    )
+    lateral_result = certify_heading_separation(
+        relative_position_m,
+        a,
+        b,
+        separation_threshold_m=separation_threshold_m,
+        horizon_s=lateral_horizon_s,
+        relative_position_error_m=relative_position_error_m,
+        relative_velocity_error_mps=relative_velocity_error_mps,
+    )
+    if lateral_result.status != "certified_safe":
+        reason = f"required lateral check: {lateral_result.reason}"
+    elif lateral_horizon_s < horizon_s:
+        reason = "lateral separation certified until the altitude bands separate"
+    else:
+        reason = "lateral separation certified throughout the requested horizon"
+    return CombinedHeadingAssuranceResult(
+        status=lateral_result.status,
+        reason=reason,
+        vertical_resolution_time_s=resolution_s,
+        lateral_horizon_s=lateral_horizon_s,
+        lateral_result=lateral_result,
+    )
 
 
 @numba.njit(cache=True, fastmath=True)
