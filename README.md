@@ -432,8 +432,32 @@ after compilation when measuring steady-state query cost.
 From the repository root:
 
 ```bash
-uv sync --locked
+uv sync --locked --group apps --group browser
+uv run --locked ruff format --check .
+uv run --locked ruff check
+uv run --locked ty check
 uv run --locked pytest tests/ paper/tests/
+```
+
+The `apps` group includes the web application and its integration tests, and
+the `browser` group supplies the browser test tools. The library itself does
+not require either group. Test functions are subject to the same
+annotation checks as the library. Numerical tests include independently
+integrated motion, arbitrary-precision references and exact vertical-gap
+calculations. Audit guardrails are tested with invalid source and report data,
+and with real production solvers, without replacing solver or worker functions.
+
+For the visualiser's JavaScript type checks, install the locked development
+tools with `npm ci --ignore-scripts`, then run `npm run check:frontend`. These
+tools are not needed to serve the application.
+
+The optional browser suite starts its own local server and uses real HTTP
+responses and Chromium to check the form units, linked plots and position map:
+
+```bash
+uv sync --locked --group apps --group browser
+uv run --locked playwright install chromium
+uv run --locked pytest tests/browser/check_visualiser.py
 ```
 
 Run the independent numerical audit with:

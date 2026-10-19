@@ -1,9 +1,69 @@
 "use strict";
 
+/**
+ * @typedef {import("./relevant_aircraft.types").AircraftInput} AircraftInput
+ * @typedef {import("./relevant_aircraft.types").AircraftKey} AircraftKey
+ * @typedef {import("./relevant_aircraft.types").Bounds} Bounds
+ * @typedef {import("./relevant_aircraft.types").Certificate} Certificate
+ * @typedef {import("./relevant_aircraft.types").DetailPayload} DetailPayload
+ * @typedef {import("./relevant_aircraft.types").Geometry} Geometry
+ * @typedef {import("./relevant_aircraft.types").GeometryFrame} GeometryFrame
+ * @typedef {import("./relevant_aircraft.types").GridPayload} GridPayload
+ * @typedef {import("./relevant_aircraft.types").LateralResult} LateralResult
+ * @typedef {import("./relevant_aircraft.types").NumericParameter} NumericParameter
+ * @typedef {import("./relevant_aircraft.types").Paths} Paths
+ * @typedef {import("./relevant_aircraft.types").Plot} Plot
+ * @typedef {import("./relevant_aircraft.types").Point} Point
+ * @typedef {import("./relevant_aircraft.types").Preset} Preset
+ * @typedef {import("./relevant_aircraft.types").Status} Status
+ * @typedef {import("./relevant_aircraft.types").VerticalFrame} VerticalFrame
+ * @typedef {import("./relevant_aircraft.types").VisualParams} VisualParams
+ */
+
 (() => {
-  const $ = (id) => document.getElementById(id);
-  const examples = JSON.parse($("presetData").textContent);
-  const inputs = [...document.querySelectorAll("[data-path]")];
+  /** @param {string} id @returns {HTMLElement} */
+  function $(id) {
+    const element = document.getElementById(id);
+    if (!(element instanceof HTMLElement))
+      throw new Error(`Missing visualiser element: ${id}.`);
+    return element;
+  }
+
+  /** @param {string} id @returns {HTMLInputElement} */
+  function inputElement(id) {
+    const element = $(id);
+    if (!(element instanceof HTMLInputElement))
+      throw new Error(`Expected an input: ${id}.`);
+    return element;
+  }
+
+  /** @param {string} id @returns {HTMLSelectElement} */
+  function selectElement(id) {
+    const element = $(id);
+    if (!(element instanceof HTMLSelectElement))
+      throw new Error(`Expected a select: ${id}.`);
+    return element;
+  }
+
+  /** @param {string} id @returns {HTMLDetailsElement} */
+  function detailsElement(id) {
+    const element = $(id);
+    if (!(element instanceof HTMLDetailsElement))
+      throw new Error(`Expected a details element: ${id}.`);
+    return element;
+  }
+
+  /** @param {string} id @returns {HTMLCanvasElement} */
+  function canvasElement(id) {
+    const element = $(id);
+    if (!(element instanceof HTMLCanvasElement))
+      throw new Error(`Expected a canvas: ${id}.`);
+    return element;
+  }
+
+  const inputs = [...document.querySelectorAll("input")].filter(
+    (input) => input.dataset.path !== undefined,
+  );
   const NM = 1852;
   const theme = getComputedStyle(document.documentElement);
   const colour = {
@@ -15,62 +75,378 @@
     unresolved: theme.getPropertyValue("--unresolved").trim(),
     unsupported: "#94a3b8",
   };
-  let detail = null,
-    params = null,
-    grid = null,
-    gridPlot = null,
-    selected = 0,
-    relativeBounds = null,
-    relativeBoundsCount = 0;
-  let revision = 0,
-    detailRequest = null,
-    gridRequest = null,
-    pending = null;
+  /** @type {DetailPayload | null} */
+  let detail = null;
+  /** @type {VisualParams | null} */
+  let params = null;
+  /** @type {GridPayload | null} */
+  let grid = null;
+  /** @type {Plot | null} */
+  let gridPlot = null;
+  /** @type {Bounds | null} */
+  let relativeBounds = null;
+  let selected = 0,
+    relativeBoundsCount = 0,
+    revision = 0;
+  /** @type {AbortController | null} */
+  let detailRequest = null;
+  /** @type {AbortController | null} */
+  let gridRequest = null;
+  /** @type {number | null} */
+  let pending = null;
+  /** @param {string} id @param {string} value @returns {void} */
   const text = (id, value) => {
     $(id).textContent = value;
   };
+  /** @param {number} value @param {number} [places] @returns {string} */
   const fmt = (value, places = 1) => {
     const rounded = Number(value).toFixed(places);
     return Number(rounded) === 0 ? "0" : rounded.replace(/\.0$/, "");
   };
+  /** @param {number} value @returns {string} */
   const seconds = (value) => `${fmt(value)} s`;
+  /** @param {number} value @returns {string} */
   const nm = (value) => `${(value / NM).toFixed(2)} NM`;
 
-  function readInputs() {
-    const value = { a: {}, b: {} };
-    for (const input of inputs) {
-      const path = input.dataset.path.split(".");
-      const target = path.length === 2 ? value[path[0]] : value;
-      target[path.at(-1)] =
-        input.type === "checkbox"
-          ? input.checked
-          : Number(input.value) * Number(input.dataset.scale);
-    }
+  /** @type {readonly AircraftKey[]} */
+  const aircraftKeys = ["a", "b"];
+  /** @type {readonly (keyof AircraftInput)[]} */
+  const aircraftFields = [
+    "lat",
+    "lon",
+    "heading_deg",
+    "target_heading_deg",
+    "turn_rate_deg_s",
+    "speed_min_kt",
+    "speed_max_kt",
+    "heading_deviation_deg",
+    "current_fl",
+    "selected_fl",
+  ];
+  /** @type {readonly NumericParameter[]} */
+  const parameterFields = [
+    "separation_threshold_nm",
+    "horizon_s",
+    "relative_position_error_m",
+    "relative_velocity_error_mps",
+    "minimum_vertical_rate_fpm",
+    "required_vertical_gap_fl",
+    "vertical_rounding_fl",
+    "grid_density",
+    "view_half_extent_nm",
+  ];
+  const examples = checked(
+    JSON.parse($("presetData").textContent ?? ""),
+    isPresets,
+    "encounter examples",
+  );
+
+  /** @param {unknown} value @returns {value is Record<string, unknown>} */
+  function isRecord(value) {
+    return typeof value === "object" && value !== null && !Array.isArray(value);
+  }
+
+  /** @param {unknown} value @returns {value is number} */
+  function isNumber(value) {
+    return typeof value === "number" && Number.isFinite(value);
+  }
+
+  /**
+   * @template T
+   * @param {unknown} value
+   * @param {(item: unknown) => item is T} accepts
+   * @returns {value is T[]}
+   */
+  function isArrayOf(value, accepts) {
+    return Array.isArray(value) && value.every(accepts);
+  }
+
+  /** @param {unknown} value @returns {value is Point} */
+  function isPoint(value) {
+    return isArrayOf(value, isNumber) && value.length === 2;
+  }
+
+  /** @param {unknown} value @returns {value is Status} */
+  function isStatus(value) {
+    return (
+      value === "certified_safe" ||
+      value === "unresolved" ||
+      value === "unsupported"
+    );
+  }
+
+  /** @param {Record<string, unknown>} value @param {readonly string[]} fields @returns {boolean} */
+  function hasNumbers(value, fields) {
+    return fields.every((field) => isNumber(value[field]));
+  }
+
+  /** @param {unknown} value @returns {value is AircraftInput} */
+  function isAircraft(value) {
+    return isRecord(value) && hasNumbers(value, aircraftFields);
+  }
+
+  /** @param {unknown} value @returns {value is VisualParams} */
+  function isParams(value) {
+    return (
+      isRecord(value) &&
+      isAircraft(value.a) &&
+      isAircraft(value.b) &&
+      hasNumbers(value, parameterFields) &&
+      typeof value.vertical_enabled === "boolean"
+    );
+  }
+
+  /** @param {unknown} value @returns {value is Preset} */
+  function isPreset(value) {
+    return (
+      isRecord(value) &&
+      typeof value.id === "string" &&
+      typeof value.title === "string" &&
+      typeof value.description === "string" &&
+      isParams(value.params)
+    );
+  }
+
+  /** @param {unknown} value @returns {value is Preset[]} */
+  function isPresets(value) {
+    return isArrayOf(value, isPreset) && value.length > 0;
+  }
+
+  /** @param {unknown} value @returns {value is LateralResult} */
+  function isLateral(value) {
+    if (
+      !isRecord(value) ||
+      !isStatus(value.status) ||
+      typeof value.reason !== "string" ||
+      !isNumber(value.inflation_m)
+    )
+      return false;
+    if (value.diagnostic_kind === null)
+      return (
+        value.base_min_distance_m === null &&
+        value.base_closest_time_s === null &&
+        value.base_bound_interval_s === null
+      );
+    if (!isNumber(value.base_min_distance_m)) return false;
+    if (value.diagnostic_kind === "interval_bound")
+      return (
+        value.base_closest_time_s === null &&
+        isPoint(value.base_bound_interval_s)
+      );
+    return (
+      (value.diagnostic_kind === "straight_minimum" ||
+        value.diagnostic_kind === "sampled_minimum") &&
+      isNumber(value.base_closest_time_s) &&
+      value.base_bound_interval_s === null
+    );
+  }
+
+  /** @param {unknown} value @returns {value is Certificate} */
+  function isCertificate(value) {
+    return (
+      isRecord(value) &&
+      isStatus(value.status) &&
+      typeof value.reason === "string" &&
+      hasNumbers(value, ["horizon_s", "lateral_horizon_s"]) &&
+      (value.vertical_resolution_time_s === null ||
+        isNumber(value.vertical_resolution_time_s)) &&
+      (value.lateral === null || isLateral(value.lateral))
+    );
+  }
+
+  /** @param {unknown} value @returns {value is Paths} */
+  function isPaths(value) {
+    return (
+      isRecord(value) &&
+      isArrayOf(value.minimum, isPoint) &&
+      isArrayOf(value.midpoint, isPoint) &&
+      isArrayOf(value.maximum, isPoint)
+    );
+  }
+
+  /** @param {unknown} value @returns {value is GeometryFrame} */
+  function isGeometryFrame(value) {
+    return (
+      isRecord(value) &&
+      isArrayOf(value.relative_hull, isPoint) &&
+      value.relative_hull.length > 0 &&
+      isPoint(value.closest_point) &&
+      hasNumbers(value, ["base_distance_m", "midpoint_distance_m"])
+    );
+  }
+
+  /** @param {unknown} value @returns {value is Geometry} */
+  function isGeometry(value) {
+    return (
+      isRecord(value) &&
+      isPaths(value.a) &&
+      isPaths(value.b) &&
+      isPoint(value.a_hull_speed_bounds_mps) &&
+      isPoint(value.b_hull_speed_bounds_mps) &&
+      isArrayOf(value.frames, isGeometryFrame) &&
+      (value.effective_threshold_m === null ||
+        isNumber(value.effective_threshold_m))
+    );
+  }
+
+  /** @param {unknown} value @returns {value is VerticalFrame} */
+  function isVerticalFrame(value) {
+    return (
+      isRecord(value) &&
+      isPoint(value.a_band_fl) &&
+      isPoint(value.b_band_fl) &&
+      isNumber(value.gap_fl)
+    );
+  }
+
+  /** @param {unknown} value @returns {value is DetailPayload} */
+  function isDetail(value) {
+    if (
+      !isRecord(value) ||
+      !isCertificate(value.certificate) ||
+      !isArrayOf(value.times_s, isNumber) ||
+      value.times_s.length === 0 ||
+      !(value.geometry === null || isGeometry(value.geometry)) ||
+      !(
+        value.geometry_note === null || typeof value.geometry_note === "string"
+      ) ||
+      !(value.vertical === null || isArrayOf(value.vertical, isVerticalFrame))
+    )
+      return false;
+    const count = value.times_s.length;
+    return (
+      (value.geometry === null ||
+        (value.geometry.frames.length === count &&
+          [value.geometry.a, value.geometry.b].every((paths) =>
+            [paths.minimum, paths.midpoint, paths.maximum].every(
+              (path) => path.length === count,
+            ),
+          ))) &&
+      (value.vertical === null || value.vertical.length === count)
+    );
+  }
+
+  /** @param {unknown} value @returns {value is GridPayload} */
+  function isGrid(value) {
+    if (
+      !isRecord(value) ||
+      !isArrayOf(value.east_m, isNumber) ||
+      value.east_m.length < 2
+    )
+      return false;
+    const eastCount = value.east_m.length;
+    return (
+      isArrayOf(value.north_m, isNumber) &&
+      value.north_m.length >= 2 &&
+      isArrayOf(value.lats, isNumber) &&
+      value.lats.length === value.north_m.length &&
+      isArrayOf(value.lons, isNumber) &&
+      value.lons.length === eastCount &&
+      isArrayOf(value.statuses, (row) => isArrayOf(row, isStatus)) &&
+      value.statuses.length === value.north_m.length &&
+      value.statuses.every((row) => row.length === eastCount) &&
+      isRecord(value.counts) &&
+      hasNumbers(value.counts, [
+        "certified_safe",
+        "unresolved",
+        "unsupported",
+      ]) &&
+      isPoint(value.b_position_m)
+    );
+  }
+
+  /**
+   * @template T
+   * @param {unknown} value
+   * @param {(item: unknown) => item is T} accepts
+   * @param {string} description
+   * @returns {T}
+   */
+  function checked(value, accepts, description) {
+    if (!accepts(value)) throw new Error(`Invalid ${description} payload.`);
     return value;
   }
 
+  /** @param {unknown} error @returns {string} */
+  function errorMessage(error) {
+    return error instanceof Error ? error.message : String(error);
+  }
+
+  /** @param {Point} point @returns {Point} */
+  function toNM(point) {
+    return [point[0] / NM, point[1] / NM];
+  }
+
+  /** @param {string} id @returns {number} */
+  function readNumber(id) {
+    const input = inputElement(id);
+    return Number(input.value) * Number(input.dataset.scale);
+  }
+
+  /** @param {AircraftKey} key @returns {AircraftInput} */
+  function readAircraft(key) {
+    return {
+      lat: readNumber(`${key}_lat`),
+      lon: readNumber(`${key}_lon`),
+      heading_deg: readNumber(`${key}_heading_deg`),
+      target_heading_deg: readNumber(`${key}_target_heading_deg`),
+      turn_rate_deg_s: readNumber(`${key}_turn_rate_deg_s`),
+      speed_min_kt: readNumber(`${key}_speed_min_kt`),
+      speed_max_kt: readNumber(`${key}_speed_max_kt`),
+      heading_deviation_deg: readNumber(`${key}_heading_deviation_deg`),
+      current_fl: readNumber(`${key}_current_fl`),
+      selected_fl: readNumber(`${key}_selected_fl`),
+    };
+  }
+
+  /** @returns {VisualParams} */
+  function readInputs() {
+    return {
+      a: readAircraft("a"),
+      b: readAircraft("b"),
+      separation_threshold_nm: readNumber("separation_threshold_nm"),
+      horizon_s: readNumber("horizon_s"),
+      relative_position_error_m: readNumber("relative_position_error_m"),
+      relative_velocity_error_mps: readNumber("relative_velocity_error_mps"),
+      vertical_enabled: inputElement("vertical_enabled").checked,
+      minimum_vertical_rate_fpm: readNumber("minimum_vertical_rate_fpm"),
+      required_vertical_gap_fl: readNumber("required_vertical_gap_fl"),
+      vertical_rounding_fl: readNumber("vertical_rounding_fl"),
+      grid_density: readNumber("grid_density"),
+      view_half_extent_nm: readNumber("view_half_extent_nm"),
+    };
+  }
+
+  /** @param {VisualParams} value @returns {void} */
   function fillInputs(value) {
-    for (const input of inputs) {
-      const path = input.dataset.path.split(".");
-      const field =
-        path.length === 2 ? value[path[0]][path[1]] : value[path[0]];
-      if (input.type === "checkbox") input.checked = field;
-      else input.value = field / Number(input.dataset.scale);
+    for (const key of aircraftKeys) {
+      for (const field of aircraftFields) {
+        const input = inputElement(`${key}_${field}`);
+        input.value = String(value[key][field] / Number(input.dataset.scale));
+      }
     }
+    for (const field of parameterFields) {
+      const input = inputElement(field);
+      input.value = String(value[field] / Number(input.dataset.scale));
+    }
+    inputElement("vertical_enabled").checked = value.vertical_enabled;
     updateVerticalControls();
   }
 
+  /** @returns {void} */
   function updateVerticalControls() {
     document.querySelectorAll(".vertical-input").forEach((el) => {
-      el.hidden = !$("vertical_enabled").checked;
+      if (el instanceof HTMLElement)
+        el.hidden = !inputElement("vertical_enabled").checked;
     });
   }
 
+  /** @param {boolean} [keepGrid] @returns {void} */
   function invalidate(keepGrid = false) {
     revision += 1;
     detailRequest?.abort();
     gridRequest?.abort();
-    clearTimeout(pending);
+    if (pending !== null) clearTimeout(pending);
     detail = null;
     ["plots", "timeControls", "resultFacts", "geometryNotice"].forEach((id) => {
       $(id).hidden = true;
@@ -87,6 +463,7 @@
     }
   }
 
+  /** @returns {boolean} */
   function validateInputs() {
     const invalid = inputs.find((input) => !input.checkValidity());
     if (!invalid) return true;
@@ -97,10 +474,13 @@
     )
       if (ancestor instanceof HTMLDetailsElement) ancestor.open = true;
     invalid.reportValidity();
-    showError(`Check ${invalid.parentElement.textContent.trim()}.`);
+    showError(
+      `Check ${invalid.parentElement?.textContent?.trim() ?? invalid.id}.`,
+    );
     return false;
   }
 
+  /** @param {string} message @returns {void} */
   function showError(message) {
     $("resultCard").dataset.status = "error";
     text("statusBadge", "Invalid input");
@@ -108,6 +488,7 @@
     text("resultReason", message);
   }
 
+  /** @param {string} url @param {VisualParams} value @param {AbortSignal} signal @returns {Promise<unknown>} */
   async function post(url, value, signal) {
     const response = await fetch(url, {
       method: "POST",
@@ -116,12 +497,21 @@
       signal,
     });
     if (!response.ok) {
+      /** @type {unknown} */
       const body = await response.json().catch(() => null);
-      const error = body?.detail;
+      const error = isRecord(body) ? body.detail : null;
       if (Array.isArray(error))
         throw new Error(
           error
-            .map((item) => `${item.loc.slice(1).join(" ")}: ${item.msg}`)
+            .map((/** @type {unknown} */ item) => {
+              if (
+                !isRecord(item) ||
+                !Array.isArray(item.loc) ||
+                typeof item.msg !== "string"
+              )
+                return "Invalid request.";
+              return `${item.loc.slice(1).join(" ")}: ${item.msg}`;
+            })
             .join("; "),
         );
       throw new Error(
@@ -133,6 +523,7 @@
     return response.json();
   }
 
+  /** @returns {Promise<void>} */
   async function evaluate() {
     if (!validateInputs()) return;
     detailRequest?.abort();
@@ -143,7 +534,11 @@
     text("resultTitle", "Evaluating encounter…");
     text("statusBadge", "Working");
     try {
-      const data = await post("/api/time_sweep", query, request.signal);
+      const data = checked(
+        await post("/api/time_sweep", query, request.signal),
+        isDetail,
+        "encounter",
+      );
       if (currentRevision !== revision || request.signal.aborted) return;
       params = query;
       detail = data;
@@ -157,11 +552,13 @@
       render();
     } catch (error) {
       if (!request.signal.aborted && currentRevision === revision)
-        showError(error.message);
+        showError(errorMessage(error));
     }
   }
 
+  /** @returns {void} */
   function renderSummary() {
+    if (!detail || !params) return;
     const c = detail.certificate,
       lateral = c.lateral;
     $("resultCard").dataset.status = c.status;
@@ -247,28 +644,36 @@
     $("timeControls").hidden = $("plots").hidden;
   }
 
+  /** @returns {number} */
   function windowEnd() {
+    if (!detail) return 0;
     return Math.min(
       detail.certificate.horizon_s,
-      $("plotWindow").value === "full"
+      selectElement("plotWindow").value === "full"
         ? Infinity
-        : Number($("plotWindow").value),
+        : Number(selectElement("plotWindow").value),
     );
   }
 
+  /** @param {number} time @returns {number} */
   function nearestIndex(time) {
-    return detail.times_s.reduce(
+    if (!detail) return 0;
+    const times = detail.times_s;
+    return times.reduce(
       (best, t, i) =>
-        Math.abs(t - time) < Math.abs(detail.times_s[best] - time) ? i : best,
+        Math.abs(t - time) < Math.abs(times[best] - time) ? i : best,
       0,
     );
   }
 
+  /** @returns {number} */
   function visibleCount() {
+    if (!detail) return 0;
     const index = detail.times_s.findIndex((time) => time > windowEnd());
     return index < 0 ? detail.times_s.length : index;
   }
 
+  /** @param {Point[]} points @param {number} [minimumSpan] @returns {Bounds} */
   function extent(points, minimumSpan = 2) {
     const xs = points.map((p) => p[0]),
       ys = points.map((p) => p[1]);
@@ -279,8 +684,17 @@
     return [cx - dx / 2, cx + dx / 2, cy - dy / 2, cy + dy / 2];
   }
 
+  /**
+   * @param {string} id
+   * @param {Bounds} bounds
+   * @param {string} xLabel
+   * @param {string} yLabel
+   * @param {boolean} [equal]
+   * @param {number[] | null} [yTicks]
+   * @returns {Plot}
+   */
   function axes(id, bounds, xLabel, yLabel, equal = false, yTicks = null) {
-    const canvas = $(id),
+    const canvas = canvasElement(id),
       rect = canvas.getBoundingClientRect(),
       dpr = window.devicePixelRatio || 1;
     const width = rect.width,
@@ -288,6 +702,7 @@
     canvas.width = Math.round(width * dpr);
     canvas.height = Math.round(height * dpr);
     const ctx = canvas.getContext("2d");
+    if (!ctx) throw new Error("Canvas drawing is unavailable.");
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     const box = { left: 49, right: width - 14, top: 20, bottom: height - 39 };
     let [x0, x1, y0, y1] = bounds;
@@ -302,10 +717,12 @@
         dy = (box.bottom - box.top) / scale;
       [x0, x1, y0, y1] = [cx - dx / 2, cx + dx / 2, cy - dy / 2, cy + dy / 2];
     }
+    /** @param {Point} value @returns {Point} */
     const point = ([x, y]) => [
       box.left + ((x - x0) / (x1 - x0)) * (box.right - box.left),
       box.bottom - ((y - y0) / (y1 - y0)) * (box.bottom - box.top),
     ];
+    /** @param {Point} value @returns {Point} */
     const inverse = ([x, y]) => [
       x0 + ((x - box.left) / (box.right - box.left)) * (x1 - x0),
       y0 + ((box.bottom - y) / (box.bottom - box.top)) * (y1 - y0),
@@ -352,6 +769,15 @@
     return { ctx, point, inverse, box, bounds: [x0, x1, y0, y1] };
   }
 
+  /**
+   * @param {Plot} plot
+   * @param {Point[]} points
+   * @param {string} stroke
+   * @param {number[]} [dash]
+   * @param {number} [width]
+   * @param {string | null} [fill]
+   * @returns {void}
+   */
   function line(plot, points, stroke, dash = [], width = 1.8, fill = null) {
     if (!points.length) return;
     const { ctx, point } = plot;
@@ -373,6 +799,15 @@
     ctx.setLineDash([]);
   }
 
+  /**
+   * @param {Plot} plot
+   * @param {Point} value
+   * @param {string} fill
+   * @param {string} [label]
+   * @param {number} [radius]
+   * @param {boolean} [labelBelow]
+   * @returns {void}
+   */
   function dot(plot, value, fill, label = "", radius = 4, labelBelow = false) {
     const [x, y] = plot.point(value),
       ctx = plot.ctx;
@@ -396,6 +831,14 @@
     }
   }
 
+  /**
+   * @param {Plot} plot
+   * @param {number} radius
+   * @param {string} stroke
+   * @param {string | null} [fill]
+   * @param {number[]} [dash]
+   * @returns {void}
+   */
   function circle(plot, radius, stroke, fill = null, dash = []) {
     const centre = plot.point([0, 0]),
       edge = plot.point([radius, 0]),
@@ -413,6 +856,7 @@
     ctx.setLineDash([]);
   }
 
+  /** @param {Plot} plot @param {number} time @param {string} stroke @param {string} [label] @returns {void} */
   function markTime(plot, time, stroke, label = "") {
     if (time < plot.bounds[0] || time > plot.bounds[1]) return;
     const x = plot.point([time, 0])[0],
@@ -437,7 +881,9 @@
     }
   }
 
+  /** @param {Plot} plot @returns {void} */
   function shadeAfterVertical(plot) {
+    if (!detail) return;
     const c = detail.certificate;
     if (
       c.vertical_resolution_time_s === null ||
@@ -454,9 +900,10 @@
     );
   }
 
+  /** @param {number} count @returns {void} */
   function drawSpatial(count) {
-    const g = detail.geometry;
-    const toNM = (p) => p.map((v) => v / NM);
+    const g = detail?.geometry;
+    if (!g) return;
     const all = [g.a, g.b].flatMap((paths) =>
       [paths.minimum, paths.maximum].flatMap((path) =>
         path.slice(0, count).map(toNM),
@@ -469,10 +916,12 @@
       "North (NM)",
       true,
     );
-    for (const [paths, key] of [
+    /** @type {Array<[Paths, AircraftKey]>} */
+    const aircraftPaths = [
       [g.a, "a"],
       [g.b, "b"],
-    ]) {
+    ];
+    for (const [paths, key] of aircraftPaths) {
       line(
         plot,
         paths.minimum.slice(0, count).map(toNM),
@@ -507,7 +956,9 @@
     }
   }
 
+  /** @param {number} count @returns {void} */
   function drawDistance(count) {
+    if (!detail || !params || !detail.geometry) return;
     const g = detail.geometry,
       c = detail.certificate,
       times = detail.times_s.slice(0, count);
@@ -587,17 +1038,21 @@
     );
   }
 
+  /** @param {number} count @returns {void} */
   function drawHull(count) {
+    if (!detail || !params || !detail.geometry) return;
     const g = detail.geometry,
       c = detail.certificate,
       frame = g.frames[selected];
+    const effectiveThreshold = g.effective_threshold_m;
     const required =
-      c.lateral !== null && detail.times_s[selected] <= c.lateral_horizon_s;
-    const radius =
-      required && g.effective_threshold_m !== null
-        ? g.effective_threshold_m / NM
-        : params.separation_threshold_nm;
-    const hull = frame.relative_hull.map((p) => p.map((v) => v / NM));
+      c.lateral !== null &&
+      effectiveThreshold !== null &&
+      detail.times_s[selected] <= c.lateral_horizon_s;
+    const radius = required
+      ? effectiveThreshold / NM
+      : params.separation_threshold_nm;
+    const hull = frame.relative_hull.map(toNM);
     if (relativeBounds === null || relativeBoundsCount !== count) {
       const maxRadius = Math.max(
         params.separation_threshold_nm,
@@ -605,7 +1060,7 @@
       );
       const points = g.frames
         .slice(0, count)
-        .flatMap((f) => f.relative_hull.map((p) => p.map((v) => v / NM)));
+        .flatMap((f) => f.relative_hull.map(toNM));
       relativeBounds = extent(
         [...points, [-maxRadius, -maxRadius], [maxRadius, maxRadius]],
         1,
@@ -627,19 +1082,21 @@
     );
     circle(plot, params.separation_threshold_nm, "#8a969f", null, [3, 4]);
     line(plot, hull, colour.base, [], 2.5, "#32668d38");
-    const closest = frame.closest_point.map((v) => v / NM);
+    const closest = toNM(frame.closest_point);
     line(plot, [[0, 0], closest], colour.base, [4, 4], 1);
     dot(plot, [0, 0], "#354958", "0", 2.5);
     dot(plot, closest, colour.base);
     text(
       "hullCaption",
       required
-        ? `Base-hull distance ${nm(frame.base_distance_m)}. The outer circle is ${nm(g.effective_threshold_m)}: spacing plus the allowance used for this lateral interval. The dotted circle shows the requested spacing.`
+        ? `Base-hull distance ${nm(frame.base_distance_m)}. The outer circle is ${nm(effectiveThreshold)}: spacing plus the allowance used for this lateral interval. The dotted circle shows the requested spacing.`
         : `Base-hull distance ${nm(frame.base_distance_m)}. Lateral separation is not required at this time; the grey circle shows the requested spacing for reference.`,
     );
   }
 
+  /** @param {number} count @returns {void} */
   function drawVertical(count) {
+    if (!detail || !params || !detail.vertical) return;
     const frames = detail.vertical.slice(0, count),
       times = detail.times_s.slice(0, count);
     const levels = frames.flatMap((f) => [...f.a_band_fl, ...f.b_band_fl]);
@@ -661,11 +1118,13 @@
       false,
       ticks,
     );
-    for (const key of ["a", "b"]) {
+    for (const key of aircraftKeys) {
+      /** @type {Point[]} */
       const lower = times.map((time, i) => [
         time,
         frames[i][`${key}_band_fl`][0],
       ]);
+      /** @type {Point[]} */
       const upper = times.map((time, i) => [
         time,
         frames[i][`${key}_band_fl`][1],
@@ -688,12 +1147,13 @@
     );
   }
 
+  /** @returns {void} */
   function render() {
     if (!detail) return;
     const count = visibleCount();
     selected = Math.min(selected, count - 1);
-    $("timeSlider").max = count - 1;
-    $("timeSlider").value = selected;
+    inputElement("timeSlider").max = String(count - 1);
+    inputElement("timeSlider").value = String(selected);
     text("selectedTime", seconds(detail.times_s[selected]));
     text(
       "windowCaption",
@@ -707,6 +1167,7 @@
     if (detail.vertical) drawVertical(count);
   }
 
+  /** @returns {Promise<void>} */
   async function evaluateGrid() {
     if (!validateInputs()) return;
     gridRequest?.abort();
@@ -715,7 +1176,11 @@
     const currentRevision = revision;
     text("gridStatus", "Evaluating map…");
     try {
-      const data = await post("/api/grid", readInputs(), request.signal);
+      const data = checked(
+        await post("/api/grid", readInputs(), request.signal),
+        isGrid,
+        "position map",
+      );
       if (currentRevision !== revision || request.signal.aborted) return;
       grid = data;
       $("gridCanvas").hidden = false;
@@ -726,12 +1191,13 @@
       );
     } catch (error) {
       if (!request.signal.aborted && currentRevision === revision)
-        text("gridStatus", error.message);
+        text("gridStatus", errorMessage(error));
     }
   }
 
+  /** @returns {void} */
   function drawGrid() {
-    if (!grid || !$("mapSection").open) return;
+    if (!grid || !detailsElement("mapSection").open) return;
     const east = grid.east_m.map((v) => v / NM),
       north = grid.north_m.map((v) => v / NM);
     const step = east[1] - east[0];
@@ -739,9 +1205,9 @@
       "gridCanvas",
       [
         east[0] - step / 2,
-        east.at(-1) + step / 2,
+        east[east.length - 1] + step / 2,
         north[0] - step / 2,
-        north.at(-1) + step / 2,
+        north[north.length - 1] + step / 2,
       ],
       "B east from A (NM)",
       "B north from A (NM)",
@@ -761,14 +1227,10 @@
         plot.ctx.fillRect(x, y, right - x + 0.3, bottom - y + 0.3);
       }
     dot(plot, [0, 0], colour.a, "A");
-    dot(
-      plot,
-      grid.b_position_m.map((v) => v / NM),
-      colour.b,
-      "B",
-    );
+    dot(plot, toNM(grid.b_position_m), colour.b, "B");
   }
 
+  /** @param {string} id @returns {void} */
   function chooseExample(id) {
     const example = examples.find((item) => item.id === id);
     if (!example) return;
@@ -781,33 +1243,34 @@
   inputs.forEach((input) => {
     input.addEventListener("input", () => {
       invalidate();
-      $("preset").value = "custom";
+      selectElement("preset").value = "custom";
       text("presetDescription", "Custom motion and separation bounds.");
       updateVerticalControls();
     });
     input.addEventListener("change", () => {
-      pending = setTimeout(evaluate, 150);
+      pending = window.setTimeout(evaluate, 150);
     });
   });
   $("editInputs").addEventListener("click", () => {
-    $("encounterInputs").open = !$("encounterInputs").open;
+    detailsElement("encounterInputs").open =
+      !detailsElement("encounterInputs").open;
   });
   $("encounterInputs").addEventListener("toggle", () => {
     $("editInputs").setAttribute(
       "aria-expanded",
-      String($("encounterInputs").open),
+      String(detailsElement("encounterInputs").open),
     );
   });
   $("inputs").addEventListener("submit", (event) => {
     event.preventDefault();
-    clearTimeout(pending);
+    if (pending !== null) clearTimeout(pending);
     evaluate();
   });
   $("preset").addEventListener("change", () =>
-    chooseExample($("preset").value),
+    chooseExample(selectElement("preset").value),
   );
   $("timeSlider").addEventListener("input", () => {
-    selected = Number($("timeSlider").value);
+    selected = Number(inputElement("timeSlider").value);
     render();
   });
   $("plotWindow").addEventListener("change", render);
@@ -818,7 +1281,7 @@
   $("limitBtn").addEventListener("click", () => {
     if (!detail) return;
     if (detail.certificate.lateral_horizon_s > windowEnd())
-      $("plotWindow").value = "full";
+      selectElement("plotWindow").value = "full";
     selected = nearestIndex(detail.certificate.lateral_horizon_s);
     render();
   });
@@ -846,10 +1309,10 @@
       Math.min(n - 1, Math.round((east - grid.east_m[0]) / step)),
     );
     invalidate(true);
-    $("b_lat").value = grid.lats[i];
-    $("b_lon").value = grid.lons[j];
+    inputElement("b_lat").value = String(grid.lats[i]);
+    inputElement("b_lon").value = String(grid.lons[j]);
     grid.b_position_m = [grid.east_m[j], grid.north_m[i]];
-    $("preset").value = "custom";
+    selectElement("preset").value = "custom";
     text("presetDescription", "Aircraft B’s position selected from the map.");
     drawGrid();
     evaluate();

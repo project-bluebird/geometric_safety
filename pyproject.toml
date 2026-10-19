@@ -19,6 +19,7 @@ Repository = "https://github.com/project-bluebird/geometric_safety"
 
 [dependency-groups]
 apps = ["fastapi[all]>=0.136.1"]
+browser = ["playwright>=1.64.0"]
 dev = [
   "httpx>=0.28.1",
   "jupyter>=1.1.1",

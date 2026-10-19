@@ -1,0 +1,10 @@
+{
+  "name": "geometric-safety-frontend-checks",
+  "private": true,
+  "scripts": {
+    "check:frontend": "tsc --project tsconfig.json"
+  },
+  "devDependencies": {
+    "typescript": "7.0.2"
+  }
+}

@@ -4,6 +4,10 @@ from dataclasses import asdict
 import json
 from pathlib import Path
 import re
+import shutil
+import subprocess
+import sys
+import textwrap
 
 import pytest
 
@@ -32,28 +36,42 @@ def example(preset_id: str = "vertical_clearance") -> VisualParams:
 
 
 @pytest.mark.parametrize("filename", ["relevant_aircraft.js", "relevant_aircraft.css"])
-def test_page_refreshes_changed_assets(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, filename: str
-) -> None:
-    static_dir = tmp_path / "static"
-    static_dir.mkdir()
-    for asset in ("relevant_aircraft.js", "relevant_aircraft.css"):
-        (static_dir / asset).write_text("/* original */", encoding="utf-8")
-    monkeypatch.setattr("app.BASE_DIR", tmp_path)
-    pattern = rf'["\'](/static/{re.escape(filename)}[^"\']*)["\']'
-    before = client.get("/")
-    original = re.search(pattern, before.text)
-    assert original is not None
-    unchanged = re.search(pattern, client.get("/").text)
-    assert unchanged is not None
-    assert unchanged.group(1) == original.group(1)
+def test_page_refreshes_changed_assets(tmp_path: Path, filename: str) -> None:
+    # Use a complete app copy to change real served assets without altering the
+    # source checkout or substituting application behaviour.
+    shutil.copytree(Path(__file__).resolve().parents[1] / "app", tmp_path / "app")
+    script = textwrap.dedent("""
+        from pathlib import Path
+        import re
+        import sys
+        from fastapi.testclient import TestClient
+        import app
 
-    (static_dir / filename).write_text("/* revised */", encoding="utf-8")
-    after = client.get("/")
-    revised = re.search(pattern, after.text)
-    assert revised is not None
-    assert revised.group(1) != original.group(1)
-    assert after.headers["cache-control"] == "no-cache"
+        assert Path(app.__file__).parent == Path.cwd() / "app"
+        filename = sys.argv[1]
+        client = TestClient(app.app)
+        pattern = rf"(/static/{re.escape(filename)}\\?v=[a-f0-9]+)"
+        before = client.get("/")
+        original = re.search(pattern, before.text)
+        assert original is not None
+        unchanged = re.search(pattern, client.get("/").text)
+        assert unchanged is not None
+        assert unchanged.group(1) == original.group(1)
+        asset = Path("app/static") / filename
+        original_bytes = asset.read_bytes()
+        assert client.get(original.group(1)).content == original_bytes
+        asset.write_bytes(original_bytes + b"\\n/* asset version regression */\\n")
+        after = client.get("/")
+        revised = re.search(pattern, after.text)
+        assert revised is not None
+        assert revised.group(1) != original.group(1)
+        assert after.headers["cache-control"] == "no-cache"
+        assert client.get(revised.group(1)).content == asset.read_bytes()
+    """)
+    completed = subprocess.run(
+        [sys.executable, "-c", script, filename], cwd=tmp_path, capture_output=True, text=True, check=False
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
 
 
 @pytest.mark.parametrize("preset_id", [p.id for p in presets()])
