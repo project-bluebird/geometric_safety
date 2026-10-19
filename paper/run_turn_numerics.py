@@ -92,9 +92,10 @@ class SplitStats(TypedDict):
     worst_positive_error: WorstObservation | None
 
 
-def traced_solver() -> tuple[StudySolver, str]:
+def instrument_solver(source: str) -> tuple[ast.Module, ast.FunctionDef]:
+    """Add scalar comparison recording to a validated production source snapshot."""
     tree, function = solver_ast(
-        inspect.getsource(ra._catch_up_projection_interval_with_turns_local.py_func),
+        source,
         "traced_turn_solver",
         ra.TURN_CERT_FP_GUARD_M,
     )
@@ -129,6 +130,11 @@ def traced_solver() -> tuple[StudySolver, str]:
     recorder = Recorder()
     recorder.visit(tree)
     require_hooks(recorder.count, 2, "scalar comparison")
+    return tree, function
+
+
+def traced_solver() -> tuple[StudySolver, str]:
+    tree, function = instrument_solver(inspect.getsource(ra._catch_up_projection_interval_with_turns_local.py_func))
     solver = compile_solver(tree, function, vars(ra), "<turn-numerical-study>")
     return solver, ast.unparse(tree)
 

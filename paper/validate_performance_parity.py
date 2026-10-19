@@ -11,8 +11,34 @@ from pathlib import Path
 import random
 import subprocess
 import sys
+from typing import TypedDict
 
-from paper.benchmark_library_versions import KT, Case, digest, list_value, number, object_json, object_value, read_cases
+from geometric_safety import heading, relevant_aircraft as ra
+from paper.benchmark_library_versions import (
+    KT,
+    Case,
+    Json,
+    digest,
+    list_value,
+    number,
+    object_json,
+    object_value,
+    read_cases,
+)
+from paper.numerical_validation import SolverResult
+
+
+class ParityRecord(TypedDict):
+    id: str
+    suite: str
+    core: SolverResult
+    interface: heading.HeadingAssuranceResult
+
+
+class ParityComparison(TypedDict):
+    cases: int
+    maximum_distance_change_m: dict[str, float]
+    diagnostic_time_changes: dict[str, int]
 
 
 def corpus(path: Path) -> list[Case]:
@@ -86,11 +112,9 @@ def corpus(path: Path) -> list[Case]:
     return result
 
 
-def worker(cases_path: Path, output: Path) -> None:
-    from geometric_safety import heading, relevant_aircraft as ra
-
-    rows = []
-    cases = corpus(cases_path)
+def evaluate_cases(cases: list[Case]) -> list[ParityRecord]:
+    """Record both production interfaces on the same ordered encounter inputs."""
+    rows: list[ParityRecord] = []
     for i, case in enumerate(cases):
         p = case.packed()
         # Cover all private certificate modes and the legacy envelope paths.
@@ -134,10 +158,15 @@ def worker(cases_path: Path, output: Path) -> None:
             {
                 "id": case.id,
                 "suite": case.suite,
-                "core": [bool(core[0]), float(core[1]), float(core[2])],
-                "interface": asdict(interface),
+                "core": (bool(core[0]), float(core[1]), float(core[2])),
+                "interface": interface,
             }
         )
+    return rows
+
+
+def worker(cases_path: Path, output: Path) -> None:
+    rows = evaluate_cases(corpus(cases_path))
     package = Path(ra.__file__).parent
     output.write_text(
         json.dumps(
@@ -148,9 +177,53 @@ def worker(cases_path: Path, output: Path) -> None:
                 "records": rows,
             },
             indent=2,
+            default=asdict,
         )
         + "\n"
     )
+
+
+def compare_reports(baseline: dict[str, Json], candidate: dict[str, Json]) -> ParityComparison:
+    """Validate saved decisions and distances, and count diagnostic time changes."""
+    before, after = [list_value(report["records"]) for report in (baseline, candidate)]
+    if not before or not after:
+        raise ValueError("Parity comparison has no records")
+    if len(before) != len(after):
+        raise ValueError("Parity record counts differ")
+    distance_delta = {"core": 0.0, "interface": 0.0}
+    time_changes = {"core": 0, "interface": 0}
+    for left, right in zip(before, after, strict=True):
+        a, b = object_value(left), object_value(right)
+        if a["id"] != b["id"]:
+            raise ValueError(f"Parity case IDs differ: {a['id']} / {b['id']}")
+        ac, bc = list_value(a["core"]), list_value(b["core"])
+        ai, bi = object_value(a["interface"]), object_value(b["interface"])
+        if ac[0] != bc[0]:
+            raise ValueError(f"Core decisions differ for {a['id']}: {ac} / {bc}")
+        for field in ("status", "reason", "inflation_m"):
+            if ai[field] != bi[field]:
+                raise ValueError(f"Interface {field} differs for {a['id']}: {ai[field]} / {bi[field]}")
+        for method, d0, d1, t0, t1 in (
+            ("core", ac[1], bc[1], ac[2], bc[2]),
+            (
+                "interface",
+                ai["base_min_distance_m"],
+                bi["base_min_distance_m"],
+                ai["base_closest_time_s"],
+                bi["base_closest_time_s"],
+            ),
+        ):
+            if d0 is None or d1 is None:
+                raise ValueError(f"Missing {method} distance for {a['id']}")
+            if not math.isclose(number(d0), number(d1), rel_tol=2e-13, abs_tol=1e-7):
+                raise ValueError(f"{method} distances differ for {a['id']}: {d0} / {d1}")
+            distance_delta[method] = max(distance_delta[method], abs(number(d1) - number(d0)))
+            time_changes[method] += t0 != t1
+    return {
+        "cases": len(before),
+        "maximum_distance_change_m": distance_delta,
+        "diagnostic_time_changes": time_changes,
+    }
 
 
 def main() -> None:
@@ -189,46 +262,11 @@ def main() -> None:
             check=True,
         )
         reports.append(object_json(path.read_text()))
-    before, after = [list_value(report["records"]) for report in reports]
-    if not before or not after:
-        raise ValueError("Parity comparison has no records")
-    if len(before) != len(after):
-        raise ValueError("Parity record counts differ")
-    distance_delta = {"core": 0.0, "interface": 0.0}
-    time_changes = {"core": 0, "interface": 0}
-    for left, right in zip(before, after, strict=True):
-        a, b = object_value(left), object_value(right)
-        if a["id"] != b["id"]:
-            raise ValueError(f"Parity case IDs differ: {a['id']} / {b['id']}")
-        ac, bc = list_value(a["core"]), list_value(b["core"])
-        ai, bi = object_value(a["interface"]), object_value(b["interface"])
-        if ac[0] != bc[0]:
-            raise ValueError(f"Core decisions differ for {a['id']}: {ac} / {bc}")
-        for field in ("status", "reason", "inflation_m"):
-            if ai[field] != bi[field]:
-                raise ValueError(f"Interface {field} differs for {a['id']}: {ai[field]} / {bi[field]}")
-        for method, d0, d1, t0, t1 in (
-            ("core", ac[1], bc[1], ac[2], bc[2]),
-            (
-                "interface",
-                ai["base_min_distance_m"],
-                bi["base_min_distance_m"],
-                ai["base_closest_time_s"],
-                bi["base_closest_time_s"],
-            ),
-        ):
-            if d0 is None or d1 is None:
-                raise ValueError(f"Missing {method} distance for {a['id']}")
-            if not math.isclose(number(d0), number(d1), rel_tol=2e-13, abs_tol=1e-7):
-                raise ValueError(f"{method} distances differ for {a['id']}: {d0} / {d1}")
-            distance_delta[method] = max(distance_delta[method], abs(number(d1) - number(d0)))
-            time_changes[method] += t0 != t1
+    comparison = compare_reports(reports[0], reports[1])
     summary = {
-        "cases": len(before),
-        "queries": 2 * len(before),
+        **comparison,
+        "queries": 2 * comparison["cases"],
         "decision_changes": 0,
-        "maximum_distance_change_m": distance_delta,
-        "diagnostic_time_changes": time_changes,
         "seed": 2026101206,
         "guard_m": 1e-6,
         "source_sha256": {

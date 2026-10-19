@@ -1,5 +1,6 @@
 """Failure controls for reusable benchmark validation and reporting."""
 
+import copy
 from dataclasses import asdict
 import json
 from pathlib import Path
@@ -8,49 +9,82 @@ import sys
 
 import pytest
 
-from paper.benchmark_library_versions import Case, digest
+from paper.benchmark_library_versions import Case, Json, digest, list_value, object_json, object_value
 from paper.summarise_performance import summarise
-from paper.validate_performance_parity import corpus
+from paper.validate_performance_parity import compare_reports, corpus, evaluate_cases
 
 
-def _parity_process(tmp_path: Path, *, optimised: bool, empty: bool) -> subprocess.CompletedProcess[str]:
-    script = Path(__file__).resolve().parents[1] / "validate_performance_parity.py"
+@pytest.fixture(scope="module")
+def parity_report() -> dict[str, Json]:
+    cases = [
+        Case(
+            f"rigid-translation-{distance}",
+            "regression",
+            0.0,
+            distance,
+            0.0,
+            90.0,
+            300.0,
+            3.0,
+            0.0,
+            90.0,
+            300.0,
+            3.0,
+            0.0,
+            60.0,
+            9260.0,
+        )
+        for distance in (10000.0, 1000.0)
+    ]
+    records = evaluate_cases(cases)
+    assert records[0]["core"][0]
+    assert records[0]["interface"].status == "certified_safe"
+    assert not records[1]["core"][0]
+    assert records[1]["interface"].status == "unresolved"
+    return object_json(json.dumps({"records": records}, default=asdict))
+
+
+def _parity_process(
+    tmp_path: Path, report: dict[str, Json], *, optimised: bool, empty: bool
+) -> subprocess.CompletedProcess[str]:
+    baseline, candidate = tmp_path / "baseline.json", tmp_path / "candidate.json"
+    baseline.write_text(json.dumps(report))
+    changed = copy.deepcopy(report)
+    if empty:
+        changed["records"] = []
+    else:
+        first = object_value(list_value(changed["records"])[0])
+        list_value(first["core"])[0] = False
+    candidate.write_text(json.dumps(changed))
     probe = """
-import json, runpy, sys
+import sys
 from pathlib import Path
-from unittest.mock import patch
-script, work, empty = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3] == 'True'
-sys.path.insert(0, str(script.parent))
-namespace = runpy.run_path(str(script), run_name='parity_regression')
-cases = work / 'cases.json'
-cases.write_text('{"cases": []}')
-def fake_worker(command, **kwargs):
-    output = Path(command[command.index('--output') + 1])
-    interface = dict(status='certified_safe', reason='same', inflation_m=0.0,
-                     base_min_distance_m=10.0, base_closest_time_s=0.0)
-    row = dict(id='different-decision', core=[output.stem == 'candidate', 10.0, 0.0], interface=interface)
-    records = [] if empty else [row]
-    output.write_text(json.dumps(dict(records=records, source_sha256={})))
-args = ['parity', '--cases', str(cases), '--baseline', str(work / 'before'),
-        '--candidate', str(work / 'after'), '--output', str(work / 'output')]
-with patch.object(sys, 'argv', args), patch('subprocess.run', fake_worker):
-    namespace['main']()
+from paper.benchmark_library_versions import object_json
+from paper.validate_performance_parity import compare_reports
+before, after = (object_json(Path(path).read_text()) for path in sys.argv[1:])
+compare_reports(before, after)
 """
-    command = [sys.executable, *(["-O"] if optimised else []), "-c", probe, str(script), str(tmp_path), str(empty)]
+    command = [sys.executable, *(["-O"] if optimised else []), "-c", probe, str(baseline), str(candidate)]
     return subprocess.run(command, text=True, capture_output=True, check=False)
 
 
-def test_optimised_parity_run_rejects_a_changed_decision(tmp_path: Path) -> None:
-    result = _parity_process(tmp_path, optimised=True, empty=False)
+def test_optimised_parity_comparison_rejects_a_changed_decision(tmp_path: Path, parity_report: dict[str, Json]) -> None:
+    result = _parity_process(tmp_path, parity_report, optimised=True, empty=False)
     assert result.returncode != 0, result.stdout
     assert "decisions differ" in result.stderr
-    assert not (tmp_path / "output/summary.json").exists()
 
 
-def test_parity_run_rejects_empty_evidence(tmp_path: Path) -> None:
-    result = _parity_process(tmp_path, optimised=False, empty=True)
+def test_parity_comparison_rejects_empty_evidence(tmp_path: Path, parity_report: dict[str, Json]) -> None:
+    result = _parity_process(tmp_path, parity_report, optimised=False, empty=True)
     assert result.returncode != 0, result.stdout
     assert "no records" in result.stderr
+
+
+def test_parity_comparison_accepts_real_production_records(parity_report: dict[str, Json]) -> None:
+    result = compare_reports(parity_report, copy.deepcopy(parity_report))
+    assert result["cases"] == 2
+    assert result["maximum_distance_change_m"] == {"core": 0.0, "interface": 0.0}
+    assert result["diagnostic_time_changes"] == {"core": 0, "interface": 0}
 
 
 def test_guard_corpus_does_not_depend_on_saved_case_order(tmp_path: Path) -> None:

@@ -191,10 +191,9 @@ def directional_reference(case: TurnCase, left: float, right: float, dps: int = 
         return +best
 
 
-def traced_solver() -> StudySolver:
-    tree, function = solver_ast(
-        inspect.getsource(ra._catch_up_projection_interval_with_turns_local.py_func), "traced_directional_solver"
-    )
+def instrument_solver(source: str) -> tuple[ast.Module, ast.FunctionDef]:
+    """Add directional recording to a validated production source snapshot."""
+    tree, function = solver_ast(source, "traced_directional_solver")
 
     class Recorder(ast.NodeTransformer):
         count = 0
@@ -210,6 +209,11 @@ def traced_solver() -> StudySolver:
     recorder = Recorder()
     recorder.visit(tree)
     require_hooks(recorder.count, 1, "directional comparison")
+    return tree, function
+
+
+def traced_solver() -> StudySolver:
+    tree, function = instrument_solver(inspect.getsource(ra._catch_up_projection_interval_with_turns_local.py_func))
     return compile_solver(tree, function, vars(ra), "<directional-validation>")
 
 
@@ -286,6 +290,12 @@ def numerical_checks(n: int, seed: int) -> NumericalResult:
                         "optimistic_error_m": error,
                     }
                 )
+    validate_numerical_result(result)
+    return result
+
+
+def validate_numerical_result(result: NumericalResult) -> None:
+    """Reject empty coverage or a failed check before publishing an audit result."""
     require_coverage(result["comparisons"], "directional")
     if result["negative_reference_acceptances"]:
         raise RuntimeError("Directional validation accepted a negative reference residual")
@@ -293,7 +303,6 @@ def numerical_checks(n: int, seed: int) -> NumericalResult:
         raise RuntimeError("Directional validation lost a scalar acceptance")
     if result["max_optimistic_error_m"] * 100 >= ra.TURN_CERT_FP_GUARD_M:
         raise RuntimeError("Directional optimistic error exceeded the empirical guard allowance")
-    return result
 
 
 @numba.njit(cache=True)
