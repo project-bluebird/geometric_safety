@@ -168,7 +168,6 @@ def draw_heading_arrow(
 
 def load_grid_payload(library_root: Path, grid_density: int) -> tuple[object, object, dict]:
     with prepended_sys_path(library_root):
-        from app import VisualParams  # pyright: ignore[reportMissingImports]
         from geometric_safety.demo_utils import TURN_DEMO_SCENARIOS  # pyright: ignore[reportMissingImports]
         from geometric_safety.relevant_aircraft import (
             catch_up_projection_interval_with_turns,  # pyright: ignore[reportMissingImports]
@@ -177,7 +176,9 @@ def load_grid_payload(library_root: Path, grid_density: int) -> tuple[object, ob
 
     scenario = next(item for item in TURN_DEMO_SCENARIOS if item.preset_id == "single_turn_dodge")
     params_dict = scenario.to_visual_params()
-    params = VisualParams(**params_dict)
+    # The archived figure uses the demo's constant-speed model. Its parameters
+    # must not depend on the interactive app's heading-certificate schema.
+    params = SimpleNamespace(**params_dict)
 
     x_offsets_nm = np.linspace(X_RANGE_NM[0], X_RANGE_NM[1], grid_density, dtype=np.float64)
     y_offsets_nm = np.linspace(Y_RANGE_NM[0], Y_RANGE_NM[1], grid_density, dtype=np.float64)
