@@ -483,9 +483,7 @@ def render_existing_figures(
     mixed_rows = read_csv_rows(mixed_rows_path) if mixed_rows_path is not None else []
     stress_map_rows = read_csv_rows(stress_map_source_path) if stress_map_source_path is not None else []
     if not mixed_rows and not stress_map_rows:
-        raise FileNotFoundError(
-            f"Expected mixed_turn_rows.csv(.gz) or stress_map_source.csv(.gz) in {run_dir}"
-        )
+        raise FileNotFoundError(f"Expected mixed_turn_rows.csv(.gz) or stress_map_source.csv(.gz) in {run_dir}")
     if straight_rows_path is not None and near_threshold_rows_path is not None:
         narrative = select_narrative_scenarios(
             read_csv_rows(straight_rows_path),
@@ -530,9 +528,11 @@ def render_figure_set(
         ),
         (
             "fig_stress_maps" if manuscript_names else "figure_3_stress_maps",
-            lambda path: plot_stress_maps_from_source(path, stress_map_rows)
-            if stress_map_rows
-            else plot_stress_maps(path, mixed_rows),
+            lambda path: (
+                plot_stress_maps_from_source(path, stress_map_rows)
+                if stress_map_rows
+                else plot_stress_maps(path, mixed_rows)
+            ),
         ),
         (
             "fig_ablation" if manuscript_names else "figure_4_ablation",

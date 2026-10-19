@@ -129,11 +129,7 @@ def find_latest_paper_run_archive(library_root: Path) -> Path | None:
     """Return the newest compact paper-run archive, if one exists."""
     result_dir = library_root / "paper" / "results"
     archives = sorted(
-        (
-            path
-            for path in result_dir.glob("*.tar.gz")
-            if not path.name.startswith("projection_")
-        ),
+        (path for path in result_dir.glob("*.tar.gz") if not path.name.startswith("projection_")),
         key=lambda path: path.stat().st_mtime,
         reverse=True,
     )

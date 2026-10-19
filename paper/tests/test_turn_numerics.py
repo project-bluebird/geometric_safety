@@ -9,7 +9,7 @@ from paper.run_turn_numerics import cases, traced_solver
 from paper.turn_numerical_reference import basis, certificate, distance
 
 
-def test_distance_handles_points_segments_and_interior():
+def test_distance_handles_points_segments_and_interior() -> None:
     with mp.workdps(80):
         assert distance([(mp.mpf(3), mp.mpf(4))] * 4) == 5
         assert distance([(mp.mpf(-1), mp.mpf(2)), (mp.mpf(1), mp.mpf(2))]) == 2
@@ -17,18 +17,18 @@ def test_distance_handles_points_segments_and_interior():
 
 
 @pytest.mark.parametrize(("angle", "rate", "t"), [(90.0, 3.0, 20.0), (-60.0, 2.0, 100.0), (1e-9, 1e-10, 600.0)])
-def test_basis_matches_independent_quadrature(angle, rate, t):
+def test_basis_matches_independent_quadrature(angle: float, rate: float, t: float) -> None:
     with mp.workdps(80):
-        h, target, rate, t = map(mp.mpf, (12.0, 12.0 + angle, rate, t))
-        duration = abs(target - h) / rate
-        signed_rate = mp.sign(target - h) * rate
-        points = sorted({mp.mpf(0), min(duration, t), t})
+        h, target, mp_rate, mp_time = map(mp.mpf, (12.0, 12.0 + angle, rate, t))
+        duration = abs(target - h) / mp_rate
+        signed_rate = mp.sign(target - h) * mp_rate
+        points = sorted({mp.mpf(0), min(duration, mp_time), mp_time})
         for index, trig in enumerate((mp.sin, mp.cos)):
             result = mp.quad(lambda s, trig=trig: trig(mp.radians(h + signed_rate * min(s, duration))), points)
-            assert abs(result - basis(h, target, rate, t)[index]) < mp.mpf("1e-55")
+            assert abs(result - basis(h, target, mp_rate, mp_time)[index]) < mp.mpf("1e-55")
 
 
-def test_reference_for_rigid_translation_and_constant_inflation():
+def test_reference_for_rigid_translation_and_constant_inflation() -> None:
     _, case = next(cases(1, 13))
     case.update(
         rel_pos0=np.array([9260.0, 0.0]),
@@ -49,7 +49,7 @@ def test_reference_for_rigid_translation_and_constant_inflation():
         assert abs(result["residual"] + 2) < mp.mpf("1e-30")
 
 
-def test_trace_matches_production_and_detects_guard_effect():
+def test_trace_matches_production_and_detects_guard_effect() -> None:
     solver, _ = traced_solver()
     trace = np.empty((2048, 6))
     for _, case in cases(16, 42):

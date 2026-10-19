@@ -31,7 +31,7 @@ from paper.evaluation import (
 from paper.run_evaluation import reconstruct_run_record_from_summary, render_existing_figures, write_csv
 
 
-def test_turn_local_core_matches_public_api_default_interval():
+def test_turn_local_core_matches_public_api_default_interval() -> None:
     encounter = Encounter(
         rel_east_m=-18000.0,
         rel_north_m=9000.0,
@@ -69,7 +69,7 @@ def test_turn_local_core_matches_public_api_default_interval():
     assert public_result[2] == pytest.approx(local_result[2], abs=1e-9)
 
 
-def test_count_fixed_time_evals_matches_compiled_outcome():
+def test_count_fixed_time_evals_matches_compiled_outcome() -> None:
     encounter = generate_mixed_turn_suite(1, seed=20260325)[0]
     counted_evals, counted_outcome = count_fixed_time_evals(
         encounter,
@@ -86,7 +86,7 @@ def test_count_fixed_time_evals_matches_compiled_outcome():
     assert outcomes_equivalent(counted_outcome, compiled_outcome)
 
 
-def test_outcomes_equivalent_tolerates_roundoff_only():
+def test_outcomes_equivalent_tolerates_roundoff_only() -> None:
     baseline = evaluate_proposed(
         generate_mixed_turn_suite(1, seed=20260325)[0],
         dt_min_s=1.0,
@@ -102,7 +102,7 @@ def test_outcomes_equivalent_tolerates_roundoff_only():
     assert outcomes_equivalent(baseline, perturbed)
 
 
-def test_nominal_proxy_matches_exact_nominal_straight_case():
+def test_nominal_proxy_matches_exact_nominal_straight_case() -> None:
     encounter = Encounter(
         rel_east_m=-22000.0,
         rel_north_m=-8000.0,
@@ -142,7 +142,7 @@ def test_nominal_proxy_matches_exact_nominal_straight_case():
     assert nominal.closest_time_s == pytest.approx(oracle.closest_time_s, abs=1e-9)
 
 
-def test_uniform_and_refined_times_include_projection_endpoint():
+def test_uniform_and_refined_times_include_projection_endpoint() -> None:
     coarse_times = build_uniform_times(12.0, 5.0)
     coarse_distances = np.asarray([8.0, 3.0, 8.5, 9.0], dtype=np.float64)
     refined_times = build_refinement_times(
@@ -160,7 +160,7 @@ def test_uniform_and_refined_times_include_projection_endpoint():
     assert np.any(np.isclose(refined_times, 6.0))
 
 
-def test_sampled_proxy_counterexample_shows_sampling_is_heuristic():
+def test_sampled_proxy_counterexample_shows_sampling_is_heuristic() -> None:
     row = build_sampled_proxy_counterexample_row(EvaluationConfig())
 
     assert row["coarse_proxy_dt_s"] == pytest.approx(6.0)
@@ -170,12 +170,12 @@ def test_sampled_proxy_counterexample_shows_sampling_is_heuristic():
     assert row["nominal_proxy_is_safe"] == 1
 
 
-def test_split_counts_balances_targets():
+def test_split_counts_balances_targets() -> None:
     assert _split_counts(10, 3) == [4, 3, 3]
     assert _split_counts(5, 5) == [1, 1, 1, 1, 1]
 
 
-def test_generate_near_threshold_suite_parallel_smoke():
+def test_generate_near_threshold_suite_parallel_smoke() -> None:
     config = EvaluationConfig(n_jobs=2, quick=True)
     suite = generate_near_threshold_suite(4, seed=20260325, config=config)
 
@@ -186,7 +186,7 @@ def test_generate_near_threshold_suite_parallel_smoke():
         assert config.near_threshold_margin_min_m <= referenced.reference.margin_m <= config.near_threshold_margin_max_m
 
 
-def test_reconstruct_run_record_from_summary_shape():
+def test_reconstruct_run_record_from_summary_shape() -> None:
     summary = {
         "config": {
             "straight_n": 100,
@@ -273,7 +273,7 @@ def test_reconstruct_run_record_from_summary_shape():
     assert record["near_threshold"]["default_local_dt3_certified_n"] == 47
 
 
-def test_render_existing_figures_writes_pdf_only(tmp_path: Path):
+def test_render_existing_figures_writes_pdf_only(tmp_path: Path) -> None:
     source_dir = tmp_path / "source"
     output_dir = tmp_path / "rendered"
     source_dir.mkdir()

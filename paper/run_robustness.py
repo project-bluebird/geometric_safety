@@ -79,9 +79,7 @@ def _boundary_batch_worker(args: tuple[int, PerturbationBounds, float]) -> list[
     accepted = []
     for encounter in generate_mixed_turn_suite(BOUNDARY_CANDIDATE_BATCH, batch_seed):
         kwargs = encounter_to_turn_kwargs(encounter, DEFAULT_REF_LAT, DEFAULT_REF_LON)
-        inflated = ra.catch_up_projection_interval_with_turns(
-            **kwargs, **solver_envelope_kwargs(encounter, bounds)
-        )
+        inflated = ra.catch_up_projection_interval_with_turns(**kwargs, **solver_envelope_kwargs(encounter, bounds))
         if not bool(inflated[0]):
             continue
         reference = evaluate_dense_reference(encounter)
@@ -443,9 +441,7 @@ def main(argv: list[str] | None = None) -> None:
 
         write_rows_csv(run_dir / "robustness_rows.csv", rows)
         write_rows_csv(run_dir / "robustness_summary.csv", summaries)
-        inclass_violations = sum(
-            entry["total_violations"] for entry in summaries if entry["campaign"] == "inclass"
-        )
+        inclass_violations = sum(entry["total_violations"] for entry in summaries if entry["campaign"] == "inclass")
         summary_json = {
             "seed": seed,
             "n_encounters": n_encounters,

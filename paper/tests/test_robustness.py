@@ -52,7 +52,7 @@ def _turning_encounter(separation_nmi: float, turn_deg: float, horizon_s: float 
 
 
 class TestEnvelopeConversion:
-    def test_solver_envelope_kwargs_formula(self):
+    def test_solver_envelope_kwargs_formula(self) -> None:
         encounter = _straight_crossing(12.0)
         bounds = PerturbationBounds(differential_wind_kt=5.0, position_error_m=120.0, heading_error_deg=1.0)
         params = solver_envelope_kwargs(encounter, bounds)
@@ -63,21 +63,21 @@ class TestEnvelopeConversion:
         assert params["eta_const_m"] == pytest.approx(120.0)
         assert params["eta_rate_mps"] == pytest.approx(expected_rate, rel=1e-12)
 
-    def test_deviation_envelope_linear_terms(self):
+    def test_deviation_envelope_linear_terms(self) -> None:
         encounter = _straight_crossing(12.0)
         bounds = PerturbationBounds(differential_wind_kt=4.0, position_error_m=90.0)
         eta_at_100 = deviation_envelope_m(encounter, bounds, 100.0)
         expected = 90.0 + 4.0 * KT_TO_MPS * 100.0
         assert eta_at_100 == pytest.approx(expected, rel=1e-12)
 
-    def test_null_bounds_have_zero_envelope(self):
+    def test_null_bounds_have_zero_envelope(self) -> None:
         encounter = _turning_encounter(10.0, 60.0)
         assert PerturbationBounds().is_null()
         assert deviation_envelope_m(encounter, PerturbationBounds(), 300.0) == pytest.approx(0.0)
 
 
 class TestExecutedMotionSimulation:
-    def test_null_bounds_match_analytic_straight_geometry(self):
+    def test_null_bounds_match_analytic_straight_geometry(self) -> None:
         encounter = _straight_crossing(8.0, speed_diff_kt=0.0)
         rng = np.random.default_rng(7)
         sim_min = simulate_executed_min_separation(encounter, PerturbationBounds(), rng)
@@ -90,7 +90,7 @@ class TestExecutedMotionSimulation:
         assert rel_north_final < 8.0 * NMI_TO_M  # sanity: north drift stays small
         assert sim_min == pytest.approx(expected, abs=0.5)
 
-    def test_schedule_draw_respects_interval_clipping(self):
+    def test_schedule_draw_respects_interval_clipping(self) -> None:
         bounds = PerturbationBounds(schedule_uncertainty_kt=40.0)
         rng = np.random.default_rng(3)
         min_speed = max(260.0 - 15.0, 0.0) * KT_TO_MPS
@@ -114,7 +114,7 @@ class TestExecutedMotionSimulation:
             assert float(draw.schedule_speeds_mps.min()) >= min_speed - 1e-9
             assert float(draw.schedule_speeds_mps.max()) <= max_speed + 1e-9
 
-    def test_wind_shifts_min_separation_at_most_linearly(self):
+    def test_wind_shifts_min_separation_at_most_linearly(self) -> None:
         encounter = _straight_crossing(8.0)
         bounds = PerturbationBounds(differential_wind_kt=5.0)
         rng = np.random.default_rng(11)
@@ -126,7 +126,7 @@ class TestExecutedMotionSimulation:
 
 
 class TestRefinementRegression:
-    def test_null_bounds_never_beat_closed_form_corner_minimum(self):
+    def test_null_bounds_never_beat_closed_form_corner_minimum(self) -> None:
         """Regression: the refined pass must integrate from time zero.
 
         This encounter surfaced in the first full campaign: the refined window
@@ -158,14 +158,14 @@ class TestRefinementRegression:
 
 
 class TestExecutionModelConfig:
-    def test_default_config_is_in_class(self):
+    def test_default_config_is_in_class(self) -> None:
         assert ExecutionModelConfig().is_in_class()
         assert not ExecutionModelConfig(exceedance_factor=1.5).is_in_class()
         assert not ExecutionModelConfig(ou_speed_sigma_kt=5.0).is_in_class()
         assert not ExecutionModelConfig(roll_time_s=5.0).is_in_class()
         assert not ExecutionModelConfig(heading_jitter_deg=0.5).is_in_class()
 
-    def test_default_config_matches_legacy_behaviour(self):
+    def test_default_config_matches_legacy_behaviour(self) -> None:
         encounter = _turning_encounter(9.0, 45.0)
         bounds = PerturbationBounds(differential_wind_kt=3.0, schedule_uncertainty_kt=8.0)
         base = simulate_executed_min_separation(encounter, bounds, np.random.default_rng(5))
@@ -174,7 +174,7 @@ class TestExecutionModelConfig:
         )
         assert with_config == pytest.approx(base, rel=1e-12)
 
-    def test_ou_speeds_stay_inside_interval(self):
+    def test_ou_speeds_stay_inside_interval(self) -> None:
         from paper.robustness import _ou_speed_path_mps
 
         rng = np.random.default_rng(9)
@@ -192,7 +192,7 @@ class TestExecutionModelConfig:
         assert float(values.min()) >= min_speed - 1e-9
         assert float(values.max()) <= max_speed + 1e-9
 
-    def test_roll_dynamics_change_the_path(self):
+    def test_roll_dynamics_change_the_path(self) -> None:
         encounter = _turning_encounter(9.0, 60.0)
         base = simulate_executed_min_separation(
             encounter, PerturbationBounds(), np.random.default_rng(13), execution=ExecutionModelConfig()
@@ -202,7 +202,7 @@ class TestExecutionModelConfig:
         )
         assert rolled != pytest.approx(base, abs=1e-6)
 
-    def test_straight_ou_drift_never_violates_plain_certificate(self):
+    def test_straight_ou_drift_never_violates_plain_certificate(self) -> None:
         """Proposition 2.1 in action: whole-horizon speed variation is free when straight.
 
         For straight-heading pairs, any measurable speed schedule inside the interval
@@ -242,7 +242,7 @@ class TestCertificateValidity:
         ],
         ids=["wind", "position", "heading", "execution", "schedule"],
     )
-    def test_inflated_certificate_never_violated(self, bounds):
+    def test_inflated_certificate_never_violated(self, bounds: PerturbationBounds) -> None:
         """Certified-safe under inflation must survive adversarial executed-motion draws."""
         encounters = [
             _straight_crossing(8.0),

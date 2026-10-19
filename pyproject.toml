@@ -37,6 +37,9 @@ include = ["geometric_safety*"]
 namespaces = false
 where = ["."]
 
+[tool.setuptools.package-data]
+geometric_safety = ["py.typed"]
+
 [tool.pytest.ini_options]
 pythonpath = ["."]
 
@@ -79,8 +82,8 @@ select = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"paper/tests/**" = ["ANN", "ARG", "RUF059"]
-"tests/**" = ["ANN", "ARG", "RUF059"]
+"paper/tests/**" = ["ARG", "RUF059"]
+"tests/**" = ["ARG", "RUF059"]
 
 [tool.ruff.lint.isort]
 case-sensitive = false

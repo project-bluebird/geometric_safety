@@ -20,9 +20,7 @@ RUN_ARTIFACTS = (
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_PROJECTION_ARCHIVE = (
-    REPO_ROOT / "paper" / "results" / "projection_deterministic_51_cap_100nmi.tar.gz"
-)
+DEFAULT_PROJECTION_ARCHIVE = REPO_ROOT / "paper" / "results" / "projection_deterministic_51_cap_100nmi.tar.gz"
 
 
 def parse_args() -> argparse.Namespace:

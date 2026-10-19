@@ -81,9 +81,7 @@ def displacement_basis(
 
     omega = np.sign(delta_deg) * np.deg2rad(abs(turn_rate_deg_s))
     tau = abs(np.deg2rad(delta_deg)) / abs(omega)
-    basis_tau = (1.0 / omega) * np.array(
-        [np.cos(h0) - np.cos(h0 + omega * tau), np.sin(h0 + omega * tau) - np.sin(h0)]
-    )
+    basis_tau = (1.0 / omega) * np.array([np.cos(h0) - np.cos(h0 + omega * tau), np.sin(h0 + omega * tau) - np.sin(h0)])
     target_unit = unit_heading_rad(htar)
 
     basis = np.empty((times_s.size, 2), dtype=float)

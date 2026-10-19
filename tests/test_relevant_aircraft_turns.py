@@ -176,7 +176,9 @@ class TestStraightStraightRegression:
     @pytest.mark.parametrize("b_heading", [0, 45, 90, 180, 270])
     @pytest.mark.parametrize("a_speed_kt", [250, 400])
     @pytest.mark.parametrize("b_speed_kt", [200, 350])
-    def test_straight_equivalence(self, a_heading: float, b_heading: float, a_speed_kt: float, b_speed_kt: float):
+    def test_straight_equivalence(
+        self, a_heading: float, b_heading: float, a_speed_kt: float, b_speed_kt: float
+    ) -> None:
         """Turn-aware function should produce identical results when both aircraft are straight."""
         a_lat, a_lon = 51.0, -1.0
         b_lat, b_lon = 51.05, -0.95
@@ -220,7 +222,7 @@ class TestStraightStraightRegression:
         assert ref_dist == pytest.approx(turn_dist, abs=1e-6), f"min_dist mismatch: ref={ref_dist}, turn={turn_dist}"
         assert ref_time == pytest.approx(turn_time, abs=1e-6), f"time mismatch: ref={ref_time}, turn={turn_time}"
 
-    def test_sliver_hull_closest_time(self):
+    def test_sliver_hull_closest_time(self) -> None:
         """Near-antiparallel headings collapse the reachable hull to a razor-thin
         sliver, and the closest-time recovery must still report the time that
         attains the minimum rather than clipping to the horizon end. The values
@@ -248,7 +250,9 @@ class TestStraightStraightRegression:
     @pytest.mark.parametrize("speed_diff_kt", [10, 25, 50])
     @pytest.mark.parametrize("proj_time_min", [5, 15, 30])
     @pytest.mark.parametrize("sep_nmi", [3, 5, 7])
-    def test_straight_equivalence_speed_diff_and_proj(self, speed_diff_kt: float, proj_time_min: float, sep_nmi: float):
+    def test_straight_equivalence_speed_diff_and_proj(
+        self, speed_diff_kt: float, proj_time_min: float, sep_nmi: float
+    ) -> None:
         """Check for different speed diffs, projection times, and separation thresholds."""
         a_lat, a_lon = 51.0, -1.0
         b_lat, b_lon = 51.03, -0.97
@@ -300,7 +304,7 @@ class TestStraightStraightRegression:
 
 
 class TestHelpers:
-    def test_heading_to_unit_vector_cardinals(self):
+    def test_heading_to_unit_vector_cardinals(self) -> None:
         """The module uses aviation headings: clockwise from north."""
         north = heading_to_unit_vector(0.0)
         east = heading_to_unit_vector(90.0)
@@ -316,7 +320,7 @@ class TestHelpers:
         assert west[0] == pytest.approx(-1.0, abs=1e-12)
         assert west[1] == pytest.approx(0.0, abs=1e-12)
 
-    def test_turn_displacement_basis_straight(self):
+    def test_turn_displacement_basis_straight(self) -> None:
         """No-turn cases should reduce to heading vector times elapsed time."""
         t_s = 42.0
         basis = _turn_displacement_basis(25.0, 25.0, 0.0, t_s)
@@ -324,7 +328,7 @@ class TestHelpers:
         assert basis[0] == pytest.approx(expected[0], abs=1e-12)
         assert basis[1] == pytest.approx(expected[1], abs=1e-12)
 
-    def test_turn_displacement_basis_turn_then_straight(self):
+    def test_turn_displacement_basis_turn_then_straight(self) -> None:
         """
         For a 90 deg right turn from north to east, the closed-form basis should equal
         the analytic quarter-circle displacement plus any trailing straight segment.
@@ -341,7 +345,7 @@ class TestHelpers:
         assert basis[0] == pytest.approx(expected[0], rel=1e-12)
         assert basis[1] == pytest.approx(expected[1], rel=1e-12)
 
-    def test_relative_position_hull_contains_speed_corners(self):
+    def test_relative_position_hull_contains_speed_corners(self) -> None:
         """The fixed-time hull must contain all four speed-corner realizations exactly."""
         rel_pos0 = np.array([1200.0, -3400.0], dtype=np.float64)
         t_s = 35.0
@@ -372,7 +376,7 @@ class TestHelpers:
                 assert distance == pytest.approx(0.0, abs=1e-9)
                 assert np.linalg.norm(projected - corner) == pytest.approx(0.0, abs=1e-9)
 
-    def test_speed_rectangle_corner_points_match_direct_formula(self):
+    def test_speed_rectangle_corner_points_match_direct_formula(self) -> None:
         """The shared corner helper should reproduce the explicit speed-corner formulas."""
         base = np.array([1200.0, -3400.0], dtype=np.float64)
         a_basis = np.array([31.0, 12.0], dtype=np.float64)
@@ -394,7 +398,7 @@ class TestHelpers:
 
         assert np.allclose(corners, expected, atol=1e-12)
 
-    def test_small_convex_hull_matches_generic_reference(self):
+    def test_small_convex_hull_matches_generic_reference(self) -> None:
         """The tiny-point hull builder should match the generic convex-hull reference."""
         pts = np.array(
             [
@@ -412,7 +416,7 @@ class TestHelpers:
 
         assert_hulls_equivalent(small_hull, generic_hull)
 
-    def test_compute_relative_velocity_hull_matches_generic_reference(self):
+    def test_compute_relative_velocity_hull_matches_generic_reference(self) -> None:
         """The optimized straight-line hull should match the retained generic reference."""
         a_heading = 86.07215429731461
         b_heading = 359.34847733836904
@@ -443,7 +447,7 @@ class TestHelpers:
 
         assert_hulls_equivalent(optimized_hull, reference_hull)
 
-    def test_relative_position_hull_matches_generic_reference(self):
+    def test_relative_position_hull_matches_generic_reference(self) -> None:
         """The fixed-time optimized hull should match the retained generic reference."""
         rel_pos0 = np.array([1200.0, -3400.0], dtype=np.float64)
         t_s = 35.0
@@ -479,7 +483,7 @@ class TestHelpers:
 
         assert_hulls_equivalent(optimized_hull, reference_hull)
 
-    def test_interval_distance_lower_bound_formula(self):
+    def test_interval_distance_lower_bound_formula(self) -> None:
         """The helper should implement the stated Lipschitz lower-bound formula."""
         start_dist = 12000.0
         end_dist = 9000.0
@@ -488,7 +492,7 @@ class TestHelpers:
         expected = max(0.0, 0.5 * (start_dist + end_dist - lipschitz * dt_s))
         assert _interval_distance_lower_bound(start_dist, end_dist, lipschitz, dt_s) == pytest.approx(expected)
 
-    def test_interval_local_lipschitz_matches_bruteforce_sampling(self):
+    def test_interval_local_lipschitz_matches_bruteforce_sampling(self) -> None:
         """
         The interval-local Lipschitz helper should upper-bound the exact sampled corner
         speeds and be no larger than the global closing-rate bound.
@@ -534,7 +538,7 @@ class TestHelpers:
         assert local_lipschitz >= sampled_max - 1e-9
         assert local_lipschitz <= global_lipschitz + 1e-12
 
-    def test_turn_aware_global_lipschitz_mode_is_more_conservative(self):
+    def test_turn_aware_global_lipschitz_mode_is_more_conservative(self) -> None:
         """
         The optional global bound should remain available and can only be at least as
         conservative as the default interval-local bound.
@@ -569,7 +573,7 @@ class TestHelpers:
         # The local bound should never produce a less safe answer than the global bound.
         assert int(local_result[0]) >= int(global_result[0])
 
-    def test_turn_speed_schedule_envelope_matches_proven_bound(self):
+    def test_turn_speed_schedule_envelope_matches_proven_bound(self) -> None:
         """The envelope should equal delta * t_a * (1 - cos(theta_a)) / theta_a in scope."""
         envelope_m = _turn_speed_schedule_envelope_m(
             heading0_deg=0.0,
@@ -585,7 +589,7 @@ class TestHelpers:
         expected = (50.0 * KT_TO_MPS) * 30.0 * (1.0 - math.cos(theta_a)) / theta_a
         assert envelope_m == pytest.approx(expected, rel=1e-12)
 
-    def test_turn_speed_schedule_envelope_never_exceeds_sine_buffer(self):
+    def test_turn_speed_schedule_envelope_never_exceeds_sine_buffer(self) -> None:
         """The proven envelope never exceeds the coarser sin(theta/2) bound."""
         for sweep_deg in (10.0, 30.0, 60.0, 90.0):
             for t_s in (5.0, 15.0, 30.0, 120.0):
@@ -603,7 +607,7 @@ class TestHelpers:
                 sine_buffer_m = (25.0 * KT_TO_MPS) * t_active * math.sin(0.5 * theta_active)
                 assert envelope_m <= sine_buffer_m + 1e-12
 
-    def test_turn_speed_schedule_envelope_beyond_ninety_uses_fallback(self):
+    def test_turn_speed_schedule_envelope_beyond_ninety_uses_fallback(self) -> None:
         """Sweeps beyond 90 degrees should use the unconditional fallback bound."""
         envelope_m = _turn_speed_schedule_envelope_m(
             heading0_deg=0.0,
@@ -620,7 +624,7 @@ class TestHelpers:
         expected = amplitude * 4.0 * 50.0 * (1.0 - math.cos(0.5 * theta_a)) / theta_a
         assert envelope_m == pytest.approx(expected, rel=1e-12)
 
-    def test_turn_speed_schedule_envelope_selects_form_by_total_sweep(self):
+    def test_turn_speed_schedule_envelope_selects_form_by_total_sweep(self) -> None:
         """A wide instructed turn must use the fallback form at every query time.
 
         A per-time switch at the pi/2 crossing can step DOWN when the admissible
@@ -643,7 +647,7 @@ class TestHelpers:
         expected = amplitude * 4.0 * 25.0 * (1.0 - math.cos(0.5 * theta_a)) / theta_a
         assert envelope_m == pytest.approx(expected, rel=1e-12)
 
-    def test_turn_speed_schedule_envelope_is_nondecreasing_across_pi_over_two(self):
+    def test_turn_speed_schedule_envelope_is_nondecreasing_across_pi_over_two(self) -> None:
         """Regression: the envelope must never decrease in time for any sweep."""
         for width_mps in (2.0, 8.0, 60.0):
             kwargs = {
@@ -658,7 +662,7 @@ class TestHelpers:
             diffs = np.diff(np.asarray(values))
             assert float(diffs.min()) >= -1e-9
 
-    def test_turn_speed_schedule_envelope_is_zero_for_straight_flight(self):
+    def test_turn_speed_schedule_envelope_is_zero_for_straight_flight(self) -> None:
         """The envelope should vanish when no turn is flown."""
         envelope_m = _turn_speed_schedule_envelope_m(
             heading0_deg=45.0,
@@ -672,7 +676,7 @@ class TestHelpers:
 
         assert envelope_m == pytest.approx(0.0, abs=1e-12)
 
-    def test_turn_execution_envelope_saturates_after_turn(self):
+    def test_turn_execution_envelope_saturates_after_turn(self) -> None:
         """The execution envelope should stop growing once the turn window passes."""
         kwargs = {
             "heading0_deg": 0.0,
@@ -689,7 +693,7 @@ class TestHelpers:
         assert 0.0 < early < at_saturation
         assert late == pytest.approx(at_saturation, rel=1e-12)
 
-    def test_deviation_envelope_const_and_rate_terms(self):
+    def test_deviation_envelope_const_and_rate_terms(self) -> None:
         """Constant and linear envelope terms should add exactly."""
         eta_m = _deviation_envelope_m(
             t_s=100.0,
@@ -712,7 +716,7 @@ class TestHelpers:
 
         assert eta_m == pytest.approx(100.0 + 2.5 * 100.0, rel=1e-12)
 
-    def test_turn_speed_schedule_uncertainty_zero_matches_default(self):
+    def test_turn_speed_schedule_uncertainty_zero_matches_default(self) -> None:
         """Passing a zero robustness uncertainty should be a no-op."""
         kwargs = {
             "a_lat": 51.0,
@@ -742,7 +746,7 @@ class TestHelpers:
         assert default_result[1] == pytest.approx(explicit_zero_result[1], abs=1e-9)
         assert default_result[2] == pytest.approx(explicit_zero_result[2], abs=1e-9)
 
-    def test_turn_speed_schedule_uncertainty_is_ignored_for_straight_pairs(self):
+    def test_turn_speed_schedule_uncertainty_is_ignored_for_straight_pairs(self) -> None:
         """Straight-flight delegation should ignore the optional turn-only buffer."""
         kwargs = {
             "a_lat": 51.0,
@@ -772,7 +776,7 @@ class TestHelpers:
         assert result_no_buffer[1] == pytest.approx(result_large_buffer[1], abs=1e-9)
         assert result_no_buffer[2] == pytest.approx(result_large_buffer[2], abs=1e-9)
 
-    def test_turn_speed_schedule_uncertainty_can_flip_a_marginal_safe_case(self):
+    def test_turn_speed_schedule_uncertainty_can_flip_a_marginal_safe_case(self) -> None:
         """A large turn-only robustness buffer should make a near-threshold safe case unsafe."""
         a_lat, a_lon = 51.0, -1.0
         b_lat, b_lon = _local_xy_to_latlon(-12000.0, -4000.0, a_lat, a_lon)
@@ -803,7 +807,7 @@ class TestHelpers:
         assert unbuffered_result[0] is True
         assert buffered_result[0] is False
 
-    def test_local_xy_roundtrip(self):
+    def test_local_xy_roundtrip(self) -> None:
         """The test-only inverse should roundtrip the production local projection."""
         ref_lat, ref_lon = 51.0, -1.0
         test_points = [
@@ -818,7 +822,7 @@ class TestHelpers:
             assert lat2 == pytest.approx(lat, abs=1e-8)
             assert lon2 == pytest.approx(lon, abs=1e-8)
 
-    def test_heading_diff(self):
+    def test_heading_diff(self) -> None:
         assert heading_diff(0.0, 90.0) == pytest.approx(90.0)
         assert heading_diff(0.0, 270.0) == pytest.approx(-90.0)
         assert heading_diff(350.0, 10.0) == pytest.approx(20.0)
@@ -826,7 +830,7 @@ class TestHelpers:
         assert abs(heading_diff(0.0, 180.0)) == pytest.approx(180.0)
         assert heading_diff(0.0, 0.0) == pytest.approx(0.0)
 
-    def test_closest_time_from_projection_degenerate_segment(self):
+    def test_closest_time_from_projection_degenerate_segment(self) -> None:
         """
         Straight-line reachable sets can collapse to a segment from the origin to one
         outer point. Time recovery should still return the correct radial fraction.
@@ -846,7 +850,7 @@ class TestHelpers:
 
         assert recovered == pytest.approx(expected, rel=1e-12)
 
-    def test_closest_time_from_projection_polygon_slice_consistency(self):
+    def test_closest_time_from_projection_polygon_slice_consistency(self) -> None:
         """
         For a genuine polygonal reachable set, the recovered time should place the
         projected displacement back on the exact-time reachable slice.
@@ -896,7 +900,7 @@ class TestPhase1TurnValidation:
     @pytest.mark.parametrize("a_turn_deg", [5, 15, 30, 45, -5, -15, -30, -45])
     @pytest.mark.parametrize("turn_rate_deg_sec", [1.5, 3.0])
     @pytest.mark.parametrize("a_speed_kt", [250, 350, 450])
-    def test_a_turning_b_straight(self, a_turn_deg: float, turn_rate_deg_sec: float, a_speed_kt: float):
+    def test_a_turning_b_straight(self, a_turn_deg: float, turn_rate_deg_sec: float, a_speed_kt: float) -> None:
         """A is turning, B is straight. Check conservative behaviour during the turn."""
         a_lat, a_lon = 51.0, -1.0
         b_lat, b_lon = 51.04, -0.98  # B ahead-right of A
@@ -947,7 +951,7 @@ class TestPhase1TurnValidation:
     @pytest.mark.parametrize("b_turn_deg", [5, 15, 30, 45, -5, -15, -30, -45])
     @pytest.mark.parametrize("turn_rate_deg_sec", [1.5, 3.0])
     @pytest.mark.parametrize("b_speed_kt", [250, 350, 450])
-    def test_a_straight_b_turning(self, b_turn_deg: float, turn_rate_deg_sec: float, b_speed_kt: float):
+    def test_a_straight_b_turning(self, b_turn_deg: float, turn_rate_deg_sec: float, b_speed_kt: float) -> None:
         """B is turning, A is straight. Mirror case of the preceding scenario."""
         a_lat, a_lon = 51.0, -1.0
         b_lat, b_lon = 51.04, -0.98
@@ -995,7 +999,7 @@ class TestPhase1TurnValidation:
 
     @pytest.mark.parametrize("a_turn_deg", [15, 30, 45, -15, -30])
     @pytest.mark.parametrize("speed_diff_kt", [15, 35])
-    def test_a_turning_different_speed_diffs(self, a_turn_deg: float, speed_diff_kt: float):
+    def test_a_turning_different_speed_diffs(self, a_turn_deg: float, speed_diff_kt: float) -> None:
         """Smoke-test the during-turn geometry under different speed envelopes."""
         a_lat, a_lon = 51.0, -1.0
         b_lat, b_lon = 51.04, -0.98
@@ -1038,7 +1042,7 @@ class TestPhase1TurnValidation:
             (50.96, -0.95, "bearing_180"),  # B behind-right
         ],
     )
-    def test_a_turning_various_relative_positions(self, b_lat: float, b_lon: float, label: str):
+    def test_a_turning_various_relative_positions(self, b_lat: float, b_lon: float, label: str) -> None:
         """Check conservative behaviour for several relative starting geometries."""
         a_lat, a_lon = 51.0, -1.0
         a_heading0 = 0.0
@@ -1087,7 +1091,7 @@ class TestPhase1TurnValidation:
 
     @pytest.mark.parametrize("a_turn_deg", [30, -30])
     @pytest.mark.parametrize("b_turn_deg", [30, -30])
-    def test_both_turning_same_angle(self, a_turn_deg: float, b_turn_deg: float):
+    def test_both_turning_same_angle(self, a_turn_deg: float, b_turn_deg: float) -> None:
         """Both aircraft turning same amount. Check conservatism."""
         a_lat, a_lon = 51.0, -1.0
         b_lat, b_lon = 51.05, -0.95
@@ -1123,7 +1127,7 @@ class TestPhase1TurnValidation:
         ("a_turn_deg", "b_turn_deg"),
         [(15, 45), (45, 15), (-15, 45), (30, -45), (5, 30)],
     )
-    def test_both_turning_different_angles(self, a_turn_deg: float, b_turn_deg: float):
+    def test_both_turning_different_angles(self, a_turn_deg: float, b_turn_deg: float) -> None:
         """Both aircraft turning different amounts."""
         a_lat, a_lon = 51.0, -1.0
         b_lat, b_lon = 51.05, -0.95
@@ -1155,7 +1159,7 @@ class TestPhase1TurnValidation:
         assert min_dist >= 0.0
         assert 0.0 <= closest_time <= proj_time
 
-    def test_borderline_separation_close(self):
+    def test_borderline_separation_close(self) -> None:
         """Aircraft barely within separation threshold during turn — should detect conflict."""
         # B is 4.5 NMI from A (below 5 NMI threshold), both heading same way
         a_lat, a_lon = 51.0, -1.0
@@ -1185,7 +1189,7 @@ class TestPhase1TurnValidation:
         assert not is_sep
         assert min_dist < separation_m
 
-    def test_borderline_separation_safe(self):
+    def test_borderline_separation_safe(self) -> None:
         """Aircraft well above threshold, both heading north, A turns slightly away — should be safe."""
         # B is 20 NMI from A, both heading north, A turns slightly left (away from B)
         a_lat, a_lon = 51.0, -1.0
@@ -1223,7 +1227,7 @@ class TestPhase1TurnValidation:
 class TestPhase2PostTurn:
     """Validate full-horizon turn-aware results against numerical simulation."""
 
-    def test_turning_then_straight_separated(self):
+    def test_turning_then_straight_separated(self) -> None:
         """A turns away from B, then both fly straight and diverge => should be separated."""
         a_lat, a_lon = 51.0, -1.0
         b_lat, b_lon = 51.0, -0.95  # B east of A, about 3.5 NMI
@@ -1268,7 +1272,7 @@ class TestPhase2PostTurn:
         if is_sep:
             assert actual_min_dist >= separation_m * 0.9
 
-    def test_converging_after_turn(self):
+    def test_converging_after_turn(self) -> None:
         """A turns toward B => should detect conflict."""
         a_lat, a_lon = 51.0, -1.0
         b_lat, b_lon = 51.1, -0.9  # B ahead-right
@@ -1329,7 +1333,7 @@ class TestPhase2PostTurn:
         [(1.0, 1.0), (1.0, -1.0), (-1.0, 1.0), (-1.0, -1.0)],
         ids=["nom_nom", "nom_min", "min_nom", "min_min"],
     )
-    def test_phase2_all_speed_combos(self, a_speed_mult: float, b_speed_mult: float):
+    def test_phase2_all_speed_combos(self, a_speed_mult: float, b_speed_mult: float) -> None:
         """
         Validate post-turn behaviour across all min/max speed combinations.
 
@@ -1390,7 +1394,7 @@ class TestPhase2PostTurn:
 
 
 class TestEndToEnd:
-    def test_diverging_after_turn(self):
+    def test_diverging_after_turn(self) -> None:
         """Both aircraft turn away from each other => separated."""
         # Aircraft flying north, side by side, 15 NMI apart, each turning outward
         a_lat, a_lon = 51.0, -1.0
@@ -1419,7 +1423,7 @@ class TestEndToEnd:
 
         assert is_sep, "Diverging aircraft after turns should be separated"
 
-    def test_parallel_after_turn(self):
+    def test_parallel_after_turn(self) -> None:
         """Both turn to same heading, good separation => should remain separated."""
         a_lat, a_lon = 51.0, -1.0
         b_lat, b_lon = 51.0, -0.85  # ~10 NMI east
@@ -1448,7 +1452,7 @@ class TestEndToEnd:
         # 15 NMI apart, both heading north at same speed => should stay separated
         assert is_sep
 
-    def test_head_on_after_turns(self):
+    def test_head_on_after_turns(self) -> None:
         """Both turn toward each other => should detect conflict."""
         a_lat, a_lon = 51.0, -1.0
         b_lat, b_lon = 51.05, -1.0  # B 5 NMI north
@@ -1476,7 +1480,7 @@ class TestEndToEnd:
 
         assert not is_sep, "Head-on aircraft after turns should detect conflict"
 
-    def test_one_stationary(self):
+    def test_one_stationary(self) -> None:
         """One aircraft nearly stationary (very low speed). Edge case from plan."""
         a_lat, a_lon = 51.0, -1.0
         b_lat, b_lon = 51.03, -0.97  # ~3 NMI away
@@ -1504,7 +1508,7 @@ class TestEndToEnd:
         assert min_dist >= 0.0
         assert 0.0 <= closest_time <= 600.0
 
-    def test_widely_separated_aircraft(self):
+    def test_widely_separated_aircraft(self) -> None:
         """Aircraft 50 NMI apart, any turns => should always be separated with short projection."""
         a_lat, a_lon = 51.0, -1.0
         b_lat, b_lon = 51.5, -0.5  # ~40+ NMI away
@@ -1536,7 +1540,7 @@ class TestEndToEnd:
 
 
 class TestEdgeCases:
-    def test_turn_angle_zero(self):
+    def test_turn_angle_zero(self) -> None:
         """Turn angle == 0 (heading0 == target) should delegate to the straight solver."""
         a_lat, a_lon = 51.0, -1.0
         b_lat, b_lon = 51.02, -0.98
@@ -1577,7 +1581,7 @@ class TestEdgeCases:
         assert result_turn[1] == pytest.approx(result_ref[1], abs=1e-6)
         assert result_turn[2] == pytest.approx(result_ref[2], abs=1e-6)
 
-    def test_large_turn_180(self):
+    def test_large_turn_180(self) -> None:
         """180 degree turn (reversal) should work."""
         a_lat, a_lon = 51.0, -1.0
         b_lat, b_lon = 51.1, -1.0
@@ -1604,7 +1608,7 @@ class TestEdgeCases:
         assert min_dist >= 0.0
         assert 0.0 <= closest_time <= 1200.0
 
-    def test_projection_time_less_than_turn(self):
+    def test_projection_time_less_than_turn(self) -> None:
         """If projection_time < turn_duration, only the turning portion is relevant."""
         a_lat, a_lon = 51.0, -1.0
         b_lat, b_lon = 51.1, -1.0  # 6+ NMI away
@@ -1635,7 +1639,7 @@ class TestEdgeCases:
         assert min_dist >= 0.0
         assert 0.0 <= closest_time <= proj_time
 
-    def test_very_large_speed_diff(self):
+    def test_very_large_speed_diff(self) -> None:
         """speed_diff > nominal speed => min speed clipped to 0."""
         a_lat, a_lon = 51.0, -1.0
         b_lat, b_lon = 51.05, -0.95
@@ -1662,7 +1666,7 @@ class TestEdgeCases:
         assert min_dist >= 0.0
         assert 0.0 <= closest_time <= 600.0
 
-    def test_same_position(self):
+    def test_same_position(self) -> None:
         """Aircraft at same position => min_distance should be ~0."""
         is_sep, min_dist, _ = catch_up_projection_interval_with_turns(
             a_lat=51.0,
@@ -1699,7 +1703,7 @@ class TestProperties:
         [(30, 0), (0, 30), (30, -20), (-15, 45), (0, 0)],
         ids=["a_turn", "b_turn", "both_opp", "both_diff", "straight"],
     )
-    def test_ab_symmetry(self, a_turn: float, b_turn: float):
+    def test_ab_symmetry(self, a_turn: float, b_turn: float) -> None:
         """min_distance should be identical when swapping A and B."""
         a_lat, a_lon = 51.0, -1.0
         b_lat, b_lon = 51.04, -0.96
@@ -1750,7 +1754,7 @@ class TestProperties:
 
     @pytest.mark.parametrize("a_turn", [0, 25, -25])
     @pytest.mark.parametrize("b_turn", [0, 20])
-    def test_projection_time_monotonicity(self, a_turn: float, b_turn: float):
+    def test_projection_time_monotonicity(self, a_turn: float, b_turn: float) -> None:
         """min_distance should be non-increasing as projection_time grows."""
         a_lat, a_lon = 51.0, -1.0
         b_lat, b_lon = 51.05, -0.96
@@ -1782,7 +1786,7 @@ class TestProperties:
             )
             prev_dist = dist
 
-    def test_speed_diff_zero(self):
+    def test_speed_diff_zero(self) -> None:
         """With zero speed uncertainty, result should still be valid (deterministic case)."""
         a_lat, a_lon = 51.0, -1.0
         b_lat, b_lon = 51.05, -0.95
@@ -1823,7 +1827,7 @@ class TestProperties:
         [(30, 0), (0, 30), (30, -20), (-45, 45)],
         ids=["a_only", "b_only", "both_opp", "both_large"],
     )
-    def test_full_trajectory_conservatism_all_speed_extremes(self, a_turn: float, b_turn: float):
+    def test_full_trajectory_conservatism_all_speed_extremes(self, a_turn: float, b_turn: float) -> None:
         """
         If model says separated, ALL 4 speed extreme combos should be truly separated
         across the full turn+straight trajectory.
@@ -1878,7 +1882,7 @@ class TestProperties:
 
 
 class TestSafetyRegressions:
-    def test_one_straight_one_turning_no_false_safe_at_phase_boundary(self):
+    def test_one_straight_one_turning_no_false_safe_at_phase_boundary(self) -> None:
         """
         Regression: a straight/turning pair must not report safe when boundary speed
         uncertainty can still produce a conflict.
@@ -1908,7 +1912,7 @@ class TestSafetyRegressions:
         assert not is_sep
         assert min_dist < separation_m
 
-    def test_both_turning_with_unequal_turn_durations_no_false_safe(self):
+    def test_both_turning_with_unequal_turn_durations_no_false_safe(self) -> None:
         """
         Regression: unequal turn durations must not report safe once one aircraft has
         already completed its turn and continued straight.
