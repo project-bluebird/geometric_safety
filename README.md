@@ -445,11 +445,29 @@ uv run --locked python -m paper.validate_performance_numerics \
 
 ## Relevant-aircraft visualiser
 
-The interactive FastAPI application shows fixed-heading and turn-aware
-lateral geometry. It displays trajectories, relative reachable hulls and
-distance against time. Its turn-aware mode uses the core's constant-speed
-model with an optional in-turn speed allowance. It does not visualise the
-heading interface's full speed-profile enclosure.
+The interactive FastAPI application uses the geographic heading interfaces,
+with optional minimum-rate vertical separation. It shows the required lateral
+interval, remaining altitude bands, constant-speed reference geometry and the
+extra allowance used to cover the declared speed profiles and errors. The
+distance plot shows the same inflated threshold as the certificate. Its sampled
+curve is explanatory; the decision comes from the continuous-time solver.
+
+Choose an example encounter or enter independent speed bounds, headings and
+positions through **Edit inputs**. Relative position error is entered in NM and
+relative velocity error in knots. With vertical separation enabled, enter current
+and selected flight levels and the minimum climb/descent rate. The time slider
+links the plots; the plot-window control changes only the displayed interval.
+The relative-geometry axes cover that whole displayed window and stay fixed
+as the selected time changes. Altitude ticks use multiples of 10 FL.
+The position map runs the same check at each cell and refreshes on request.
+Results distinguish certified, unresolved and unsupported queries. Red marks
+unresolved results; it does not establish a conflict.
+
+The web endpoints accept nested `a` and `b` aircraft declarations and return
+certificate results and display samples. Scripts using the older flat demo
+payloads must adopt this schema. The browser converts position and velocity
+error inputs to the endpoint's metres and metres per second; the library's
+Python interfaces retain their documented units.
 
 ```bash
 uv sync --locked --group apps

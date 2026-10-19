@@ -1,589 +1,152 @@
 <!DOCTYPE html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <title>Relevant-Aircraft Visualiser</title>
-    <style>
-      :root {
-        color-scheme: light;
-        font-family: "Segoe UI", Roboto, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
-      }
-
-      body {
-        margin: 0;
-        background:
-          radial-gradient(circle at top right, rgba(59, 130, 246, 0.08), transparent 28%),
-          linear-gradient(180deg, #eef4ff 0%, #f7f9fc 40%, #f4f6fb 100%);
-        color: #0f172a;
-      }
-
-      main {
-        max-width: 1560px;
-        margin: 0 auto;
-        padding: 1rem 1.25rem 2rem;
-      }
-
-      h1,
-      h2,
-      h3 {
-        margin: 0;
-      }
-
-      .helper {
-        font-size: 0.88rem;
-        color: #64748b;
-        margin: 0.25rem 0 0;
-      }
-
-      .card {
-        background: rgba(255, 255, 255, 0.92);
-        border-radius: 0.9rem;
-        box-shadow: 0 10px 35px rgba(15, 23, 42, 0.08);
-        backdrop-filter: blur(14px);
-        padding: 1rem 1.2rem;
-      }
-
-      .layout {
-        display: flex;
-        align-items: flex-start;
-        gap: 1rem;
-      }
-
-      .inputs-panel {
-        flex: 0 0 344px;
-        max-width: 360px;
-        display: flex;
-        flex-direction: column;
-        gap: 0.75rem;
-      }
-
-      .plot-panel {
-        flex: 1;
-        display: flex;
-        flex-direction: column;
-        gap: 1rem;
-      }
-
-      .plots-wrapper {
-        display: grid;
-        grid-template-columns: minmax(320px, 0.95fr) minmax(520px, 1.45fr);
-        gap: 1rem;
-        align-items: start;
-      }
-
-      .plot-card {
-        background: rgba(255, 255, 255, 0.96);
-        border-radius: 0.9rem;
-        box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.18);
-        padding: 0.95rem 1rem 1.05rem;
-        display: flex;
-        flex-direction: column;
-        gap: 0.7rem;
-      }
-
-      .panel-header {
-        display: flex;
-        align-items: flex-start;
-        justify-content: space-between;
-        gap: 0.75rem;
-      }
-
-      .panel-header-copy {
-        display: flex;
-        flex-direction: column;
-        gap: 0.15rem;
-      }
-
-      .mode-label {
-        font-size: 0.84rem;
-        color: #475569;
-        text-align: right;
-      }
-
-      .mode-label.error {
-        color: #b91c1c;
-      }
-
-      .control-grid {
-        display: grid;
-        gap: 0.55rem 0.7rem;
-        grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-      }
-
-      .control {
-        min-width: 0;
-      }
-
-      .control label {
-        font-size: 0.88rem;
-        font-weight: 600;
-        display: block;
-        margin-bottom: 0.25rem;
-      }
-
-      input[type="number"],
-      input[type="range"],
-      select {
-        width: 100%;
-        box-sizing: border-box;
-      }
-
-      input[type="number"],
-      select {
-        border: 1px solid #cbd5e1;
-        border-radius: 0.4rem;
-        padding: 0.45rem 0.55rem;
-        font-size: 0.95rem;
-        background: #f8fafc;
-        color: #0f172a;
-      }
-
-      input[type="range"] {
-        accent-color: #2563eb;
-      }
-
-      .value-tag {
-        font-size: 0.8rem;
-        color: #475569;
-        margin-top: 0.15rem;
-      }
-
-      .input-collapse {
-        border: 1px solid rgba(15, 23, 42, 0.08);
-        border-radius: 0.7rem;
-        padding: 0.45rem 0.8rem 0.8rem;
-        background: rgba(248, 250, 252, 0.72);
-      }
-
-      .input-collapse summary {
-        cursor: pointer;
-        font-weight: 700;
-        list-style: none;
-        display: flex;
-        align-items: center;
-        gap: 0.35rem;
-        margin-bottom: 0.45rem;
-      }
-
-      .input-collapse summary::before {
-        content: "▸";
-        transition: transform 0.2s ease;
-        font-size: 0.85rem;
-      }
-
-      .input-collapse[open] summary::before {
-        transform: rotate(90deg);
-      }
-
-      .section-stack {
-        display: flex;
-        flex-direction: column;
-        gap: 0.75rem;
-      }
-
-      .turn-only.hidden,
-      .detail-view.hidden {
-        display: none;
-      }
-
-      .inputs-actions {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 0.55rem;
-        margin-top: 0.15rem;
-      }
-
-      button {
-        background: #2563eb;
-        border: none;
-        color: #fff;
-        padding: 0.48rem 0.9rem;
-        border-radius: 0.45rem;
-        font-size: 0.9rem;
-        cursor: pointer;
-      }
-
-      button.secondary {
-        background: #334155;
-      }
-
-      .canvas-wrapper {
-        position: relative;
-        width: 100%;
-      }
-
-      canvas {
-        width: 100%;
-        height: auto;
-        display: block;
-        background: linear-gradient(180deg, #edf2f7 0%, #dfe7f0 100%);
-        border-radius: 0.65rem;
-      }
-
-      .loading-overlay {
-        position: absolute;
-        inset: 0;
-        background: rgba(15, 23, 42, 0.34);
-        color: #f8fafc;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        font-size: 0.96rem;
-        border-radius: 0.65rem;
-        opacity: 0;
-        pointer-events: none;
-        transition: opacity 0.2s ease;
-        z-index: 5;
-      }
-
-      .loading-overlay.visible {
-        opacity: 1;
-      }
-
-      .detail-shell {
-        display: flex;
-        flex-direction: column;
-        gap: 0.8rem;
-      }
-
-      .turn-detail-layout {
-        display: grid;
-        grid-template-columns: minmax(0, 1.45fr) minmax(280px, 0.95fr);
-        gap: 0.8rem;
-        align-items: start;
-      }
-
-      .turn-side-stack {
-        display: flex;
-        flex-direction: column;
-        gap: 0.8rem;
-      }
-
-      .subpanel {
-        display: flex;
-        flex-direction: column;
-        gap: 0.45rem;
-      }
-
-      .subpanel h3 {
-        font-size: 0.96rem;
-      }
-
-      .canvas-note {
-        font-size: 0.8rem;
-        color: #64748b;
-      }
-
-      .canvas-meta {
-        font-size: 0.8rem;
-        color: #334155;
-        margin: 0;
-        white-space: pre-line;
-      }
-
-      @media (max-width: 1180px) {
-        .layout {
-          flex-direction: column;
-        }
-
-        .inputs-panel {
-          width: 100%;
-          max-width: none;
-        }
-
-        .plots-wrapper {
-          grid-template-columns: 1fr;
-        }
-
-        .turn-detail-layout {
-          grid-template-columns: 1fr;
-        }
-      }
-
-      @media (max-width: 760px) {
-        main {
-          padding-inline: 0.8rem;
-        }
-
-        .panel-header {
-          flex-direction: column;
-        }
-      }
-    </style>
-  </head>
-  <body>
-    <main>
-      <header style="margin-bottom: 1rem">
-        <h1>Relevant-Aircraft Visualiser</h1>
-        <p class="helper">
-          Inspect the fixed-heading and turn-aware relevant-aircraft checks side by side in one surface. The grid sweeps
-          Aircraft B across the local area, while the detail view shows either straight-line reachability or the richer
-          turn-aware debug geometry for the currently selected pair.
-        </p>
-      </header>
-
-      <div class="layout">
-        <section class="card inputs-panel">
-          <h2>Inputs</h2>
-
-          <details class="input-collapse" open>
-            <summary>Mode</summary>
-            <div class="control-grid">
-              <div class="control">
-                <label for="modelMode">Model mode</label>
-                <select id="modelMode">
-                  <option value="fixed_heading" {% if defaults.model_mode == "fixed_heading" %}selected{% endif %}>
-                    Fixed heading
-                  </option>
-                  <option value="turn_aware" {% if defaults.model_mode == "turn_aware" %}selected{% endif %}>
-                    Turn aware
-                  </option>
-                </select>
-              </div>
-            </div>
-            <p class="helper" id="modeHelper">
-              Fixed heading keeps the existing straight-line reachable-envelope view. Turn aware adds target headings,
-              turn rates, presets, and a richer three-panel debug view.
-            </p>
-          </details>
-
-          <details class="input-collapse" open>
-            <summary>General parameters</summary>
-            <div class="control-grid">
-              <div class="control">
-                <label for="sepThreshold">Separation threshold (NM)</label>
-                <input id="sepThreshold" type="range" min="1" max="50" step="1" value="{{ defaults.separation_threshold_nm }}" />
-                <div class="value-tag" id="sepThresholdValue"></div>
-              </div>
-              <div class="control">
-                <label for="speedDiff">Speed difference ± (kt)</label>
-                <input id="speedDiff" type="range" min="0" max="300" step="5" value="{{ defaults.speed_diff_kt }}" />
-                <div class="value-tag" id="speedDiffValue"></div>
-              </div>
-              <div class="control">
-                <label for="projectionTime">Projection time (min)</label>
-                <input id="projectionTime" type="range" min="5" max="30" step="0.5" value="{{ defaults.projection_time_min }}" />
-                <div class="value-tag" id="projectionTimeValue"></div>
-              </div>
-              <div class="control">
-                <label for="gridDensity">Grid density</label>
-                <input id="gridDensity" type="range" min="25" max="300" step="5" value="{{ defaults.grid_density }}" />
-                <div class="value-tag" id="gridDensityValue"></div>
-              </div>
-              <div class="control">
-                <label for="viewExtent">View half-span (NM)</label>
-                <input id="viewExtent" type="range" min="5" max="300" step="5" value="{{ defaults.view_half_extent_nm }}" />
-                <div class="value-tag" id="viewExtentValue"></div>
-              </div>
-            </div>
-          </details>
-
-          <details class="input-collapse" open>
-            <summary>Aircraft A</summary>
-            <div class="control-grid">
-              <div class="control">
-                <label for="aLat">Latitude (deg)</label>
-                <input id="aLat" type="number" value="{{ defaults.a_lat }}" step="0.001" />
-              </div>
-              <div class="control">
-                <label for="aLon">Longitude (deg)</label>
-                <input id="aLon" type="number" value="{{ defaults.a_lon }}" step="0.001" />
-              </div>
-              <div class="control">
-                <label for="aSpeed">Speed (kt)</label>
-                <input id="aSpeed" type="number" value="{{ defaults.a_speed_kt }}" step="5" min="0" />
-              </div>
-              <div class="control">
-                <label for="aHeadingSlider">Initial heading (deg)</label>
-                <input id="aHeadingSlider" type="range" min="0" max="360" step="5" value="{{ defaults.a_heading }}" />
-                <div class="value-tag" id="aHeadingSliderValue"></div>
-              </div>
-            </div>
-          </details>
-
-          <details class="input-collapse" open>
-            <summary>Aircraft B</summary>
-            <div class="control-grid">
-              <div class="control">
-                <label for="bLat">Latitude (deg)</label>
-                <input id="bLat" type="number" value="{{ defaults.b_lat }}" step="0.001" />
-              </div>
-              <div class="control">
-                <label for="bLon">Longitude (deg)</label>
-                <input id="bLon" type="number" value="{{ defaults.b_lon }}" step="0.001" />
-              </div>
-              <div class="control">
-                <label for="bSpeed">Speed (kt)</label>
-                <input id="bSpeed" type="number" value="{{ defaults.b_speed_kt }}" step="5" min="0" />
-              </div>
-              <div class="control">
-                <label for="bHeadingSlider">Initial heading (deg)</label>
-                <input id="bHeadingSlider" type="range" min="0" max="360" step="5" value="{{ defaults.b_heading }}" />
-                <div class="value-tag" id="bHeadingSliderValue"></div>
-              </div>
-            </div>
-            <p class="helper">Click anywhere in the grid to update Aircraft B’s latitude and longitude instantly.</p>
-          </details>
-
-          <details class="input-collapse turn-only" id="turnControlsSection">
-            <summary>Turn-aware controls</summary>
-            <div class="section-stack">
-              <div class="control-grid">
-                <div class="control">
-                  <label for="turnPreset">Preset</label>
-                  <select id="turnPreset">
-                    {% for preset in turn_presets %}
-                      <option value="{{ preset.id }}" {% if preset.id == defaults.turn_preset_id %}selected{% endif %}>
-                        {{ preset.title }}
-                      </option>
-                    {% endfor %}
-                  </select>
-                </div>
-                <div class="control">
-                  <label for="turnSpeedUncertainty">Turn speed schedule uncertainty (kt)</label>
-                  <input
-                    id="turnSpeedUncertainty"
-                    type="range"
-                    min="0"
-                    max="150"
-                    step="1"
-                    value="{{ defaults.turn_speed_schedule_uncertainty_kt }}"
-                  />
-                  <div class="value-tag" id="turnSpeedUncertaintyValue"></div>
-                </div>
-              </div>
-
-              <div class="control-grid">
-                <div class="control">
-                  <label for="aTargetHeadingSlider">A target heading (deg)</label>
-                  <input
-                    id="aTargetHeadingSlider"
-                    type="range"
-                    min="0"
-                    max="360"
-                    step="5"
-                    value="{{ defaults.a_target_heading_deg }}"
-                  />
-                  <div class="value-tag" id="aTargetHeadingSliderValue"></div>
-                </div>
-                <div class="control">
-                  <label for="aTurnRateSlider">A turn rate (deg/s)</label>
-                  <input id="aTurnRateSlider" type="range" min="0" max="6" step="0.1" value="{{ defaults.a_turn_rate_deg_sec }}" />
-                  <div class="value-tag" id="aTurnRateSliderValue"></div>
-                </div>
-                <div class="control">
-                  <label for="bTargetHeadingSlider">B target heading (deg)</label>
-                  <input
-                    id="bTargetHeadingSlider"
-                    type="range"
-                    min="0"
-                    max="360"
-                    step="5"
-                    value="{{ defaults.b_target_heading_deg }}"
-                  />
-                  <div class="value-tag" id="bTargetHeadingSliderValue"></div>
-                </div>
-                <div class="control">
-                  <label for="bTurnRateSlider">B turn rate (deg/s)</label>
-                  <input id="bTurnRateSlider" type="range" min="0" max="6" step="0.1" value="{{ defaults.b_turn_rate_deg_sec }}" />
-                  <div class="value-tag" id="bTurnRateSliderValue"></div>
-                </div>
-              </div>
-              <p class="helper">
-                Selecting a preset loads a canonical turn geometry into the form. After that you can tweak headings,
-                rates, speeds, or horizon and evaluate the modified case directly.
-              </p>
-            </div>
-          </details>
-
-          <div class="inputs-actions">
-            <button id="refreshGridBtn">Refresh grid</button>
-            <button id="evaluateBtn" class="secondary">Evaluate detail view</button>
+<html lang="en-GB">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Heading separation explorer</title>
+  <link rel="stylesheet" href="/static/relevant_aircraft.css?v={{ asset_versions['relevant_aircraft.css'] }}" />
+  <script src="/static/relevant_aircraft.js?v={{ asset_versions['relevant_aircraft.js'] }}" defer></script>
+</head>
+<body>
+{% macro number(path, label, minimum, maximum, step='any', scale=1) -%}
+<label for="{{ path | replace('.', '_') }}">{{ label }}
+  <input id="{{ path | replace('.', '_') }}" data-path="{{ path }}" data-scale="{{ scale }}" type="number"
+         min="{{ minimum / scale }}" max="{{ maximum / scale }}" step="{{ step }}" required />
+</label>
+{%- endmacro %}
+<main>
+  <header class="page-header">
+    <div><p class="eyebrow">Geometric safety</p><h1>The encounter, in view</h1></div>
+    <p class="intro">Start with the paths. Follow the geometry through time, with the decision alongside.</p>
+  </header>
+  <section class="encounter-toolbar" aria-label="Encounter selection">
+    <label for="preset">Example encounter
+      <select id="preset">
+        {% for preset in presets %}<option value="{{ preset.id }}">{{ preset.title }}</option>{% endfor %}
+        <option value="custom">Custom encounter</option>
+      </select>
+    </label>
+    <p class="help" id="presetDescription"></p>
+    <button type="button" class="quiet" id="editInputs" aria-controls="encounterInputs" aria-expanded="false">Edit inputs</button>
+  </section>
+  <div class="shell">
+    <details id="encounterInputs">
+      <summary>Aircraft and separation bounds</summary>
+    <aside class="card input-panel">
+      <form id="inputs">
+        <fieldset><legend>Separation check</legend><div class="fields">
+          {{ number('separation_threshold_nm', 'Lateral spacing (NM)', 0.1, 50) }}
+          {{ number('horizon_s', 'Horizon (s)', 0, 1800) }}
+        </div></fieldset>
+        {% for key, name in [('a', 'A'), ('b', 'B')] %}
+        <fieldset><legend><span class="aircraft-dot {{ key }}"></span>Aircraft {{ name }}</legend>
+          <div class="fields">
+            {{ number(key + '.heading_deg', 'Initial heading (°)', 0, 360) }}
+            {{ number(key + '.target_heading_deg', 'Target heading (°)', 0, 360) }}
+            {{ number(key + '.speed_min_kt', 'Minimum speed (kt)', 0, 1000) }}
+            {{ number(key + '.speed_max_kt', 'Maximum speed (kt)', 0, 1000) }}
+            {{ number(key + '.turn_rate_deg_s', 'Turn rate (°/s)', 0, 10) }}
+            {{ number(key + '.heading_deviation_deg', 'Heading error (±°)', 0, 180) }}
+            <div class="vertical-input">{{ number(key + '.current_fl', 'Current FL', -20, 1000) }}</div>
+            <div class="vertical-input">{{ number(key + '.selected_fl', 'Selected FL', -20, 1000) }}</div>
           </div>
-        </section>
-
-        <div class="plot-panel">
-          <div class="plots-wrapper">
-            <section class="plot-card">
-              <div class="panel-header">
-                <div class="panel-header-copy">
-                  <h2>Grid view</h2>
-                  <p class="helper" id="gridCaption">Aircraft B is swept across the local grid against the current Aircraft A setup.</p>
-                </div>
-                <div class="mode-label" id="gridStatus">Loading grid...</div>
-              </div>
-              <div class="canvas-wrapper">
-                <canvas id="gridCanvas" width="520" height="520"></canvas>
-                <div class="loading-overlay" id="gridOverlay">Updating grid...</div>
-              </div>
-              <p class="helper">Solid arrows show initial headings. Turn-aware mode also adds dashed target-heading arrows.</p>
-            </section>
-
-            <section class="plot-card">
-              <div class="panel-header">
-                <div class="panel-header-copy">
-                  <h2 id="detailTitle">Fixed-heading detail</h2>
-                  <p class="helper" id="detailCaption">
-                    Evaluate the selected pair to inspect its reachable geometry over time. The slider selects the frame shown below.
-                  </p>
-                </div>
-                <div class="mode-label" id="timeStatus">Detail view not evaluated yet.</div>
-              </div>
-
-              <div class="detail-shell">
-                <div class="detail-view" id="fixedTimeView">
-                  <div class="canvas-wrapper">
-                    <canvas id="timeCanvas" width="760" height="760"></canvas>
-                    <div class="loading-overlay" id="timeOverlay">Updating detail view...</div>
-                  </div>
-                </div>
-
-                <div class="detail-view hidden" id="turnTimeView">
-                  <div class="canvas-wrapper" id="turnOverlayHost">
-                    <div class="turn-detail-layout">
-                      <section class="subpanel">
-                        <h3>Spatial trajectories</h3>
-                        <div class="canvas-wrapper">
-                          <canvas id="turnSpatialCanvas" width="760" height="760"></canvas>
-                        </div>
-                        <p class="canvas-meta" id="turnSpatialInfo"></p>
-                        <p class="canvas-note">
-                          Nominal trajectories are solid, min/max speed envelopes are dotted, and the selected-time reachable
-                          segments are highlighted.
-                        </p>
-                      </section>
-                      <div class="turn-side-stack">
-                        <section class="subpanel">
-                          <h3>Relative hull at selected time</h3>
-                          <div class="canvas-wrapper">
-                            <canvas id="turnHullCanvas" width="420" height="420"></canvas>
-                          </div>
-                        </section>
-                        <section class="subpanel">
-                          <h3>Distance vs time</h3>
-                          <div class="canvas-wrapper">
-                            <canvas id="turnDistanceCanvas" width="420" height="280"></canvas>
-                          </div>
-                        </section>
-                      </div>
-                    </div>
-                    <div class="loading-overlay" id="turnTimeOverlay">Updating detail view...</div>
-                  </div>
-                </div>
-
-                <div class="control" style="max-width: 420px">
-                  <label for="timeSlider">Selected sample time</label>
-                  <input id="timeSlider" type="range" min="0" max="1" step="1" value="0" disabled />
-                  <div class="value-tag" id="timeSliderValue">0 s</div>
-                </div>
-              </div>
-            </section>
+        </fieldset>
+        {% endfor %}
+        <fieldset><legend>Vertical separation</legend>
+          <label class="check"><input type="checkbox" id="vertical_enabled" data-path="vertical_enabled" />Use minimum climb / descent rate</label>
+          <div class="vertical-input"><div class="fields">
+            {{ number('minimum_vertical_rate_fpm', 'Minimum rate (ft/min)', 0, 10000) }}
+            {{ number('required_vertical_gap_fl', 'Required gap (FL)', 0, 100) }}
+            {{ number('vertical_rounding_fl', 'Rounding grid (FL)', 0, 100, 1) }}
           </div>
+          <p class="help">Both aircraft move immediately towards their selected level at this rate or faster, without overshoot. Zero gives no progress guarantee. A grid of zero disables rounding.</p></div>
+        </fieldset>
+        <details><summary>Positions and additional bounds</summary><div class="fields">
+          {{ number('a.lat', 'A latitude (°)', -90, 90) }}
+          {{ number('a.lon', 'A longitude (°)', -180, 180) }}
+          {{ number('b.lat', 'B latitude (°)', -90, 90) }}
+          {{ number('b.lon', 'B longitude (°)', -180, 180) }}
+          {{ number('relative_position_error_m', 'Relative position error (NM)', 0, 100000, scale=unit_scales['NM']) }}
+          {{ number('relative_velocity_error_mps', 'Relative velocity error (kt)', 0, 500, scale=unit_scales['kt']) }}
         </div>
+        <p class="help">Headings share A’s local north/east frame. Geographic coordinates are projected locally; projection errors need their own declared bound.</p></details>
+        <button type="submit" id="evaluateBtn">Evaluate encounter</button>
+        <p class="help">Speeds may vary anywhere within their bounds, through the turn and afterwards. Turns follow the shortest direction at the stated rate.</p>
+      </form>
+    </aside>
+    </details>
+    <div class="results">
+      <section class="card result-card" id="resultCard" aria-live="polite" aria-atomic="true">
+        <div class="result-heading"><h2 id="resultTitle">Evaluating encounter…</h2><span id="statusBadge" class="badge">Working</span></div>
+        <p id="resultReason"></p>
+        <div id="resultFacts" hidden>
+          <dl class="metrics">
+            <div><dt>Lateral check</dt><dd id="lateralMetric"></dd></div>
+            <div><dt>Vertical separation</dt><dd id="verticalMetric"></dd></div>
+            <div><dt>Extra lateral allowance</dt><dd id="allowanceMetric"></dd></div>
+          </dl>
+          <div class="timeline" aria-hidden="true"><div id="lateralSegment"></div><div id="verticalSegment"></div></div>
+          <p class="help" id="timelineCaption"></p>
+          <p class="diagnostic" id="diagnostic"></p>
+        </div>
+      </section>
+      <section class="card time-controls" id="timeControls" hidden>
+        <div class="time-row">
+          <label for="timeSlider">Selected time <strong id="selectedTime">0 s</strong></label>
+          <label for="plotWindow" class="window-label">Plot window<select id="plotWindow"><option value="180">First 3 min</option><option value="300">First 5 min</option><option value="full">Full horizon</option></select></label>
+        </div>
+        <input id="timeSlider" type="range" min="0" max="0" step="1" value="0" />
+        <div class="time-row"><p class="help" id="windowCaption"></p><div class="time-buttons">
+          <button type="button" class="quiet" id="startBtn">Start</button>
+          <button type="button" class="quiet" id="limitBtn">Lateral limit</button>
+        </div></div>
+      </section>
+      <div id="plots" class="plot-grid" hidden>
+        <section class="card plot-card" id="spatialCard">
+          <div class="plot-heading"><h2>Plan view</h2><span class="legend"><span class="key a">A</span><span class="key b">B</span></span></div>
+          <canvas id="spatialCanvas" role="img" aria-label="Constant-speed reference trajectories in the shared local frame"></canvas>
+          <p class="help">Solid paths use the midpoint speeds. Dotted paths and segments show the base hull’s speed limits. The extra allowance is shown in the relative view.</p>
+        </section>
+        <section class="card plot-card" id="distanceCard">
+          <h2>Lateral distance over time</h2>
+          <canvas id="distanceCanvas" role="img" aria-label="Sampled base-hull distance and the threshold used for the certificate"></canvas>
+          <div class="legend"><span class="key base">Base hull</span><span class="key threshold">Spacing + allowance</span><span class="key spacing">Requested spacing</span><span class="key inactive">Lateral check not required</span></div>
+          <p class="help">The curve samples the constant-speed base hull. The certificate checks the whole required interval, using the displayed allowance. Samples alone do not establish safety.</p>
+        </section>
+        <section class="card plot-card" id="hullCard">
+          <h2>Relative geometry at selected time</h2>
+          <canvas id="hullCanvas" role="img" aria-label="Relative-position base hull and protected separation circle"></canvas>
+          <p class="help" id="hullCaption"></p>
+          <p class="help">Axes stay fixed across the displayed time window.</p>
+        </section>
+        <section class="card plot-card" id="verticalCard">
+          <h2>Remaining altitude bands</h2>
+          <canvas id="verticalCanvas" role="img" aria-label="Remaining altitude bands and the time vertical separation is established"></canvas>
+          <p class="help" id="verticalCaption"></p>
+        </section>
       </div>
-    </main>
-
-    <script id="turnPresetData" type="application/json">{{ turn_presets | tojson }}</script>
-    <script src="/static/relevant_aircraft.js?v=3" defer></script>
-  </body>
+      <p class="card notice" id="geometryNotice" hidden></p>
+      <details class="card" id="mapSection">
+        <summary>Explore other positions for aircraft B</summary>
+        <p class="help">Each cell runs the same certificate. Click a cell to select B’s position. Red means separation was not certified; it does not establish a conflict.</p>
+        <div class="map-controls">
+          {{ number('view_half_extent_nm', 'Map half-span (NM)', 5, 100) }}
+          {{ number('grid_density', 'Cells per side', 15, 101, 1) }}
+          <button type="button" id="refreshGridBtn">Evaluate map</button>
+        </div>
+        <p id="gridStatus" class="help" role="status">Map not evaluated.</p>
+        <canvas id="gridCanvas" role="img" aria-label="Certificate results for aircraft B positions" tabindex="0"></canvas>
+        <div class="legend"><span class="key safe">Certified</span><span class="key unresolved">Unresolved</span><span class="key unsupported">Unsupported</span></div>
+        <p class="help">The latitude/longitude fields provide a keyboard alternative to selecting a cell. The map refreshes on request.</p>
+      </details>
+      <details class="card assumptions"><summary>What the certificate assumes</summary>
+        <p>The heading law is an immediate fixed-rate shortest turn, followed by straight continuation. The speed bounds and declared heading, position and relative-velocity errors must hold throughout the checked interval. Route turns and response delays are outside this model.</p>
+        <p>With vertical separation enabled, each aircraft progresses towards its selected level at or above the declared minimum rate and remains there. Levels have no altitude-error allowance. The plotted bands are unrounded; the verified resolution time also respects the selected rounding grid.</p>
+        <p>The relative view uses the same constant-speed hull and the same maximum allowance as the solver. Turning cases can enlarge the narrower speed interval to enclose both declarations. The numerical kernel has an empirical floating-point guard, not a proved error bound for all inputs.</p>
+      </details>
+    </div>
+  </div>
+</main>
+<script id="presetData" type="application/json">{{ presets | tojson }}</script>
+</body>
 </html>
