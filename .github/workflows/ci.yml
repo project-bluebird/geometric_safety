@@ -1,0 +1,92 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  OPENBLAS_NUM_THREADS: "1"
+  OMP_NUM_THREADS: "1"
+  NUMBA_NUM_THREADS: "1"
+  MPLBACKEND: Agg
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  quality:
+    name: Formatting, lint and types
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version: "0.11.29"
+          python-version: "3.13"
+          enable-cache: true
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+          cache: npm
+      - name: Install locked Python dependencies
+        run: uv sync --locked --group apps --group browser
+      - name: Check Python formatting
+        run: uv run --locked --no-sync ruff format --check .
+      - name: Lint Python
+        run: uv run --locked --no-sync ruff check
+      - name: Check types with ty
+        run: uv run --locked --no-sync ty check
+      - name: Check types with Pyright
+        run: uv run --locked --no-sync pyright
+      - name: Install locked frontend tools
+        run: npm ci --ignore-scripts
+      - name: Check frontend types
+        run: npm run check:frontend
+
+  python-tests:
+    name: Python tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version: "0.11.29"
+          python-version: "3.13"
+          enable-cache: true
+      - name: Install locked Python dependencies
+        run: uv sync --locked --group apps --group browser
+      - name: Run library and validation tests
+        run: uv run --locked --no-sync pytest -q tests/ paper/tests/
+
+  browser-tests:
+    name: Chromium tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version: "0.11.29"
+          python-version: "3.13"
+          enable-cache: true
+      - name: Install locked Python dependencies
+        run: uv sync --locked --group apps --group browser
+      - name: Install Chromium and system dependencies
+        run: uv run --locked --no-sync playwright install --with-deps chromium
+      - name: Run real-browser tests
+        run: uv run --locked --no-sync pytest -q tests/browser/check_visualiser.py

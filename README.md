@@ -429,6 +429,10 @@ after compilation when measuring steady-state query cost.
 
 ## Development and tests
 
+GitHub Actions runs formatting, linting, both Python type checkers, frontend
+checks, the full Python suite and real Chromium tests on pull requests and
+pushes to `main`. CI uses Python 3.13 on Ubuntu with locked dependencies.
+
 From the repository root:
 
 ```bash
