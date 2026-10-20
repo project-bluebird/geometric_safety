@@ -16,7 +16,7 @@ from typing import TextIO
 import pytest
 
 from geometric_safety import relevant_aircraft as ra
-from paper.benchmark_contracts import TimingRequest, module_hashes
+from paper.benchmark_contracts import TimingRequest, WorkerRole, module_hashes
 from paper.benchmark_library_versions import (
     Case,
     Worker,
@@ -138,6 +138,49 @@ def _directional_inputs(path: Path) -> Path:
     ]
     path.write_text(json.dumps({"cases": rows}))
     return path
+
+
+@pytest.mark.parametrize("role", ["old", "before", "current"])
+@pytest.mark.parametrize("optimised", [False, True])
+def test_benchmark_worker_rejects_empty_inputs(tmp_path: Path, role: WorkerRole, optimised: bool) -> None:
+    cases = tmp_path / "cases.json"
+    cases.write_text('{"cases": []}')
+    result = subprocess.run(
+        [
+            sys.executable,
+            *(["-O"] if optimised else []),
+            "-m",
+            "paper.benchmark_library_versions",
+            "--worker",
+            role,
+            "--cases",
+            str(cases),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert "ValueError: Benchmark worker requires at least one case" in result.stderr
+    assert not result.stdout
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Benchmark workers record Linux CPU affinity")
+def test_benchmark_worker_times_single_and_repeated_calls(tmp_path: Path) -> None:
+    source = _snapshot(tmp_path / "library")
+    cases = _case_file(tmp_path / "cases.json")
+    worker = start_worker("current", cases, tmp_path, source)
+    try:
+        assert worker.header["outcomes"]["core_python"] == [True, True, False]
+        for repeats in (1, 3):
+            for method in ("core_python", "core_compiled", "interface_prebuilt"):
+                response = worker.request(method, [0, 2], repeats)
+                for timings in (response["wall_us"], response["cpu_us"]):
+                    assert len(timings) == 2
+                    assert all(math.isfinite(timing) and timing > 0.0 for timing in timings)
+    finally:
+        worker.close()
+    assert worker.process.returncode == 0
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="Benchmark workers record Linux CPU affinity")

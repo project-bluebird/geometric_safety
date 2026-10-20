@@ -417,12 +417,14 @@ def api_methods(case: Case) -> tuple[dict[str, Callable[[], bool]], float]:
 def worker(cases_path: Path, role: WorkerRole) -> None:
     started = time.perf_counter()
     cases = read_cases(cases_path)
+    if not cases:
+        raise ValueError("Benchmark worker requires at least one case")
+    prefix = "old" if role == "old" else "before_core" if role == "before" else "core"
     calls: dict[str, list[Callable[[], bool]]] = {}
     outcomes: Outcomes = {}
     inflations: list[float] = []
     for case in cases:
         p = case.packed()
-        prefix = "old" if role == "old" else "before_core" if role == "before" else "core"
         prepared: dict[str, Callable[[], bool]] = {
             prefix + "_python": functools.partial(direct_call, p),
             prefix + "_compiled": functools.partial(compiled_call, p),
@@ -469,13 +471,14 @@ def worker(cases_path: Path, role: WorkerRole) -> None:
         wall, cpu = [], []
         for index in indices:
             call = calls[method][index]
+            timed_verdict: bool | None = None
             start = time.perf_counter_ns()
             cpu_start = time.thread_time_ns()
             for _ in range(repeats):
-                verdict = call()
+                timed_verdict = call()
             cpu_elapsed = time.thread_time_ns() - cpu_start
             elapsed = time.perf_counter_ns() - start
-            if not (bool(verdict) == outcomes[method][index]):
+            if timed_verdict is None or bool(timed_verdict) != outcomes[method][index]:
                 raise RuntimeError(f"Benchmark validation failed: timed decision changed for {method}, case {index}")
             wall.append(elapsed / repeats / 1000.0)
             cpu.append(cpu_elapsed / repeats / 1000.0)
