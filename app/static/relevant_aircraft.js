@@ -9,6 +9,7 @@
  * @typedef {import("./relevant_aircraft.types").Geometry} Geometry
  * @typedef {import("./relevant_aircraft.types").GeometryFrame} GeometryFrame
  * @typedef {import("./relevant_aircraft.types").GridPayload} GridPayload
+ * @typedef {import("./relevant_aircraft.types").LateralAircraftInput} LateralAircraftInput
  * @typedef {import("./relevant_aircraft.types").LateralResult} LateralResult
  * @typedef {import("./relevant_aircraft.types").NumericParameter} NumericParameter
  * @typedef {import("./relevant_aircraft.types").Paths} Paths
@@ -18,6 +19,7 @@
  * @typedef {import("./relevant_aircraft.types").Status} Status
  * @typedef {import("./relevant_aircraft.types").VerticalFrame} VerticalFrame
  * @typedef {import("./relevant_aircraft.types").VisualParams} VisualParams
+ * @typedef {import("./relevant_aircraft.types").VisualRequest} VisualRequest
  */
 
 (() => {
@@ -77,7 +79,7 @@
   };
   /** @type {DetailPayload | null} */
   let detail = null;
-  /** @type {VisualParams | null} */
+  /** @type {VisualRequest | null} */
   let params = null;
   /** @type {GridPayload | null} */
   let grid = null;
@@ -383,8 +385,8 @@
     return Number(input.value) * Number(input.dataset.scale);
   }
 
-  /** @param {AircraftKey} key @returns {AircraftInput} */
-  function readAircraft(key) {
+  /** @param {AircraftKey} key @returns {LateralAircraftInput} */
+  function readLateralAircraft(key) {
     return {
       lat: readNumber(`${key}_lat`),
       lon: readNumber(`${key}_lon`),
@@ -394,26 +396,39 @@
       speed_min_kt: readNumber(`${key}_speed_min_kt`),
       speed_max_kt: readNumber(`${key}_speed_max_kt`),
       heading_deviation_deg: readNumber(`${key}_heading_deviation_deg`),
-      current_fl: readNumber(`${key}_current_fl`),
-      selected_fl: readNumber(`${key}_selected_fl`),
     };
   }
 
-  /** @returns {VisualParams} */
+  /** @returns {VisualRequest} */
   function readInputs() {
-    return {
-      a: readAircraft("a"),
-      b: readAircraft("b"),
+    const common = {
+      a: readLateralAircraft("a"),
+      b: readLateralAircraft("b"),
       separation_threshold_nm: readNumber("separation_threshold_nm"),
       horizon_s: readNumber("horizon_s"),
       relative_position_error_m: readNumber("relative_position_error_m"),
       relative_velocity_error_mps: readNumber("relative_velocity_error_mps"),
-      vertical_enabled: inputElement("vertical_enabled").checked,
+      grid_density: readNumber("grid_density"),
+      view_half_extent_nm: readNumber("view_half_extent_nm"),
+    };
+    if (!inputElement("vertical_enabled").checked)
+      return { ...common, vertical_enabled: false };
+    return {
+      ...common,
+      a: {
+        ...common.a,
+        current_fl: readNumber("a_current_fl"),
+        selected_fl: readNumber("a_selected_fl"),
+      },
+      b: {
+        ...common.b,
+        current_fl: readNumber("b_current_fl"),
+        selected_fl: readNumber("b_selected_fl"),
+      },
+      vertical_enabled: true,
       minimum_vertical_rate_fpm: readNumber("minimum_vertical_rate_fpm"),
       required_vertical_gap_fl: readNumber("required_vertical_gap_fl"),
       vertical_rounding_fl: readNumber("vertical_rounding_fl"),
-      grid_density: readNumber("grid_density"),
-      view_half_extent_nm: readNumber("view_half_extent_nm"),
     };
   }
 
@@ -435,9 +450,13 @@
 
   /** @returns {void} */
   function updateVerticalControls() {
+    const enabled = inputElement("vertical_enabled").checked;
     document.querySelectorAll(".vertical-input").forEach((el) => {
-      if (el instanceof HTMLElement)
-        el.hidden = !inputElement("vertical_enabled").checked;
+      if (!(el instanceof HTMLElement)) return;
+      el.hidden = !enabled;
+      el.querySelectorAll("input").forEach((input) => {
+        input.disabled = !enabled;
+      });
     });
   }
 
@@ -488,7 +507,7 @@
     text("resultReason", message);
   }
 
-  /** @param {string} url @param {VisualParams} value @param {AbortSignal} signal @returns {Promise<unknown>} */
+  /** @param {string} url @param {VisualRequest} value @param {AbortSignal} signal @returns {Promise<unknown>} */
   async function post(url, value, signal) {
     const response = await fetch(url, {
       method: "POST",
@@ -1096,7 +1115,7 @@
 
   /** @param {number} count @returns {void} */
   function drawVertical(count) {
-    if (!detail || !params || !detail.vertical) return;
+    if (!detail || !params || !params.vertical_enabled || !detail.vertical) return;
     const frames = detail.vertical.slice(0, count),
       times = detail.times_s.slice(0, count);
     const levels = frames.flatMap((f) => [...f.a_band_fl, ...f.b_band_fl]);

@@ -33,7 +33,8 @@
     <details id="encounterInputs">
       <summary>Aircraft and separation bounds</summary>
     <aside class="card input-panel">
-      <form id="inputs">
+      <!-- The submit handler reveals invalid fields before reporting validity. -->
+      <form id="inputs" novalidate>
         <fieldset><legend>Separation check</legend><div class="fields">
           {{ number('separation_threshold_nm', 'Lateral spacing (NM)', 0.1, 50) }}
           {{ number('horizon_s', 'Horizon (s)', 0, 1800) }}

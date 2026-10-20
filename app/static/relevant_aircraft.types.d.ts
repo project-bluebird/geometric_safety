@@ -31,6 +31,25 @@ export interface VisualParams {
   view_half_extent_nm: number;
 }
 
+export type LateralAircraftInput = Omit<AircraftInput, "current_fl" | "selected_fl">;
+
+// Inactive vertical fields are omitted; the endpoint supplies their defaults.
+export type VisualRequest =
+  | (VisualParams & { vertical_enabled: true })
+  | (Omit<
+      VisualParams,
+      | "a"
+      | "b"
+      | "vertical_enabled"
+      | "minimum_vertical_rate_fpm"
+      | "required_vertical_gap_fl"
+      | "vertical_rounding_fl"
+    > & {
+      a: LateralAircraftInput;
+      b: LateralAircraftInput;
+      vertical_enabled: false;
+    });
+
 export type NumericParameter = Exclude<
   keyof VisualParams,
   "a" | "b" | "vertical_enabled"

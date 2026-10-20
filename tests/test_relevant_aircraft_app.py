@@ -2,6 +2,7 @@
 
 from dataclasses import asdict
 import json
+import math
 from pathlib import Path
 import re
 import shutil
@@ -21,7 +22,6 @@ from geometric_safety import (
     certify_heading_separation_with_vertical_from_latlon,
 )
 from geometric_safety.demo_utils import TURN_DEMO_SCENARIOS, build_turn_debug_payload
-from geometric_safety.heading import _enclosing_common_speed_bounds_kt
 from geometric_safety.relevant_aircraft import catch_up_projection_interval_with_turns
 from geometric_safety.util import KT_TO_MPS, NMI_TO_M
 
@@ -205,13 +205,32 @@ def test_plot_threshold_includes_all_declared_errors(client: TestClient) -> None
 def test_turn_display_uses_the_enlarged_kernel_speed_hull(client: TestClient) -> None:
     params = example("single_turn_dodge")
     params.b.speed_min_kt, params.b.speed_max_kt = 335.0, 345.0
-    data = client.post("/api/time_sweep", json=params.model_dump()).json()
-    shared = _enclosing_common_speed_bounds_kt(params.a.motion(), params.b.motion())
-    assert shared is not None
-    bounds = data["geometry"]["b_hull_speed_bounds_mps"]
-    assert bounds == pytest.approx([(shared[1] - shared[2]) * KT_TO_MPS, (shared[1] + shared[2]) * KT_TO_MPS])
-    assert bounds[0] < params.b.speed_min_kt * KT_TO_MPS
-    assert bounds[1] > params.b.speed_max_kt * KT_TO_MPS
+    response = client.post("/api/time_sweep", json=params.model_dump())
+    assert response.status_code == 200
+    data = response.json()
+    geometry = data["geometry"]
+    # Both intervals are centred on 340 kt; A's 25 kt half-width also encloses B.
+    bounds = (315.0 * KT_TO_MPS, 365.0 * KT_TO_MPS)
+    assert geometry["a_hull_speed_bounds_mps"] == pytest.approx(bounds)
+    assert geometry["b_hull_speed_bounds_mps"] == pytest.approx(bounds)
+    origin_x, origin_y = geometry["frames"][0]["relative_hull"][0]
+    # At 90 s, A has turned north to west at 1 deg/s, with displacement
+    # (-v/omega, v/omega); B has travelled east by 90*v.
+    omega = math.pi / 180.0
+    expected_hull = [
+        (origin_x - a_speed / omega - 90.0 * b_speed, origin_y + a_speed / omega)
+        for a_speed in bounds
+        for b_speed in bounds
+    ]
+    frame = geometry["frames"][data["times_s"].index(90.0)]
+    assert len(frame["relative_hull"]) == len(expected_hull)
+    for actual, expected in zip(sorted(frame["relative_hull"]), sorted(expected_hull), strict=True):
+        assert actual == pytest.approx(expected, rel=0.0, abs=1e-7)
+    # Here x < 0 < y, so increasing either speed moves farther from the origin.
+    closest = expected_hull[0]
+    assert closest[0] < 0 < closest[1]
+    assert frame["closest_point"] == pytest.approx(closest, rel=0.0, abs=1e-7)
+    assert frame["base_distance_m"] == pytest.approx(math.hypot(*closest), rel=0.0, abs=1e-7)
 
 
 def test_zero_horizon_is_serialisable_and_has_one_frame(client: TestClient) -> None:
@@ -258,9 +277,13 @@ def test_grid_cells_match_selected_pair_decisions(client: TestClient) -> None:
     assert response.status_code == 200
     grid = response.json()
     assert sum(grid["counts"].values()) == 225
-    for i, j in ((0, 0), (7, 7), (14, 14)):
+    # Keep an asymmetric pair so swapping latitude and longitude indices fails.
+    assert grid["statuses"][0][7] != grid["statuses"][7][0]
+    for i, j in ((0, 0), (7, 7), (14, 14), (0, 7), (7, 0)):
         params.b.lat, params.b.lon = grid["lats"][i], grid["lons"][j]
-        detail = client.post("/api/time_sweep", json=params.model_dump()).json()
+        response = client.post("/api/time_sweep", json=params.model_dump())
+        assert response.status_code == 200
+        detail = response.json()
         assert grid["statuses"][i][j] == detail["certificate"]["status"]
 
 

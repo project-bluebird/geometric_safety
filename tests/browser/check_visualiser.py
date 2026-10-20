@@ -8,7 +8,7 @@ import subprocess
 import sys
 import time
 
-from playwright.sync_api import Browser, Error, Page, expect, sync_playwright
+from playwright.sync_api import Browser, Error, Page, Request, expect, sync_playwright
 from pydantic import TypeAdapter
 import pytest
 
@@ -44,13 +44,23 @@ OBSERVE_CANVAS = """() => {
   }
 }"""
 
-CHECK_HULL = """() => {
+CHECK_HULL = """times => {
   const slider = document.getElementById('timeSlider');
   let first = null;
+  let firstPoints = null;
+  let lastPoints = null;
+  if (Number(slider.max) + 1 !== times.length) throw new Error('Slider does not cover the requested time window');
   for (let i = 0; i <= Number(slider.max); i++) {
     slider.value = i;
     slider.dispatchEvent(new Event('input', {bubbles: true}));
+    const displayedTime = Number.parseFloat(document.getElementById('selectedTime').textContent);
+    // The label rounds seconds to one decimal place.
+    if (!Number.isFinite(displayedTime) || Math.abs(displayedTime - times[i]) > 0.051)
+      throw new Error(`Selected time does not match slider index ${i}`);
     const draw = window.canvasDraws.hullCanvas;
+    if (!draw.points.length) throw new Error(`No hull geometry drawn at index ${i}`);
+    lastPoints = JSON.stringify(draw.points);
+    if (firstPoints === null) firstPoints = lastPoints;
     const axes = JSON.stringify(draw.labels.filter(l => l.font.startsWith('10px') && /^-?[\\d.]+$/.test(l.text)));
     if (first === null) first = axes;
     if (axes !== first) throw new Error(`Axes changed at slider index ${i}`);
@@ -60,6 +70,7 @@ CHECK_HULL = """() => {
     if (draw.circles.some(([cx, cy, r]) => !within(cx-r, cy-r) || !within(cx+r, cy+r)))
       throw new Error(`Circle clipped at index ${i}`);
   }
+  if (lastPoints === firstPoints) throw new Error('Hull geometry did not change between the first and last frames');
   return Number(slider.max) + 1;
 }"""
 
@@ -121,7 +132,7 @@ def page(browser: Browser, live_url: str) -> Iterator[Page]:
     instance.add_init_script(f"({OBSERVE_CANVAS})()")
     try:
         instance.goto(live_url, wait_until="domcontentloaded")
-        expect(instance.locator("#resultCard")).to_have_attribute("data-status", "certified_safe")
+        expect(instance.locator("#resultCard")).to_have_attribute("data-status", "certified_safe", timeout=30_000)
         yield instance
         assert not errors, errors
     finally:
@@ -166,6 +177,96 @@ def test_presets_unsupported_motion_and_real_server_validation(page: Page) -> No
     assert pending.value.status == 422
     expect(page.locator("#resultCard")).to_have_attribute("data-status", "error")
     expect(page.locator("#resultReason")).to_contain_text("maximum speed must be at least minimum speed")
+
+
+@pytest.mark.parametrize(
+    ("field", "invalid_value"),
+    [
+        ("minimum_vertical_rate_fpm", ""),
+        ("required_vertical_gap_fl", "-1"),
+        ("vertical_rounding_fl", "0.5"),
+        ("a_current_fl", ""),
+        ("a_selected_fl", "1001"),
+        ("b_current_fl", "-21"),
+        ("b_selected_fl", ""),
+    ],
+)
+def test_inactive_vertical_inputs_do_not_block_lateral_evaluation(page: Page, field: str, invalid_value: str) -> None:
+    requests: list[Request] = []
+
+    def record_request(request: Request) -> None:
+        if request.url.endswith("/api/time_sweep"):
+            requests.append(request)
+
+    page.on("request", record_request)
+    page.locator("#editInputs").click()
+    control = page.locator(f"#{field}")
+    original_value = control.input_value()
+    label = page.locator(f'label[for="{field}"]').inner_text()
+    control.fill(invalid_value)
+    with page.expect_response(lambda response: response.url.endswith("/api/time_sweep")) as pending:
+        page.locator("#vertical_enabled").uncheck()
+    response = pending.value
+    assert response.ok, response.text()
+    body = response.request.post_data_json
+    assert isinstance(body, dict)
+    assert body["vertical_enabled"] is False
+    for aircraft in ("a", "b"):
+        aircraft_body = body[aircraft]
+        assert isinstance(aircraft_body, dict)
+        assert "current_fl" not in aircraft_body
+        assert "selected_fl" not in aircraft_body
+    for parameter in ("minimum_vertical_rate_fpm", "required_vertical_gap_fl", "vertical_rounding_fl"):
+        assert parameter not in body
+    sent = VisualParams.model_validate(body)
+    data = DETAIL.validate_python(response.json())
+    assert data.vertical is None
+    assert data.certificate.lateral_horizon_s == sent.horizon_s
+    expect(page.locator("#resultCard")).to_have_attribute("data-status", data.certificate.status)
+    expect(control).to_be_disabled()
+    expect(control).to_be_hidden()
+
+    page.locator("#vertical_enabled").check()
+    expect(page.locator("#resultCard")).to_have_attribute("data-status", "error")
+    expect(page.locator("#resultReason")).to_contain_text(label)
+    expect(control).to_be_enabled()
+    expect(control).to_be_visible()
+    expect(control).to_have_value(invalid_value)
+    expect(control).to_be_focused()
+    assert len(requests) == 1
+    page.locator("#evaluateBtn").click()
+    expect(page.locator("#resultReason")).to_contain_text(label)
+    assert len(requests) == 1
+
+    control.fill(original_value)
+    with page.expect_response(lambda response: response.url.endswith("/api/time_sweep")) as pending:
+        page.locator("#evaluateBtn").click()
+    response = pending.value
+    assert response.ok, response.text()
+    assert VisualParams.model_validate(response.request.post_data_json).vertical_enabled
+    expect(page.locator("#resultCard")).to_have_attribute("data-status", "certified_safe")
+
+
+def test_submit_reveals_invalid_inputs_in_collapsed_sections(page: Page) -> None:
+    page.locator("#editInputs").click()
+    page.get_by_text("Positions and additional bounds", exact=True).click()
+    page.locator("#a_lat").fill("")
+    # Native submission must reach the custom validator before a change-event
+    # timer can reveal the section or mask a blocked submit.
+    status = page.locator("#inputs").evaluate("""form => {
+        form.querySelector('details').open = false;
+        form.requestSubmit();
+        return document.getElementById('resultCard').dataset.status;
+    }""")
+    assert status == "error"
+    expect(page.locator("#inputs > details")).to_have_attribute("open", "")
+    expect(page.locator("#a_lat")).to_be_focused()
+    expect(page.locator("#resultReason")).to_contain_text("A latitude")
+    page.locator("#a_lat").fill("51")
+    with page.expect_response(lambda response: response.url.endswith("/api/time_sweep")) as pending:
+        page.locator("#evaluateBtn").click()
+    assert pending.value.ok, pending.value.text()
+    expect(page.locator("#resultCard")).to_have_attribute("data-status", "certified_safe")
 
 
 def test_error_units_api_parity_and_map_selection(page: Page, live_url: str) -> None:
@@ -221,10 +322,13 @@ def test_fixed_axes_altitude_ticks_and_responsive_layout(page: Page, tmp_path: P
     assert page.evaluate("window.canvasDraws.spatialCanvas.fills.includes('#285fba')")
     assert page.evaluate("window.canvasDraws.spatialCanvas.fills.includes('#946c00')")
     for preset_id in ("vertical_clearance", "single_turn_dodge"):
-        _preset(page, preset_id)
+        detail = _preset(page, preset_id)
         for window in ("180", "300", "full"):
             page.locator("#plotWindow").select_option(window)
-            assert TypeAdapter(int).validate_python(page.evaluate(CHECK_HULL)) > 1
+            end = detail.certificate.horizon_s if window == "full" else float(window)
+            times = [time for time in detail.times_s if time <= end]
+            assert len(times) > 1
+            assert TypeAdapter(int).validate_python(page.evaluate(CHECK_HULL, times)) == len(times)
 
     _preset(page, "vertical_clearance")
     page.locator("#editInputs").click()
