@@ -436,13 +436,15 @@ uv sync --locked --group apps --group browser
 uv run --locked ruff format --check .
 uv run --locked ruff check
 uv run --locked ty check
+uv run --locked pyright
 uv run --locked pytest tests/ paper/tests/
 ```
 
 The `apps` group includes the web application and its integration tests, and
 the `browser` group supplies the browser test tools. The library itself does
 not require either group. Test functions are subject to the same
-annotation checks as the library. Numerical tests include independently
+annotation checks as the library. Both `ty` and Pyright check Python code;
+Pyright uses standard mode. Numerical tests include independently
 integrated motion, arbitrary-precision references and exact vertical-gap
 calculations. Audit guardrails are tested with invalid source and report data,
 and with real production solvers, without replacing solver or worker functions.
