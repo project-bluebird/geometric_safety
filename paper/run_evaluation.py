@@ -17,6 +17,8 @@ import sys
 from typing import Any
 
 from matplotlib import ticker
+from matplotlib.axes import Axes
+from matplotlib.figure import Figure
 import matplotlib.pyplot as plt
 import numba
 import numpy as np
@@ -1190,7 +1192,7 @@ def plot_sampled_proxy_miss(path: Path, row: dict[str, Any], *, sample_dt_s: flo
     style_axes(ax)
     margin_nmi = (dense_distances - encounter.separation_threshold_m) / NMI_TO_M
     ax.axhline(0.0, color="#444444", linestyle=":", linewidth=1.2, label="Threshold")
-    ax.fill_between(dense_times, margin_nmi, 0.0, where=margin_nmi < 0.0, color="#d95f5f", alpha=0.5)
+    ax.fill_between(dense_times, margin_nmi, 0.0, where=(margin_nmi < 0.0).tolist(), color="#d95f5f", alpha=0.5)
     ax.plot(
         dense_times,
         margin_nmi,
@@ -1431,7 +1433,7 @@ def plot_ablation(path: Path, summary_rows: list[dict[str, Any]]) -> None:
     plt.close(fig)
 
 
-def draw_nominal_trajectories(ax: plt.Axes, encounter: Encounter) -> None:
+def draw_nominal_trajectories(ax: Axes, encounter: Encounter) -> None:
     times_s = np.linspace(0.0, encounter.projection_time_s, 200)
     a_path = nominal_path(encounter, aircraft="a", times_s=times_s)
     b_path = nominal_path(encounter, aircraft="b", times_s=times_s)
@@ -1492,7 +1494,7 @@ def nominal_path(encounter: Encounter, *, aircraft: str, times_s: np.ndarray) ->
 
 def plot_heatmap_source_panel(
     *,
-    ax: plt.Axes,
+    ax: Axes,
     rows: list[dict[str, Any]],
     cmap: str,
 ) -> None:
@@ -1524,7 +1526,7 @@ def plot_heatmap_source_panel(
 
 def draw_heatmap_grid(
     *,
-    ax: plt.Axes,
+    ax: Axes,
     grid: np.ndarray,
     x_labels: list[str],
     y_labels: list[str],
@@ -1578,7 +1580,7 @@ def draw_heatmap_grid(
 
 def plot_heatmap(
     *,
-    ax: plt.Axes,
+    ax: Axes,
     rows: list[dict[str, Any]],
     x_edges: tuple[float, ...],
     y_edges: tuple[float, ...],
@@ -1641,7 +1643,7 @@ def encounter_from_row(row: dict[str, Any]) -> Encounter:
     )
 
 
-def save_figure(fig: plt.Figure, path: Path) -> None:
+def save_figure(fig: Figure, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.suffix.lower() == ".pdf":
         fig.savefig(path)
@@ -1649,7 +1651,7 @@ def save_figure(fig: plt.Figure, path: Path) -> None:
     fig.savefig(path, dpi=200)
 
 
-def style_axes(ax: plt.Axes, *, grid: bool = True) -> None:
+def style_axes(ax: Axes, *, grid: bool = True) -> None:
     ax.set_facecolor("#fbfbfb")
     if grid:
         ax.grid(True, color="#d9d9d9", linewidth=0.8, alpha=0.8)
@@ -1659,7 +1661,7 @@ def style_axes(ax: plt.Axes, *, grid: bool = True) -> None:
     ax.spines["bottom"].set_color("#b7b7b7")
 
 
-def add_annotation_box(ax: plt.Axes, lines: list[str], *, anchor: str = "upper_left") -> None:
+def add_annotation_box(ax: Axes, lines: list[str], *, anchor: str = "upper_left") -> None:
     if anchor == "lower_left":
         x_pos, y_pos = 0.02, 0.02
         vertical_alignment = "bottom"
@@ -1678,7 +1680,7 @@ def add_annotation_box(ax: plt.Axes, lines: list[str], *, anchor: str = "upper_l
     )
 
 
-def add_path_arrow(ax: plt.Axes, x_values: np.ndarray, y_values: np.ndarray, *, color: str) -> None:
+def add_path_arrow(ax: Axes, x_values: np.ndarray, y_values: np.ndarray, *, color: str) -> None:
     if x_values.size < 3:
         return
     end_index = x_values.size - 1

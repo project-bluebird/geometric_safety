@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 import math
-from typing import Any
+from typing import Any, TypedDict
 
 import numpy as np
 
@@ -89,7 +89,17 @@ class PerturbationBounds:
         return [name for name, value in asdict(self).items() if value > 0.0]
 
 
-def solver_envelope_kwargs(encounter: Encounter, bounds: PerturbationBounds) -> dict[str, float]:
+class EnvelopeInputs(TypedDict):
+    """Bounded perturbation parameters passed to the turn-aware solver."""
+
+    eta_const_m: float
+    eta_rate_mps: float
+    turn_delay_max_s: float
+    turn_rate_error_max: float
+    turn_speed_schedule_uncertainty_kt: float
+
+
+def solver_envelope_kwargs(encounter: Encounter, bounds: PerturbationBounds) -> EnvelopeInputs:
     """Convert perturbation bounds into the solver's deviation-envelope parameters.
 
     The wind bound contributes its magnitude to the linear rate term directly. A

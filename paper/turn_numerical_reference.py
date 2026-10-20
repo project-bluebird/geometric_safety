@@ -32,7 +32,7 @@ def basis(h: mp.mpf, target: mp.mpf, rate: mp.mpf, t: mp.mpf) -> tuple[mp.mpf, m
     # Direct integration, deliberately different from the production chord formula.
     x = (mp.cos(initial) - mp.cos(final)) / omega
     y = (mp.sin(final) - mp.sin(initial)) / omega
-    straight = max(t - duration, 0)
+    straight = max(t - duration, mp.mpf(0))
     return x + straight * mp.sin(mp.radians(target)), y + straight * mp.cos(mp.radians(target))
 
 
@@ -64,7 +64,7 @@ def distance(points: list[tuple[mp.mpf, mp.mpf]]) -> mp.mpf:
 def certificate(case: TurnCase | SerialisedTurnCase, t0: float, t1: float, dps: int = 80) -> ReferenceCertificate:
     """Reference lower bound, envelope and residual before a numerical guard."""
     with mp.workdps(dps):
-        q = {k: mp.mpf(v) for k, v in case.items() if isinstance(v, (float, int))}
+        q: dict[str, mp.mpf] = {k: mp.mpf(v) for k, v in case.items() if isinstance(v, (float, int))}
         left, right = mp.mpf(t0), mp.mpf(t1)
         knot = mp.mpf(1852) / 3600
         aircraft: list[ReferenceAircraft] = []
@@ -73,11 +73,11 @@ def certificate(case: TurnCase | SerialisedTurnCase, t0: float, t1: float, dps: 
                 q[f"{prefix}_{key}"] for key in ("heading0_deg", "target_heading_deg", "turn_rate_deg_sec")
             )
             speed, width = q[f"{prefix}_speed_kt"], q["speed_diff_kt"]
-            speeds = (max(speed - width, 0) * knot, (speed + width) * knot)
+            speeds = (max(speed - width, mp.mpf(0)) * knot, (speed + width) * knot)
             angle, duration = turn(h, target, rate)
             aircraft.append((h, target, rate, speeds, angle, duration))
         position = tuple(mp.mpf(float(v)) for v in case["rel_pos0"])
-        distances = []
+        distances: list[mp.mpf] = []
         for t in (left, right):
             a, b = aircraft
             ba, bb = basis(a[0], a[1], a[2], t), basis(b[0], b[1], b[2], t)
@@ -99,13 +99,18 @@ def certificate(case: TurnCase | SerialisedTurnCase, t0: float, t1: float, dps: 
             dr = heading(a, rgt) - heading(b, rgt)
             anti = 180 + 360 * mp.ceil((min(dl, dr) - 180) / 360) <= max(dl, dr)
             for sa, sb in itertools.product(a[3], b[3]):
-                candidates = [
-                    mp.sqrt(max(0, sa * sa + sb * sb - 2 * sa * sb * mp.cos(mp.radians(d)))) for d in (dl, dr)
-                ]
+                candidates: list[mp.mpf] = []
+                for d in (dl, dr):
+                    squared = max(mp.mpf(0), sa * sa + sb * sb - 2 * sa * sb * mp.cos(mp.radians(d)))
+                    speed = mp.sqrt(squared)
+                    # mpmath also supports complex roots; this reference requires real speeds.
+                    if not isinstance(speed, mp.mpf):
+                        raise ArithmeticError("Nonnegative squared speed produced a nonreal root")
+                    candidates.append(speed)
                 if anti:
                     candidates.append(sa + sb)
-                lipschitz = max(lipschitz, *candidates)
-        lower = max(mp.mpf(0), (sum(distances) - lipschitz * (right - left)) / 2)
+                lipschitz = max([lipschitz, *candidates])
+        lower = max(mp.mpf(0), (sum(distances, start=mp.mpf(0)) - lipschitz * (right - left)) / 2)
         eta = q["eta_const_m"] + q["eta_rate_mps"] * right
         for _h, _target, rate, speeds, angle, duration in aircraft:
             if not angle:

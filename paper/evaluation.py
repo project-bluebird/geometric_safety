@@ -14,6 +14,7 @@ import numpy as np
 
 from geometric_safety import relevant_aircraft as ra
 from geometric_safety.util import DEG_TO_RAD, EARTH_RADIUS_IN_METERS, KT_TO_MPS, NMI_TO_M, RAD_TO_DEG
+from paper.numerical_validation import python_function
 
 DEFAULT_REF_LAT = 51.0
 DEFAULT_REF_LON = -1.0
@@ -155,7 +156,7 @@ def local_xy_to_latlon(east_m: float, north_m: float, ref_lat: float, ref_lon: f
     return lat, lon
 
 
-def encounter_to_turn_kwargs(encounter: Encounter, ref_lat: float, ref_lon: float) -> dict[str, float]:
+def encounter_to_turn_kwargs(encounter: Encounter, ref_lat: float, ref_lon: float) -> ra.TurnInputs:
     """Convert an encounter to the public turn-aware API inputs."""
     b_lat, b_lon = local_xy_to_latlon(-encounter.rel_east_m, -encounter.rel_north_m, ref_lat, ref_lon)
     return {
@@ -609,7 +610,7 @@ def count_fixed_time_evals(
     use_interval_local_lipschitz: bool,
 ) -> tuple[int, MethodOutcome]:
     """Count fixed-time hull evaluations using the Python shadow of the local core."""
-    py_func = ra._catch_up_projection_interval_with_turns_local.py_func
+    py_func = python_function(ra._catch_up_projection_interval_with_turns_local)
     globals_dict = py_func.__globals__
     original = globals_dict["_sample_relative_hull_at_time"]
     counter = {"n": 0}

@@ -28,10 +28,11 @@ def main() -> None:
     args = parser.parse_args()
     expected: Path | None = None
     if args.source is not None:
-        expected = args.source.resolve() / "geometric_safety" / "__init__.py"
+        source: Path = args.source
+        expected = source.resolve() / "geometric_safety" / "__init__.py"
         if not expected.is_file():
             raise ValueError(f"Selected library has no geometric_safety package: {args.source}")
-        sys.path.insert(0, str(args.source.resolve()))
+        sys.path.insert(0, str(source.resolve()))
     library = importlib.import_module("geometric_safety")
     if expected is not None and (library.__file__ is None or Path(library.__file__).resolve() != expected):
         raise RuntimeError("Worker imported a library outside the selected source")

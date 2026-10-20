@@ -36,6 +36,7 @@ from paper.numerical_validation import (
     StudySolver,
     TurnCase,
     compile_solver,
+    python_function,
     require_coverage,
     require_hooks,
     require_positive_encounters,
@@ -134,7 +135,9 @@ def instrument_solver(source: str) -> tuple[ast.Module, ast.FunctionDef]:
 
 
 def traced_solver() -> tuple[StudySolver, str]:
-    tree, function = instrument_solver(inspect.getsource(ra._catch_up_projection_interval_with_turns_local.py_func))
+    tree, function = instrument_solver(
+        inspect.getsource(python_function(ra._catch_up_projection_interval_with_turns_local))
+    )
     solver = compile_solver(tree, function, vars(ra), "<turn-numerical-study>")
     return solver, ast.unparse(tree)
 

@@ -20,6 +20,8 @@ mpl.rcParams.update(
     }
 )
 
+from matplotlib.axes import Axes
+from matplotlib.figure import Figure
 from matplotlib.patches import Circle, PathPatch
 from matplotlib.path import Path as MplPath
 import matplotlib.patheffects as path_effects
@@ -211,7 +213,7 @@ def capsule_patch(start_xy: np.ndarray, end_xy: np.ndarray, radius: float, **kwa
 
 
 def annotate(
-    ax: plt.Axes,
+    ax: Axes,
     text: str,
     xy: tuple[float, float],
     xytext: tuple[float, float],
@@ -233,7 +235,7 @@ def annotate(
     )
 
 
-def render_figure() -> plt.Figure:
+def render_figure() -> Figure:
     horizon_s = 6.0 * 60.0
     times_s = np.linspace(0.0, horizon_s, 260)
     sample_times_s = np.array([0.0, 3.0 * 60.0, horizon_s])

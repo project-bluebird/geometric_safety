@@ -5,6 +5,7 @@ import numpy as np
 import pytest
 
 from geometric_safety import relevant_aircraft as ra
+from paper.numerical_validation import TurnCase
 from paper.run_turn_numerics import cases, traced_solver
 from paper.turn_numerical_reference import basis, certificate, distance
 
@@ -49,7 +50,7 @@ def test_reference_for_rigid_translation_and_constant_inflation() -> None:
         assert abs(result["residual"] + 2) < mp.mpf("1e-30")
 
 
-def test_trace_matches_production_and_detects_guard_effect() -> None:
+def test_trace_matches_production() -> None:
     solver, _ = traced_solver()
     trace = np.empty((2048, 6))
     for _, case in cases(16, 42):
@@ -61,7 +62,12 @@ def test_trace_matches_production_and_detects_guard_effect() -> None:
         rows = trace[~np.isnan(trace[:, 0])]
         assert len(rows) > 0
         assert np.all(rows[:, 1] >= rows[:, 0])
-    case.update(
+
+
+def test_trace_detects_guard_effect() -> None:
+    solver, _ = traced_solver()
+    trace = np.empty((2048, 6))
+    case = TurnCase(
         rel_pos0=np.array([9260.0, 0.0]),
         a_heading0_deg=0.0,
         a_target_heading_deg=90.0,
@@ -78,6 +84,7 @@ def test_trace_matches_production_and_detects_guard_effect() -> None:
         turn_rate_error_max=0.0,
         turn_speed_schedule_uncertainty_kt=0.0,
         projection_time_s=60.0,
+        separation_threshold_m=9260.0,
     )
     assert solver(**case, study_trace=trace, study_guard=0.0)[0]
     assert not solver(**case, study_trace=trace, study_guard=1e-6)[0]

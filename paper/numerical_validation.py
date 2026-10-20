@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import ast
 from collections.abc import Mapping
+import inspect
 from types import FunctionType
 from typing import Protocol, TypedDict, Unpack, cast
 
@@ -56,10 +57,13 @@ class StudySolver(Protocol):
     def __call__(self, **kwargs: Unpack[StudyArguments]) -> SolverResult: ...
 
 
-class ProductionArguments(TurnCase, total=False):
-    directional_mode: int
+class SolverInputs(TurnCase, total=False):
     use_interval_local_lipschitz: bool
     min_cert_interval_s: float
+
+
+class ProductionArguments(SolverInputs, total=False):
+    directional_mode: int
 
 
 class ProductionSolver(Protocol):
@@ -73,6 +77,16 @@ class ReferenceCertificate(TypedDict):
     left_distance: mp.mpf
     right_distance: mp.mpf
     lipschitz: mp.mpf
+
+
+def python_function(dispatcher: object) -> FunctionType:
+    """Recover the Python function for source and globals instrumentation."""
+    if not callable(dispatcher):
+        raise TypeError("Numerical instrumentation requires a callable")
+    function = inspect.unwrap(dispatcher)
+    if not isinstance(function, FunctionType):
+        raise TypeError("Numerical instrumentation requires a Python function")
+    return function
 
 
 def solver_ast(source: str, name: str, guard: float | None = None) -> tuple[ast.Module, ast.FunctionDef]:

@@ -17,6 +17,8 @@ import sys
 from typing import TypedDict
 
 import matplotlib as mpl
+from matplotlib.axes import Axes
+from matplotlib.figure import Figure
 
 mpl.use("Agg")
 mpl.rcParams.update(
@@ -166,7 +168,7 @@ def heading_vector(heading_deg: float, length: float) -> tuple[float, float]:
 
 
 def draw_heading_arrow(
-    ax: plt.Axes,
+    ax: Axes,
     origin: tuple[float, float],
     heading_deg: float,
     *,
@@ -312,7 +314,7 @@ def read_source_payload(path: Path) -> GridPayload:
     return payload
 
 
-def render_figure(payload: GridPayload) -> plt.Figure:
+def render_figure(payload: GridPayload) -> Figure:
     safe = np.asarray(payload["safe"], dtype=bool)
     lats = np.asarray(payload["lats"], dtype=np.float64)
     lons = np.asarray(payload["lons"], dtype=np.float64)

@@ -28,6 +28,8 @@ mpl.rcParams.update(
     }
 )
 
+from matplotlib.axes import Axes
+from matplotlib.figure import Figure
 from matplotlib.patches import Circle, PathPatch
 from matplotlib.path import Path as MplPath
 import matplotlib.patheffects as path_effects
@@ -271,7 +273,7 @@ def adaptive_certification(scenario: TurnScenario, dt_min_s: float = 3.0) -> lis
     return leaves
 
 
-def panel_label(ax: plt.Axes, label: str) -> None:
+def panel_label(ax: Axes, label: str) -> None:
     ax.text(
         0.02,
         0.975,
@@ -286,7 +288,7 @@ def panel_label(ax: plt.Axes, label: str) -> None:
     )
 
 
-def style_axes(ax: plt.Axes) -> None:
+def style_axes(ax: Axes) -> None:
     ax.grid(True, color="#d7dbe0", lw=0.6, alpha=0.7)
     ax.tick_params(axis="both", labelsize=8.6)
     for spine in ("top", "right", "left", "bottom"):
@@ -300,7 +302,7 @@ def polygon_patch(vertices: np.ndarray, **kwargs: object) -> PathPatch:
     return PathPatch(MplPath(closed, codes), **kwargs)
 
 
-def draw_straight_panel(ax: plt.Axes) -> None:
+def draw_straight_panel(ax: Axes) -> None:
     """Panel (a): straight-heading displacement hull and closest-approach projection."""
     heading_a_deg = 35.0
     heading_b_deg = 305.0
@@ -409,7 +411,7 @@ def draw_straight_panel(ax: plt.Axes) -> None:
     panel_label(ax, "(a)")
 
 
-def draw_turn_panel(ax: plt.Axes, scenario: TurnScenario, hull_times_s: np.ndarray) -> None:
+def draw_turn_panel(ax: Axes, scenario: TurnScenario, hull_times_s: np.ndarray) -> None:
     """Panel (b): fixed-time reachable hulls along a one-turn encounter."""
     dense_times = np.linspace(0.0, scenario.horizon_s, 480)
     corner_paths = scenario.corner_positions_nm(dense_times)
@@ -510,7 +512,7 @@ def draw_turn_panel(ax: plt.Axes, scenario: TurnScenario, hull_times_s: np.ndarr
     panel_label(ax, "(b)")
 
 
-def draw_certification_panel(ax: plt.Axes, scenario: TurnScenario, leaves: list[CertifiedInterval]) -> None:
+def draw_certification_panel(ax: Axes, scenario: TurnScenario, leaves: list[CertifiedInterval]) -> None:
     """Panel (c): worst-case distance over time with interval-certification bounds."""
     dense_times = np.linspace(0.0, scenario.horizon_s, 600)
     distances = np.asarray([scenario.distance_nm(t) for t in dense_times])
@@ -578,7 +580,7 @@ def build_scenario() -> TurnScenario:
     )
 
 
-def render_figure(print_diagnostics: bool = False) -> plt.Figure:
+def render_figure(print_diagnostics: bool = False) -> Figure:
     scenario = build_scenario()
     leaves = adaptive_certification(scenario)
 

@@ -4,6 +4,7 @@ import ast
 import copy
 import inspect
 import json
+import math
 import os
 from pathlib import Path
 import subprocess
@@ -15,18 +16,18 @@ import pytest
 
 from geometric_safety import relevant_aircraft as ra
 from paper import run_turn_numerics as scalar, validate_directional_production as directional
-from paper.numerical_validation import TurnCase, require_solver_parity
+from paper.numerical_validation import TurnCase, python_function, require_solver_parity
 
 
 def test_missing_directional_hook_is_rejected() -> None:
-    source = inspect.getsource(ra._catch_up_projection_interval_with_turns_local.py_func)
+    source = inspect.getsource(python_function(ra._catch_up_projection_interval_with_turns_local))
     renamed = source.replace("directional_lower_bound_m", "renamed_directional_bound")
     with pytest.raises(RuntimeError, match=r"directional.*hook|hook.*directional"):
         directional.instrument_solver(renamed)
 
 
 def test_duplicate_directional_hook_is_rejected() -> None:
-    source = inspect.getsource(ra._catch_up_projection_interval_with_turns_local.py_func)
+    source = inspect.getsource(python_function(ra._catch_up_projection_interval_with_turns_local))
 
     class DuplicateHook(ast.NodeTransformer):
         def visit_Assign(self, node: ast.Assign) -> ast.Assign | list[ast.stmt]:
@@ -43,7 +44,7 @@ def test_duplicate_directional_hook_is_rejected() -> None:
 
 @pytest.mark.parametrize("copies", [0, 2])
 def test_directional_comparison_hook_count_is_checked(copies: int) -> None:
-    source = inspect.getsource(ra._catch_up_projection_interval_with_turns_local.py_func)
+    source = inspect.getsource(python_function(ra._catch_up_projection_interval_with_turns_local))
 
     class ChangeComparisonCount(ast.NodeTransformer):
         def visit_If(self, node: ast.If) -> ast.If | list[ast.stmt]:
@@ -62,7 +63,7 @@ def test_directional_comparison_hook_count_is_checked(copies: int) -> None:
 
 
 @pytest.mark.parametrize(
-    ("case", "accepted"),
+    "case",
     [
         pytest.param(
             TurnCase(
@@ -84,8 +85,7 @@ def test_directional_comparison_hook_count_is_checked(copies: int) -> None:
                 turn_delay_max_s=9.84478429322914,
                 turn_rate_error_max=0.17319354504124035,
             ),
-            True,
-            id="compiled-acceptance",
+            id="wide-speed-intervals",
         ),
         pytest.param(
             TurnCase(
@@ -107,30 +107,44 @@ def test_directional_comparison_hook_count_is_checked(copies: int) -> None:
                 turn_delay_max_s=9.851790945341058,
                 turn_rate_error_max=0.10947221953661,
             ),
-            False,
-            id="compiled-rejection",
+            id="narrow-speed-intervals",
         ),
     ],
 )
-def test_directional_trace_records_compiled_decision(case: TurnCase, accepted: bool) -> None:
-    # These binary64 boundary inputs exercise both directions of disagreement
-    # between Python reconstruction and the compiled acceptance comparison.
+def test_directional_trace_records_compiled_decision(case: TurnCase) -> None:
+    # Adjacent thresholds exercise both compiled branches without requiring a
+    # particular binary64 tie to round the same way in every Numba build.
     solver = directional.traced_solver()
     trace = np.full((2048, 5), np.nan)
-    result = solver(**case, study_trace=trace)
-    assert result == ra._catch_up_projection_interval_with_turns_local(**case)
-    rows = trace[~np.isnan(trace[:, 0])]
-    assert len(rows) > 0
-    assert rows[0, 0] == 0.0
-    assert rows[0, 1] == case["projection_time_s"]
-    assert rows[0, 4] == float(accepted)
-    if accepted:
-        assert len(rows) == 1
+    branches: set[bool] = set()
+    saw_reconstruction_disagreement = False
+    for offset in range(-4, 5):
+        threshold = math.nextafter(
+            case["separation_threshold_m"], math.inf if offset > 0 else -math.inf, steps=abs(offset)
+        )
+        query = case.copy()
+        query["separation_threshold_m"] = threshold
+        trace.fill(np.nan)
+        result = solver(**query, study_trace=trace)
+        assert result == ra._catch_up_projection_interval_with_turns_local(**query)
         assert result[0]
-    else:
-        # A subsequent subinterval demonstrates that the full interval failed.
-        assert len(rows) > 1
-        assert rows[1, 1] - rows[1, 0] < case["projection_time_s"]
+        rows = trace[~np.isnan(trace[:, 0])]
+        assert len(rows) > 0
+        assert rows[0, 0] == 0.0
+        assert rows[0, 1] == case["projection_time_s"]
+        assert rows[0, 4] in (0.0, 1.0)
+        recorded = bool(rows[0, 4])
+        # For these encounters a rejected full interval produces a subsequent
+        # directional comparison on a child. This observes control flow without
+        # recalculating the acceptance expression from rounded trace values.
+        assert recorded == (len(rows) == 1)
+        if not recorded:
+            assert rows[1, 1] - rows[1, 0] < case["projection_time_s"]
+        branches.add(recorded)
+        reconstructed = float(rows[0, 2]) >= threshold + float(rows[0, 3]) + ra.TURN_CERT_FP_GUARD_M
+        saw_reconstruction_disagreement |= reconstructed != recorded
+    assert branches == {False, True}
+    assert saw_reconstruction_disagreement
     with pytest.raises(RuntimeError, match="trace capacity exceeded"):
         solver(**case, study_trace=np.empty((0, 5)))
 
@@ -246,7 +260,7 @@ def test_scalar_hook_check_survives_optimisation() -> None:
         """
         import inspect
         from paper import run_turn_numerics as v
-        source = inspect.getsource(v.ra._catch_up_projection_interval_with_turns_local.py_func)
+        source = inspect.getsource(v.python_function(v.ra._catch_up_projection_interval_with_turns_local))
         source = source.replace('TURN_CERT_FP_GUARD_M', 'renamed_numerical_guard')
         v.instrument_solver(source)
         """

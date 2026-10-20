@@ -32,12 +32,13 @@ from paper.benchmark_contracts import WorkerHeader, list_value, number, object_j
 from paper.benchmark_library_versions import Case, Worker, start_worker
 from paper.numerical_validation import (
     FloatArray,
-    ProductionArguments,
     ProductionSolver,
     SerialisedTurnCase,
+    SolverInputs,
     StudySolver,
     TurnCase,
     compile_solver,
+    python_function,
     require_coverage,
     require_hooks,
     require_positive_encounters,
@@ -238,7 +239,9 @@ def instrument_solver(source: str) -> tuple[ast.Module, ast.FunctionDef]:
 
 
 def traced_solver() -> StudySolver:
-    tree, function = instrument_solver(inspect.getsource(ra._catch_up_projection_interval_with_turns_local.py_func))
+    tree, function = instrument_solver(
+        inspect.getsource(python_function(ra._catch_up_projection_interval_with_turns_local))
+    )
     return compile_solver(tree, function, vars(ra), "<directional-validation>")
 
 
@@ -377,13 +380,13 @@ def benchmark(inputs: Path, baseline: Path | None = None) -> BenchmarkResult:
     rows = [object_value(row) for row in list_value(object_json(inputs.read_text())["cases"])]
     if not rows:
         raise ValueError("Directional benchmark requires at least one case")
-    calls: list[ProductionArguments] = []
+    calls: list[SolverInputs] = []
     results: list[BenchmarkRow] = []
     packed: list[FloatArray] = []
     benchmark_cases: list[Case] = []
     for row in rows:
         encounter = object_value(row["encounter"])
-        case: ProductionArguments = {
+        case: SolverInputs = {
             "rel_pos0": np.array([number(encounter["rel_east_m"]), number(encounter["rel_north_m"])]),
             "a_heading0_deg": number(encounter["a_heading0_deg"]),
             "a_target_heading_deg": number(encounter["a_target_heading_deg"]),

@@ -16,6 +16,7 @@ import numpy as np
 import pytest
 
 from geometric_safety.relevant_aircraft import (
+    TurnInputs,
     _closest_time_from_projection,
     _deviation_envelope_m,
     _interval_distance_lower_bound,
@@ -543,7 +544,7 @@ class TestHelpers:
         The optional global bound should remain available and can only be at least as
         conservative as the default interval-local bound.
         """
-        kwargs = {
+        kwargs: TurnInputs = {
             "a_lat": 51.0,
             "a_lon": -1.0,
             "a_heading0_deg": 180.0,
@@ -718,7 +719,7 @@ class TestHelpers:
 
     def test_turn_speed_schedule_uncertainty_zero_matches_default(self) -> None:
         """Passing a zero robustness uncertainty should be a no-op."""
-        kwargs = {
+        kwargs: TurnInputs = {
             "a_lat": 51.0,
             "a_lon": -1.0,
             "a_heading0_deg": 0.0,
@@ -748,7 +749,7 @@ class TestHelpers:
 
     def test_turn_speed_schedule_uncertainty_is_ignored_for_straight_pairs(self) -> None:
         """Straight-flight delegation should ignore the optional turn-only buffer."""
-        kwargs = {
+        kwargs: TurnInputs = {
             "a_lat": 51.0,
             "a_lon": -1.0,
             "a_heading0_deg": 45.0,
@@ -780,7 +781,7 @@ class TestHelpers:
         """A large turn-only robustness buffer should make a near-threshold safe case unsafe."""
         a_lat, a_lon = 51.0, -1.0
         b_lat, b_lon = _local_xy_to_latlon(-12000.0, -4000.0, a_lat, a_lon)
-        kwargs = {
+        kwargs: TurnInputs = {
             "a_lat": a_lat,
             "a_lon": a_lon,
             "a_heading0_deg": 0.0,

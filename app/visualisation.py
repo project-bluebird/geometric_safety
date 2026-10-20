@@ -314,7 +314,7 @@ def build_grid(params: VisualParams) -> GridPayload:
     if any(not -90.0 < lat < 90.0 for lat in lats) or any(abs(lon - params.a.lon) >= 180.0 for lon in unwrapped_lons):
         raise ValueError("This map span crosses a pole or the local longitude limit. Reduce the map span.")
     lons = [math.remainder(lon, 360.0) for lon in unwrapped_lons]
-    statuses = [[_certify(params, a, b, lat, lon).status for lon in lons] for lat in lats]
+    statuses: list[list[Status]] = [[_certify(params, a, b, lat, lon).status for lon in lons] for lat in lats]
     counts: dict[Status, int] = {"certified_safe": 0, "unresolved": 0, "unsupported": 0}
     for row in statuses:
         for status in row:

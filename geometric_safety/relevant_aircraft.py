@@ -379,6 +379,7 @@ Assumptions and limits
 """
 
 import math
+from typing import TypedDict
 
 import numba
 import numpy as np
@@ -2093,6 +2094,26 @@ def _catch_up_projection_interval_with_turns_local(
 
     _record_solver_diagnostic(diagnostic_out, DIAGNOSTIC_SAMPLED_MINIMUM, best_sample_time_s, best_sample_time_s)
     return True, best_sample_dist_m, best_sample_time_s
+
+
+class TurnInputs(TypedDict):
+    """Required keyword inputs to the geographic turn-aware projection."""
+
+    a_lat: float
+    a_lon: float
+    a_heading0_deg: float
+    a_target_heading_deg: float
+    a_speed_kt: float
+    a_turn_rate_deg_sec: float
+    b_lat: float
+    b_lon: float
+    b_heading0_deg: float
+    b_target_heading_deg: float
+    b_speed_kt: float
+    b_turn_rate_deg_sec: float
+    separation_threshold_m: float
+    speed_diff_kt: float
+    projection_time_s: float
 
 
 @numba.njit(cache=True, fastmath=True)
