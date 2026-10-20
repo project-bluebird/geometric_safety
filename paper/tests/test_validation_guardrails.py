@@ -112,16 +112,13 @@ def test_directional_comparison_hook_count_is_checked(copies: int) -> None:
     ],
 )
 def test_directional_trace_records_compiled_decision(case: TurnCase) -> None:
-    # Adjacent thresholds exercise both compiled branches without requiring a
-    # particular binary64 tie to round the same way in every Numba build.
     solver = directional.traced_solver()
     trace = np.full((2048, 5), np.nan)
     branches: set[bool] = set()
     saw_reconstruction_disagreement = False
-    for offset in range(-4, 5):
-        threshold = math.nextafter(
-            case["separation_threshold_m"], math.inf if offset > 0 else -math.inf, steps=abs(offset)
-        )
+
+    def check_threshold(threshold: float) -> bool:
+        nonlocal saw_reconstruction_disagreement
         query = case.copy()
         query["separation_threshold_m"] = threshold
         trace.fill(np.nan)
@@ -134,15 +131,38 @@ def test_directional_trace_records_compiled_decision(case: TurnCase) -> None:
         assert rows[0, 1] == case["projection_time_s"]
         assert rows[0, 4] in (0.0, 1.0)
         recorded = bool(rows[0, 4])
-        # For these encounters a rejected full interval produces a subsequent
-        # directional comparison on a child. This observes control flow without
-        # recalculating the acceptance expression from rounded trace values.
-        assert recorded == (len(rows) == 1)
-        if not recorded:
+        # A rejected full interval produces a comparison on a child. Observe
+        # that control flow independently of the recorded acceptance flag.
+        accepted = len(rows) == 1
+        assert recorded == accepted
+        if not accepted:
             assert rows[1, 1] - rows[1, 0] < case["projection_time_s"]
-        branches.add(recorded)
+        branches.add(accepted)
         reconstructed = float(rows[0, 2]) >= threshold + float(rows[0, 3]) + ra.TURN_CERT_FP_GUARD_M
         saw_reconstruction_disagreement |= reconstructed != recorded
+        return accepted
+
+    check_threshold(case["separation_threshold_m"])
+    lower, inflation = float(trace[0, 2]), float(trace[0, 3])
+    centre = math.fsum((lower, -inflation, -ra.TURN_CERT_FP_GUARD_M))
+    step = math.ulp(max(abs(lower), abs(inflation), abs(centre)))
+    # Locate the compiled transition on this platform. The rounded trace only
+    # supplies an initial estimate; subdivision determines each search step.
+    for _ in range(8):
+        low, high = centre - step, centre + step
+        low_accepted, high_accepted = check_threshold(low), check_threshold(high)
+        if low_accepted and not high_accepted:
+            break
+        step *= 2.0
+    else:
+        pytest.fail("Could not bracket the compiled directional comparison")
+    while math.nextafter(low, math.inf) < high:
+        midpoint = low + (high - low) / 2.0
+        assert low < midpoint < high
+        if check_threshold(midpoint):
+            low = midpoint
+        else:
+            high = midpoint
     assert branches == {False, True}
     assert saw_reconstruction_disagreement
     with pytest.raises(RuntimeError, match="trace capacity exceeded"):
@@ -151,7 +171,7 @@ def test_directional_trace_records_compiled_decision(case: TurnCase) -> None:
 
 @pytest.fixture(scope="module")
 def numerical_result() -> directional.NumericalResult:
-    # Encounter 32 includes the compiled-acceptance boundary case above.
+    # Cover turning encounters and thresholds near their computed bounds.
     return directional.numerical_checks(33, 2026092031)
 
 
@@ -164,18 +184,36 @@ def test_directional_audit_uses_real_production_and_reference(numerical_result: 
 
 
 def test_directional_audit_keeps_compiled_acceptance(numerical_result: directional.NumericalResult) -> None:
-    records = [
-        record
-        for record in numerical_result["records"]
-        if record["case"]["rel_pos0"] == [-16275.427595662642, -1869.405801333638]
-        and record["case"]["separation_threshold_m"] == 819.157998033264
-        and record["left_s"] == 0.0
-        and record["right_s"] == record["case"]["projection_time_s"]
-    ]
-    assert len(records) == 1
-    assert records[0]["accepted"]
-    assert records[0]["reference_residual_m"] > 0.0
-    assert numerical_result["accepted"] == sum(record["accepted"] for record in numerical_result["records"])
+    encounters = {
+        tuple(case["rel_pos0"]): case
+        for _, case in scalar.cases(numerical_result["encounters"], numerical_result["seed"])
+    }
+    solver = directional.traced_solver()
+    trace = np.empty((16384, 5))
+    accepted_count = 0
+    saw_reconstruction_disagreement = False
+    for record in numerical_result["records"]:
+        query = encounters[tuple(record["case"]["rel_pos0"])].copy()
+        query["separation_threshold_m"] = record["case"]["separation_threshold_m"]
+        assert scalar.serialisable(query) == record["case"]
+        trace.fill(np.nan)
+        result = solver(**query, study_trace=trace)
+        assert result == ra._catch_up_projection_interval_with_turns_local(**query)
+        rows = trace[(trace[:, 0] == record["left_s"]) & (trace[:, 1] == record["right_s"])]
+        assert rows.shape == (1, 5)
+        assert rows[0, 2] == record["lower_m"]
+        assert rows[0, 3] == record["eta_m"]
+        accepted = bool(rows[0, 4])
+        assert record["accepted"] == accepted
+        accepted_count += int(accepted)
+        if accepted:
+            assert record["reference_residual_m"] >= 0.0
+        reconstructed = record["lower_m"] >= query["separation_threshold_m"] + record["eta_m"] + ra.TURN_CERT_FP_GUARD_M
+        saw_reconstruction_disagreement |= reconstructed != accepted
+    assert 0 < accepted_count < len(numerical_result["records"])
+    assert numerical_result["accepted"] == accepted_count
+    assert numerical_result["comparisons"] == len(numerical_result["records"])
+    assert saw_reconstruction_disagreement
 
 
 def test_scalar_audit_uses_real_production_and_reference(tmp_path: Path) -> None:
