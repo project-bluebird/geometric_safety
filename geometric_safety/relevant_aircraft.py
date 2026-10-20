@@ -387,6 +387,7 @@ from numpy.typing import NDArray
 from geometric_safety.util import (
     DEG_TO_RAD,
     KT_TO_MPS,
+    _project_point_on_convex_polygon,
     clip_value,
     closest_point_on_convex_polygon,
     convex_hull,
@@ -489,7 +490,10 @@ def _speed_rectangle_corner_points(
         base + s_A a_basis - s_B b_basis,
 
     with `s_A` and `s_B` drawn from closed speed intervals. The four speed-corner
-    combinations therefore determine the entire convex set.
+    combinations therefore determine the entire convex set. Their order is
+    (A minimum, B minimum), (A maximum, B minimum), (A maximum, B maximum),
+    (A minimum, B maximum). Directional certification retains these identities
+    when matching an endpoint position to its speed pair.
     """
     pts = np.empty((4, 2), dtype=np.float64)
     anchor_x = base[0] + a_min_speed * a_basis[0] - b_min_speed * b_basis[0]
@@ -511,8 +515,49 @@ def _speed_rectangle_corner_points(
     return pts
 
 
-@numba.njit(cache=True)
-def _closest_time_from_projection(closest_vec: np.ndarray, hull: np.ndarray, T: float) -> float:
+@numba.njit(cache=True, fastmath=False)
+def _product_roundoff(a: float, b: float, product: float) -> float:
+    """Recover a binary64 product's residual using Dekker splitting.
+
+    Hull coordinates are bounded by the numerical geometry domain, so multiplying
+    them by the binary64 splitter cannot overflow. Strict arithmetic preserves the
+    separate products and subtractions required by the error-free transform.
+    """
+    splitter = 134217729.0  # 2**27 + 1 for a binary64 significand.
+    split_a = splitter * a
+    high_a = split_a - (split_a - a)
+    low_a = a - high_a
+    split_b = splitter * b
+    high_b = split_b - (split_b - b)
+    low_b = b - high_b
+    return ((high_a * high_b - product) + high_a * low_b + low_a * high_b) + low_a * low_b
+
+
+@numba.njit(cache=True, fastmath=False)
+def _difference_of_products(a: float, b: float, c: float, d: float) -> float:
+    """Evaluate a*b-c*d without losing a thin hull's determinant to cancellation."""
+    left = a * b
+    right = c * d
+    # An exact product of two binary64 significands spans at most 106 bits.
+    # Leave that margin above the minimum normal exponent (-1022), so the
+    # low-product terms and cancellation residuals also avoid underflow.
+    # Common coordinate scaling handles uniformly small hulls; more extreme
+    # mixed scales remain unverified instead of appearing collinear.
+    minimum_product = 2.0 ** (-1022 + 106)
+    if (a != 0.0 and b != 0.0 and abs(left) < minimum_product) or (
+        c != 0.0 and d != 0.0 and abs(right) < minimum_product
+    ):
+        return math.nan
+    difference = left - right
+    # Knuth TwoDiff, as in heading_diff, also retains the subtraction residual.
+    right_virtual = left - difference
+    residual = (left - (difference + right_virtual)) + (right_virtual - right)
+    residual += _product_roundoff(a, b, left) - _product_roundoff(c, d, right)
+    return difference + residual
+
+
+@numba.njit(cache=True, fastmath=False)
+def _closest_time_from_projection(closest_vec: NDArray[np.float64], hull: NDArray[np.float64], T: float) -> float:
     """
     Map a reachable straight-line displacement back to the earliest elapsed time.
 
@@ -538,61 +583,84 @@ def _closest_time_from_projection(closest_vec: np.ndarray, hull: np.ndarray, T: 
     -------
     float
         The time `t in [0, T]` at which this displacement is achieved in the straight
-        constant-heading model.
+        constant-heading model, or NaN if no numerical representation is verified.
     """
-    eps = 1e-12
-
     # The origin corresponds to zero elapsed time.
-    norm_closest = float(np.linalg.norm(closest_vec))
-    if norm_closest <= eps:
+    if closest_vec[0] == 0.0 and closest_vec[1] == 0.0:
         return 0.0
 
-    hull_arr = np.asarray(hull, dtype=np.float64)
-    n = hull_arr.shape[0]
-
+    source_hull = np.asarray(hull, dtype=np.float64)
+    n = source_hull.shape[0]
     if n == 0:
-        return 0.0
+        return math.nan
 
-    # The straight-line reachable set is `S(T) = conv({0} U {T v_i})`. For any point
-    # `p in S(T)`, the earliest achievable time is the smallest `alpha in [0, 1]` such
-    # that `p in alpha S(T)`. Because we are in 2-D and the set is convex, Caratheodory's
-    # theorem implies `p` can be represented using at most two hull vertices plus the
-    # origin:
-    #
-    #     p = u a + v b,   u >= 0, v >= 0, u + v <= 1.
-    #
-    # The corresponding time is then `t = T (u + v)`. We therefore search all hull
-    # vertex pairs and keep the smallest valid `u + v`.
-    #
-    # The not-found sentinel is a finite value above every valid alpha, never an
-    # infinity: this function can be compiled into fastmath callers, whose
-    # no-infinities assumption makes any comparison against `np.inf` unreliable.
+    # A common power-of-two scale preserves each represented direction and all
+    # barycentric coefficients while keeping uniformly tiny hulls out of underflow.
+    scale = max(abs(closest_vec[0]), abs(closest_vec[1]))
+    for vertex in source_hull:
+        scale = max(scale, abs(vertex[0]), abs(vertex[1]))
+    if not math.isfinite(scale):
+        return math.nan
+    _, exponent = math.frexp(scale)
+    point = np.empty(2, dtype=np.float64)
+    hull_arr = np.empty((n, 2), dtype=np.float64)
+    for coordinate in range(2):
+        point[coordinate] = math.ldexp(closest_vec[coordinate], -exponent)
+        if closest_vec[coordinate] != 0.0 and point[coordinate] == 0.0:
+            return math.nan
+        for i in range(n):
+            hull_arr[i, coordinate] = math.ldexp(source_hull[i, coordinate], -exponent)
+            if source_hull[i, coordinate] != 0.0 and hull_arr[i, coordinate] == 0.0:
+                return math.nan
+    closest_vec = point
+
+    # A truly one-dimensional hull has no competing nearby direction. Rounded
+    # segment projections may use the coordinate reconstruction check there.
+    one_dimensional = True
+    direction_x, direction_y = 0.0, 0.0
+    for vertex in hull_arr:
+        if direction_x == 0.0 and direction_y == 0.0:
+            direction_x, direction_y = vertex[0], vertex[1]
+        elif _difference_of_products(direction_x, vertex[1], direction_y, vertex[0]) != 0.0:
+            one_dimensional = False
+            break
+
+    # For p=u*a+v*b with nonnegative weights, the candidate time is T*(u+v).
+    # The finite sentinel remains distinct under fastmath callers. All arithmetic
+    # here is strict, including the compensated determinant calculations.
     best_alpha = 2.0
-
-    # Tolerances are scale-relative, not absolute: this function is also compiled
-    # inside fastmath callers, where reassociation and FMA contraction perturb the
-    # cross products by amounts far above one ulp, and an absolute 1e-12 test then
-    # rejects genuinely collinear configurations on sliver hulls.
-    collinear_tol = 1e-9
+    # Each reconstructed coordinate uses at most two products, one addition and
+    # one subtraction. gamma(8) also allows rounding in coefficient formation.
+    # Bounds use those operation magnitudes, never an angular tolerance that could
+    # collapse distinct rays. This checks reconstruction, not the preceding hull
+    # and projection arithmetic or a validated interval enclosure.
+    unit_roundoff = 2.0**-53
+    reconstruction_factor = 8.0 * unit_roundoff / (1.0 - 8.0 * unit_roundoff)
 
     # Degenerate ray case: if `p` lies on the segment from the origin to a hull vertex,
     # then only one outer vertex is needed in the representation.
     for i in range(n):
         a = hull_arr[i]
-        a_norm = float(np.linalg.norm(a))
-        if a_norm <= eps:
+        coordinate = 0 if abs(a[0]) >= abs(a[1]) else 1
+        if a[coordinate] == 0.0:
             continue
-
-        cross = a[0] * closest_vec[1] - a[1] * closest_vec[0]
-        if abs(cross) > collinear_tol * a_norm * norm_closest:
+        # Even a one-ulp transverse difference can change the earliest time
+        # substantially on a thin hull. Reconstruction tolerance alone must not
+        # turn a nearby ray into a collinear one.
+        if not one_dimensional and _difference_of_products(a[0], closest_vec[1], a[1], closest_vec[0]) != 0.0:
             continue
-
-        dot = float(np.dot(a, closest_vec))
-        if dot < -eps:
+        alpha = closest_vec[coordinate] / a[coordinate]
+        if not 0.0 <= alpha <= 1.0:
             continue
-
-        alpha = norm_closest / a_norm
-        if alpha <= 1.0 + eps and alpha < best_alpha:
+        reconstructed_x = alpha * a[0]
+        reconstructed_y = alpha * a[1]
+        tolerance_x = reconstruction_factor * (abs(reconstructed_x) + abs(closest_vec[0]))
+        tolerance_y = reconstruction_factor * (abs(reconstructed_y) + abs(closest_vec[1]))
+        if abs(reconstructed_x - closest_vec[0]) > tolerance_x:
+            continue
+        if abs(reconstructed_y - closest_vec[1]) > tolerance_y:
+            continue
+        if alpha < best_alpha:
             best_alpha = alpha
 
     # General 2-D case: solve `closest_vec = u a + v b` for each vertex pair. On
@@ -603,43 +671,32 @@ def _closest_time_from_projection(closest_vec: np.ndarray, hull: np.ndarray, T: 
         a = hull_arr[i]
         for j in range(i + 1, n):
             b = hull_arr[j]
-            det = a[0] * b[1] - a[1] * b[0]
-
-            if abs(det) <= eps:
+            det = _difference_of_products(a[0], b[1], a[1], b[0])
+            if not math.isfinite(det) or det == 0.0:
                 continue
-
-            u = (closest_vec[0] * b[1] - closest_vec[1] * b[0]) / det
-            v = (a[0] * closest_vec[1] - a[1] * closest_vec[0]) / det
-
-            if u < -collinear_tol or v < -collinear_tol:
+            u = _difference_of_products(closest_vec[0], b[1], closest_vec[1], b[0]) / det
+            v = _difference_of_products(a[0], closest_vec[1], a[1], closest_vec[0]) / det
+            if not math.isfinite(u) or not math.isfinite(v):
                 continue
-
-            residual_x = u * a[0] + v * b[0] - closest_vec[0]
-            residual_y = u * a[1] + v * b[1] - closest_vec[1]
-            residual_tol = collinear_tol * (norm_closest + 1.0)
-            if residual_x * residual_x + residual_y * residual_y > residual_tol * residual_tol:
+            if u < 0.0 or v < 0.0:
                 continue
-
             alpha = u + v
-            if alpha <= 1.0 + eps and alpha < best_alpha:
+            if alpha > 1.0:
+                continue
+            term_ax, term_ay = u * a[0], u * a[1]
+            term_bx, term_by = v * b[0], v * b[1]
+            residual_x = term_ax + term_bx - closest_vec[0]
+            residual_y = term_ay + term_by - closest_vec[1]
+            tolerance_x = reconstruction_factor * (abs(term_ax) + abs(term_bx) + abs(closest_vec[0]))
+            tolerance_y = reconstruction_factor * (abs(term_ay) + abs(term_by) + abs(closest_vec[1]))
+            if abs(residual_x) > tolerance_x or abs(residual_y) > tolerance_y:
+                continue
+            if alpha < best_alpha:
                 best_alpha = alpha
 
-    if best_alpha > 1.0 + eps:
-        # Numerical fallback: recover the radial gauge from the furthest projection of
-        # the hull on the displacement direction. This should rarely be needed.
-        direction = closest_vec / norm_closest
-        best_proj = 0.0
-        for i in range(n):
-            proj = float(np.dot(hull_arr[i], direction))
-            if proj > best_proj:
-                best_proj = proj
-
-        if best_proj <= eps:
-            return 0.0
-
-        best_alpha = norm_closest / best_proj
-
-    return float(clip_value(T * best_alpha, 0.0, T))
+    # A support projection is not a radial intersection and cannot recover a valid
+    # time when reconstruction fails. Keep diagnostics unavailable in that case.
+    return T * best_alpha if best_alpha <= 1.0 else math.nan
 
 
 @numba.njit(cache=True, fastmath=True)
@@ -703,10 +760,66 @@ def compute_relative_velocity_hull(
     return small_convex_hull(reachable_points)
 
 
-# No fastmath here: this top-level query is not a hot loop, and the closest-time
-# recovery it calls depends on exact sign tests and would inherit the relaxed
-# semantics if compiled within a fastmath caller.
-@numba.njit(cache=True)
+@numba.njit(cache=True, fastmath=False)
+def _straight_hull_projection_interval(
+    relative_position_m: NDArray[np.float64],
+    displacement_hull: NDArray[np.float64],
+    separation_threshold_m: float,
+    projection_time_s: float,
+) -> tuple[bool, float, float]:
+    """Validate and project a Cartesian straight-flight displacement hull.
+
+    The hull contains the origin and the horizon's reachable speed corners, in
+    metres. The relative position is A minus B in the same frame. Both the legacy
+    geographic adapter and independent-speed heading queries use this calculation.
+    An unverified time makes the diagnostics unavailable and cannot certify safety.
+    """
+    if not _scalar_within_numerical_range(projection_time_s) or displacement_hull.shape[0] == 0:
+        return False, math.nan, math.nan
+    hull_travel_m = 0.0
+    for vertex in displacement_hull:
+        radius_m = math.hypot(vertex[0], vertex[1])
+        if not math.isfinite(radius_m):
+            return False, math.nan, math.nan
+        hull_travel_m = max(hull_travel_m, radius_m)
+    if not _geometry_within_numerical_domain(relative_position_m, hull_travel_m, separation_threshold_m):
+        return False, math.nan, math.nan
+
+    closest_vec, _, left, right, fraction = _project_point_on_convex_polygon(-relative_position_m, displacement_hull)
+    rel_after = relative_position_m + closest_vec
+    min_distance_m = float(np.linalg.norm(rel_after))
+    closest_time_s = math.nan
+    if left >= 0:
+        a, b = displacement_hull[left], displacement_hull[right]
+        a_is_origin = a[0] == 0.0 and a[1] == 0.0
+        b_is_origin = b[0] == 0.0 and b[1] == 0.0
+        # Keep the actual segment projection rather than reconstructing its ray
+        # from rounded coordinates. A radial boundary gives its elapsed fraction;
+        # a nonradial boundary consists of horizon-time speed combinations.
+        if left == right:
+            closest_time_s = 0.0 if a_is_origin else projection_time_s
+        elif a_is_origin:
+            closest_time_s = fraction * projection_time_s
+        elif b_is_origin:
+            closest_time_s = (1.0 - fraction) * projection_time_s
+        else:
+            _, exponent = math.frexp(max(abs(a[0]), abs(a[1]), abs(b[0]), abs(b[1])))
+            cross = _difference_of_products(
+                math.ldexp(a[0], -exponent),
+                math.ldexp(b[1], -exponent),
+                math.ldexp(a[1], -exponent),
+                math.ldexp(b[0], -exponent),
+            )
+            if math.isfinite(cross) and cross != 0.0:
+                closest_time_s = projection_time_s
+    if not math.isfinite(closest_time_s):
+        closest_time_s = _closest_time_from_projection(closest_vec, displacement_hull, projection_time_s)
+    if not math.isfinite(min_distance_m) or not math.isfinite(closest_time_s):
+        return False, math.nan, math.nan
+    return min_distance_m >= separation_threshold_m, min_distance_m, closest_time_s
+
+
+@numba.njit(cache=True, fastmath=False)
 def catch_up_projection_interval(
     a_lat: float,
     a_lon: float,
@@ -753,7 +866,8 @@ def catch_up_projection_interval(
     Returns
     -------
     tuple[bool, float, float]
-        `(is_separated, min_distance_m, closest_time_s)`.
+        `(is_separated, min_distance_m, closest_time_s)`. Unsupported numerical
+        geometry or unverified closest-time reconstruction returns `(False, NaN, NaN)`.
 
     Notes
     -----
@@ -790,24 +904,7 @@ def catch_up_projection_interval(
         )
     )
 
-    hull_travel_m = 0.0
-    for vertex in hull:
-        radius_m = math.hypot(vertex[0], vertex[1])
-        if not math.isfinite(radius_m):
-            return False, math.nan, math.nan
-        hull_travel_m = max(hull_travel_m, radius_m)
-    if not _geometry_within_numerical_domain(rel_pos0, hull_travel_m, separation_threshold_m):
-        return False, math.nan, math.nan
-
-    # Project the negative initial relative position onto the reachable displacement
-    # hull. The resulting displacement is the one that brings the pair as close together
-    # as the model allows.
-    closest_vec, _ = closest_point_on_convex_polygon(-rel_pos0, hull)
-    rel_after = rel_pos0 + closest_vec
-    min_distance_m = float(np.linalg.norm(rel_after))
-    closest_time_s = _closest_time_from_projection(closest_vec, hull, projection_time_s)
-
-    return min_distance_m >= separation_threshold_m, min_distance_m, closest_time_s
+    return _straight_hull_projection_interval(rel_pos0, hull, separation_threshold_m, projection_time_s)
 
 
 @numba.njit(cache=True, fastmath=True)
@@ -1402,6 +1499,8 @@ def _directional_lower_bound_from_samples(
         )
         directional = math.inf
         for corner in range(4):
+            # Match _speed_rectangle_corner_points: (min,min), (max,min),
+            # (max,max), (min,max). Hull construction must not reorder these samples.
             sa = a_max_speed_mps if corner == 1 or corner == 2 else a_min_speed_mps
             sb = b_max_speed_mps if corner >= 2 else b_min_speed_mps
             qa = points[0, corner, 0] * normal[0] + points[0, corner, 1] * normal[1]
@@ -1659,20 +1758,10 @@ def _catch_up_projection_interval_with_turns_local(
     # straight delegation is only taken when no envelope is configured. The turn-only
     # envelope terms vanish without an instructed turn.
     if not a_is_turning and not b_is_turning and eta_const_m <= 0.0 and eta_rate_mps <= 0.0:
-        result = catch_up_projection_interval(
-            a_lat=0.0,
-            a_lon=0.0,
-            a_heading=a_target_heading_deg,
-            a_speed_kt=a_speed_kt,
-            b_lat=0.0,
-            b_lon=0.0,
-            b_heading=b_target_heading_deg,
-            b_speed_kt=b_speed_kt,
-            separation_threshold_m=separation_threshold_m,
-            speed_diff_kt=speed_diff_kt,
-            projection_time_s=projection_time_s,
-            rel_pos_override=rel_pos0,
+        hull = compute_relative_velocity_hull(
+            a_target_heading_deg, a_speed_kt, b_target_heading_deg, b_speed_kt, speed_diff_kt, projection_time_s
         )
+        result = _straight_hull_projection_interval(rel_pos0, hull, separation_threshold_m, projection_time_s)
         if _scalar_within_numerical_range(result[1]) and _scalar_within_numerical_range(result[2]):
             _record_solver_diagnostic(diagnostic_out, DIAGNOSTIC_STRAIGHT_MINIMUM, result[2], result[2])
         return result
@@ -1931,6 +2020,13 @@ def _catch_up_projection_interval_with_turns_local(
         # Sample the midpoint to tighten both halves of the interval. If the midpoint
         # itself is already within the threshold, we have a direct witness of conflict.
         mid_t_s = 0.5 * (left_t_s + right_t_s)
+        if not left_t_s < mid_t_s < right_t_s:
+            # Timestamp spacing can exceed the stopping width. Repeating this split
+            # would not shrink a child and could overrun the fixed-depth stack.
+            _record_solver_diagnostic(
+                diagnostic_out, DIAGNOSTIC_INTERVAL_BOUND, most_critical_left_s, most_critical_right_s
+            )
+            return False, most_critical_lower_bound_m, math.nan
         mid_dist_m, mid_points, mid_closest = _sample_relative_hull_at_time(
             rel_pos0=rel_pos0,
             a_heading0_deg=a_heading0_deg,
@@ -2099,6 +2195,9 @@ def catch_up_projection_interval_with_turns(
         deviation-envelope parameter is positive, the boolean decision also covers
         the corresponding bounded perturbation classes, while the distance/time pair
         remains a raw diagnostic of the constant-speed geometry.
+
+        If timestamp spacing prevents further refinement, the decision is False,
+        the distance is an interval lower bound and the time is unavailable (NaN).
 
     Notes
     -----

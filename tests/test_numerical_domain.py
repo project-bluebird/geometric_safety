@@ -181,3 +181,61 @@ def test_core_domain_refusal_has_unavailable_diagnostics(envelope: bool) -> None
     assert math.isnan(result[2])
     assert diagnostic[0] == ra.DIAGNOSTIC_UNAVAILABLE
     assert np.isnan(diagnostic[1:]).all()
+
+
+@pytest.mark.parametrize("minimum_interval_s", [0.0, 3.0, math.ulp(0.0)])
+def test_nonprogressing_timestamp_split_fails_closed(minimum_interval_s: float) -> None:
+    # The stationary pair is separated throughout. Only the numerical guard
+    # prevents acceptance near the horizon, where timestamp spacing is 128 s.
+    # Refinement must stop even when the requested stopping width is smaller.
+    diagnostic = np.empty(3)
+    query = {
+        "rel_pos0": np.array([1.0, 0.0]),
+        "a_heading0_deg": 0.0,
+        "a_target_heading_deg": 0.0,
+        "a_speed_kt": 0.0,
+        "a_turn_rate_deg_sec": 0.0,
+        "b_heading0_deg": 0.0,
+        "b_target_heading_deg": 0.0,
+        "b_speed_kt": 0.0,
+        "b_turn_rate_deg_sec": 0.0,
+        "separation_threshold_m": 0.5,
+        "speed_diff_kt": 0.0,
+        "eta_rate_mps": 2.0**-61,
+        "min_cert_interval_s": minimum_interval_s,
+    }
+    assert ra._catch_up_projection_interval_with_turns_local(**query, projection_time_s=1.0)[0]
+    separated, lower_bound, time_s = ra._catch_up_projection_interval_with_turns_local(
+        **query, projection_time_s=2.0**60, diagnostic_out=diagnostic
+    )
+    assert not separated
+    assert lower_bound == 1.0
+    assert math.isnan(time_s)
+    assert diagnostic[0] == ra.DIAGNOSTIC_INTERVAL_BOUND
+    assert 0.0 <= diagnostic[1] < diagnostic[2] <= 2.0**60
+
+
+def test_heading_preserves_interval_bound_when_timestamp_split_stops() -> None:
+    horizon_s = 2.0**60
+    speed_mps = 1e-18
+    a = HeadingMotion(
+        heading0_deg=89.0,
+        target_heading_deg=90.0,
+        turn_rate_deg_s=1.0,
+        speed_min_mps=speed_mps,
+        speed_max_mps=speed_mps,
+    )
+    # The one-second turn is negligible at this speed. The later eastbound pass
+    # stays about one metre away, inside the numerical guard above the threshold.
+    result = certify_heading_separation(
+        (-0.75 * horizon_s * speed_mps, 1.0),
+        a,
+        _stationary(),
+        separation_threshold_m=1.0 - 5e-7,
+        horizon_s=horizon_s,
+    )
+    assert result.status == "unresolved"
+    assert result.diagnostic_kind == "interval_bound"
+    assert result.base_min_distance_m is not None
+    assert result.base_closest_time_s is None
+    assert result.base_bound_interval_s is not None

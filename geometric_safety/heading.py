@@ -43,7 +43,7 @@ from geometric_safety.relevant_aircraft import (
     _catch_up_projection_interval_with_turns_local,
     _geometry_within_numerical_domain,
     _speed_rectangle_corner_points,
-    catch_up_projection_interval,
+    _straight_hull_projection_interval,
 )
 from geometric_safety.util import (
     KT_TO_MPS,
@@ -251,21 +251,7 @@ def _straight_query(
         b.speed_max_mps,
     )
     hull = small_convex_hull(np.vstack((corners, np.zeros((1, 2)))))
-    return catch_up_projection_interval(
-        a_lat=0.0,
-        a_lon=0.0,
-        a_heading=math.fmod(a.target_heading_deg, 360.0),
-        a_speed_kt=0.0,
-        b_lat=0.0,
-        b_lon=0.0,
-        b_heading=math.fmod(b.target_heading_deg, 360.0),
-        b_speed_kt=0.0,
-        separation_threshold_m=threshold_m,
-        speed_diff_kt=0.0,
-        projection_time_s=horizon_s,
-        rel_pos_override=relative_position,
-        velocity_hull=hull,
-    )
+    return _straight_hull_projection_interval(relative_position, hull, threshold_m, horizon_s)
 
 
 def certify_heading_separation(
@@ -371,7 +357,7 @@ def certify_heading_separation(
             base_closest_time = float(closest_time)
         else:
             return HeadingAssuranceResult("unresolved", "base kernel returned unavailable diagnostics", inflation)
-    if not math.isfinite(distance) or not math.isfinite(closest_time):
+    if not math.isfinite(distance) or (bound_interval is None and not math.isfinite(closest_time)):
         return HeadingAssuranceResult("unresolved", "base kernel returned nonfinite diagnostics", inflation)
     if bound_interval is not None and (
         not all(math.isfinite(value) for value in bound_interval)

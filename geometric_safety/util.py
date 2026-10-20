@@ -10,6 +10,7 @@ import math
 
 import numba
 import numpy as np
+from numpy.typing import NDArray
 
 # ---------------------------------------------------------------------------
 # Unit-conversion and physical constants
@@ -477,12 +478,13 @@ def _point_in_convex_polygon(pt: np.ndarray, hull: np.ndarray) -> bool:
 @numba.njit(cache=True, fastmath=True, inline="always")
 def _segment_projection_coordinates(
     px: float, py: float, ax: float, ay: float, bx: float, by: float
-) -> tuple[float, float, float]:
-    """Project onto a segment without allocating arrays for individual edges."""
+) -> tuple[float, float, float, float]:
+    """Return projected coordinates, distance and the segment fraction."""
     ab_x = bx - ax
     ab_y = by - ay
     denom = ab_x * ab_x + ab_y * ab_y
     x, y = ax, ay
+    t = 0.0
     if denom != 0.0:
         t = ((px - ax) * ab_x + (py - ay) * ab_y) / denom
         if t < 0.0:
@@ -491,7 +493,7 @@ def _segment_projection_coordinates(
             t = 1.0
         x = ax + t * ab_x
         y = ay + t * ab_y
-    return x, y, math.hypot(px - x, py - y)
+    return x, y, math.hypot(px - x, py - y), t
 
 
 @numba.njit(cache=True, fastmath=True)
@@ -511,10 +513,62 @@ def _closest_point_on_segment(pt: np.ndarray, a: np.ndarray, b: np.ndarray) -> t
     tuple[np.ndarray, float]
         Closest point on the segment and its Euclidean distance from `pt`.
     """
-    x, y, distance = _segment_projection_coordinates(pt[0], pt[1], a[0], a[1], b[0], b[1])
+    x, y, distance, _ = _segment_projection_coordinates(pt[0], pt[1], a[0], a[1], b[0], b[1])
     proj = np.empty(2, dtype=np.float64)
     proj[0], proj[1] = x, y
     return proj, distance
+
+
+@numba.njit(cache=True, fastmath=True)
+def _project_point_on_convex_polygon(
+    pt: NDArray[np.float64], hull: NDArray[np.float64]
+) -> tuple[NDArray[np.float64], float, int, int, float]:
+    """Retain the selected segment's indices and fraction with its projection.
+
+    Equal indices identify a vertex. Indices of -1 identify an interior query,
+    for which no boundary segment was selected. Keeping the selected segment
+    avoids trying to infer it again from rounded projection coordinates.
+    """
+    hull_len = hull.shape[0]
+
+    if hull_len == 0:
+        raise ValueError("Hull must contain at least one point.")
+
+    best_point = hull[0]
+    best_dist = float(np.linalg.norm(pt - best_point))
+
+    if hull_len == 1:
+        return best_point, best_dist, 0, 0, 0.0
+
+    if hull_len == 2:
+        x, y, distance, fraction = _segment_projection_coordinates(
+            pt[0], pt[1], hull[0, 0], hull[0, 1], hull[1, 0], hull[1, 1]
+        )
+        projection = np.empty(2, dtype=np.float64)
+        projection[0], projection[1] = x, y
+        return projection, distance, 0, 1, fraction
+
+    # Interior points project to themselves.
+    if _point_in_convex_polygon(pt, hull):
+        return pt, 0.0, -1, -1, 0.0
+
+    # Otherwise the projection must lie on one of the polygon edges.
+    best_x, best_y = best_point[0], best_point[1]
+    best_left, best_right, best_fraction = 0, 0, 0.0
+    for i in range(hull_len):
+        a = hull[i]
+        b = hull[(i + 1) % hull_len]
+
+        x, y, cand_dist, fraction = _segment_projection_coordinates(pt[0], pt[1], a[0], a[1], b[0], b[1])
+
+        if cand_dist < best_dist:
+            best_dist = cand_dist
+            best_x, best_y = x, y
+            best_left, best_right, best_fraction = i, (i + 1) % hull_len, fraction
+
+    best_point = np.empty(2, dtype=np.float64)
+    best_point[0], best_point[1] = best_x, best_y
+    return best_point, best_dist, best_left, best_right, best_fraction
 
 
 @numba.njit(cache=True, fastmath=True)
@@ -534,36 +588,5 @@ def closest_point_on_convex_polygon(pt: np.ndarray, hull: np.ndarray) -> tuple[n
     tuple[np.ndarray, float]
         Projected point and the corresponding Euclidean distance.
     """
-    hull_len = hull.shape[0]
-
-    if hull_len == 0:
-        raise ValueError("Hull must contain at least one point.")
-
-    best_point = hull[0]
-    best_dist = float(np.linalg.norm(pt - best_point))
-
-    if hull_len == 1:
-        return best_point, best_dist
-
-    if hull_len == 2:
-        return _closest_point_on_segment(pt, hull[0], hull[1])
-
-    # Interior points project to themselves.
-    if _point_in_convex_polygon(pt, hull):
-        return pt, 0.0
-
-    # Otherwise the projection must lie on one of the polygon edges.
-    best_x, best_y = best_point[0], best_point[1]
-    for i in range(hull_len):
-        a = hull[i]
-        b = hull[(i + 1) % hull_len]
-
-        x, y, cand_dist = _segment_projection_coordinates(pt[0], pt[1], a[0], a[1], b[0], b[1])
-
-        if cand_dist < best_dist:
-            best_dist = cand_dist
-            best_x, best_y = x, y
-
-    best_point = np.empty(2, dtype=np.float64)
-    best_point[0], best_point[1] = best_x, best_y
-    return best_point, best_dist
+    projection, distance, _, _, _ = _project_point_on_convex_polygon(pt, hull)
+    return projection, distance
