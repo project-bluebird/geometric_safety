@@ -6,7 +6,7 @@ from pathlib import Path
 
 from geometric_safety import relevant_aircraft as ra
 from paper import numerical_validation, turn_numerical_reference, validate_directional_production
-from paper.benchmark_library_versions import digest
+from paper.benchmark_contracts import digest
 from paper.validate_directional_production import NumericalResult
 
 

@@ -9,14 +9,16 @@ from __future__ import annotations
 
 import argparse
 import ast
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import closing, contextmanager
+from dataclasses import asdict
 import hashlib
-import importlib.util
 import inspect
 import itertools
 import json
 import math
 from pathlib import Path
+from tempfile import TemporaryDirectory
 import time
 from typing import TypedDict, cast
 
@@ -26,13 +28,13 @@ import numpy as np
 
 from geometric_safety import relevant_aircraft as ra
 from geometric_safety.util import closest_point_on_convex_polygon, convex_hull
-from paper.benchmark_library_versions import list_value, number, object_json, object_value
+from paper.benchmark_contracts import WorkerHeader, list_value, number, object_json, object_value
+from paper.benchmark_library_versions import Case, Worker, start_worker
 from paper.numerical_validation import (
     FloatArray,
     ProductionArguments,
     ProductionSolver,
     SerialisedTurnCase,
-    SolverResult,
     StudySolver,
     TurnCase,
     compile_solver,
@@ -96,7 +98,7 @@ class BenchmarkResult(TypedDict):
     modes: list[str]
     cases: list[BenchmarkRow]
     packed_modes: list[str]
-    baseline_sha256: str | None
+    baseline: WorkerHeader | None
     raw_us: list[list[list[float]]]
     mean_us: list[float]
     packed_raw_us: list[list[list[float]]]
@@ -196,19 +198,42 @@ def instrument_solver(source: str) -> tuple[ast.Module, ast.FunctionDef]:
     tree, function = solver_ast(source, "traced_directional_solver")
 
     class Recorder(ast.NodeTransformer):
-        count = 0
+        assignments = 0
+        comparisons = 0
 
-        def visit_Assign(self, node: ast.Assign) -> ast.Assign | list[ast.stmt]:
+        def visit_Assign(self, node: ast.Assign) -> ast.Assign:
             if any(
                 isinstance(target, ast.Name) and target.id == "directional_lower_bound_m" for target in node.targets
             ):
-                self.count += 1
-                return [node, *trace_writes(("left_t_s", "right_t_s", "directional_lower_bound_m", "interval_eta_m"))]
+                self.assignments += 1
+            return node
+
+        def visit_If(self, node: ast.If) -> ast.If:
+            self.generic_visit(node)
+            names = {part.id for part in ast.walk(node.test) if isinstance(part, ast.Name)}
+            if "directional_lower_bound_m" not in names:
+                return node
+            if not (
+                isinstance(node.test, ast.Compare)
+                and isinstance(node.test.left, ast.Name)
+                and node.test.left.id == "directional_lower_bound_m"
+                and len(node.test.ops) == 1
+                and isinstance(node.test.ops[0], ast.GtE)
+                and len(node.test.comparators) == 1
+            ):
+                raise RuntimeError("Production directional comparison hook changed; expected lower >= threshold")
+            self.comparisons += 1
+            values = ("left_t_s", "right_t_s", "directional_lower_bound_m", "interval_eta_m")
+            # Record the path taken: Python recomputation can round differently
+            # from the compiled comparison when fastmath reassociates its sum.
+            node.body[:0] = trace_writes((*values, "True"))
+            node.orelse[:0] = trace_writes((*values, "False"))
             return node
 
     recorder = Recorder()
     recorder.visit(tree)
-    require_hooks(recorder.count, 1, "directional comparison")
+    require_hooks(recorder.assignments, 1, "directional assignment")
+    require_hooks(recorder.comparisons, 1, "directional comparison")
     return tree, function
 
 
@@ -226,7 +251,7 @@ def numerical_checks(n: int, seed: int) -> NumericalResult:
         ra._interval_directional_lower_bound,
     )
     solver = traced_solver()
-    trace = np.empty((16384, 4))
+    trace = np.empty((16384, 5))
     result: NumericalResult = {
         "encounters": n,
         "seed": seed,
@@ -257,7 +282,7 @@ def numerical_checks(n: int, seed: int) -> NumericalResult:
             require_solver_parity(actual, production_solver(**probe), family)
             scalar = production_solver(**probe, directional_mode=0)
             result["scalar_acceptances_lost"] += int(scalar[0] and not actual[0])
-            for left, right, lower, inflation in trace[~np.isnan(trace[:, 0])]:
+            for left, right, lower, inflation, decision in trace[~np.isnan(trace[:, 0])]:
                 left, right, lower, inflation = map(float, (left, right, lower, inflation))
                 key = (left, right)
                 if key not in cache:
@@ -269,7 +294,7 @@ def numerical_checks(n: int, seed: int) -> NumericalResult:
                         result["precision_rechecks"] += 1
                         result["max_precision_change_m"] = max(result["max_precision_change_m"], float(abs(high - ref)))
                 ref, ref_eta = cache[key]
-                accepted = lower >= probe["separation_threshold_m"] + inflation + ra.TURN_CERT_FP_GUARD_M
+                accepted = bool(decision)
                 with mp.workdps(80):
                     error = float((mp.mpf(lower) - mp.mpf(inflation)) - (ref - ref_eta))
                     residual = float(ref - ref_eta - mp.mpf(probe["separation_threshold_m"]))
@@ -324,45 +349,38 @@ def packed_call(p: FloatArray, mode: int) -> bool:
     )[0]
 
 
+@contextmanager
+def _baseline_worker(baseline: Path | None, cases: list[Case]) -> Iterator[Worker | None]:
+    if baseline is None:
+        yield None
+        return
+    with TemporaryDirectory(prefix="directional-baseline-") as directory:
+        output = Path(directory)
+        cases_path = output / "cases.json"
+        cases_path.write_text(json.dumps({"cases": [asdict(case) for case in cases]}))
+        try:
+            with closing(start_worker("old", cases_path, output, baseline)) as worker:
+                if worker.header["numpy"] != np.__version__ or worker.header["numba"] != numba.__version__:
+                    raise RuntimeError("Baseline and candidate numerical library versions differ")
+                yield worker
+        except BaseException as error:
+            log = output / "old_worker.log"
+            if log.is_file():
+                error.add_note(log.read_text(encoding="utf-8", errors="replace"))
+            raise
+
+
 def benchmark(inputs: Path, baseline: Path | None = None) -> BenchmarkResult:
+    """Compare directional modes, optionally against an isolated baseline package."""
     # Keep the native dispatcher: only its ParamSpec type boundary needs narrowing.
     production_solver = cast("ProductionSolver", ra._catch_up_projection_interval_with_turns_local)
-    original_packed: Callable[[FloatArray], bool] | None = None
-    if baseline is not None:
-        spec = importlib.util.spec_from_file_location("geometric_safety.before_directional", baseline)
-        if spec is None or spec.loader is None:
-            raise RuntimeError(f"Cannot load baseline solver from {baseline}")
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        loaded_solver: object = module._catch_up_projection_interval_with_turns_local
-        if not callable(loaded_solver):
-            raise RuntimeError("Baseline solver is not callable")
-        # This archived module is the one unavoidable dynamic solver boundary.
-        original_solver = cast("Callable[..., SolverResult]", loaded_solver)
-
-        @numba.njit
-        def original_packed(p: FloatArray) -> bool:
-            return original_solver(
-                p[:2],
-                p[2],
-                p[3],
-                p[4],
-                p[5],
-                p[6],
-                p[7],
-                p[8],
-                p[9],
-                p[10],
-                p[11],
-                p[12],
-            )[0]
-
     rows = [object_value(row) for row in list_value(object_json(inputs.read_text())["cases"])]
     if not rows:
         raise ValueError("Directional benchmark requires at least one case")
     calls: list[ProductionArguments] = []
     results: list[BenchmarkRow] = []
     packed: list[FloatArray] = []
+    benchmark_cases: list[Case] = []
     for row in rows:
         encounter = object_value(row["encounter"])
         case: ProductionArguments = {
@@ -401,65 +419,68 @@ def benchmark(inputs: Path, baseline: Path | None = None) -> BenchmarkResult:
         if classification == "unsafe" and any(outcomes):
             raise RuntimeError("Directional benchmark accepted a reference-unsafe case")
         calls.append(case)
-        p = np.array(
-            [
-                *case["rel_pos0"],
-                *[
-                    case[k]
-                    for k in (
-                        "a_heading0_deg",
-                        "a_target_heading_deg",
-                        "a_speed_kt",
-                        "a_turn_rate_deg_sec",
-                        "b_heading0_deg",
-                        "b_target_heading_deg",
-                        "b_speed_kt",
-                        "b_turn_rate_deg_sec",
-                        "separation_threshold_m",
-                        "speed_diff_kt",
-                        "projection_time_s",
-                    )
-                ],
-            ]
+        benchmark_case = Case(
+            id=f"directional-{len(benchmark_cases)}",
+            suite=suite,
+            x=float(case["rel_pos0"][0]),
+            y=float(case["rel_pos0"][1]),
+            ah=case["a_heading0_deg"],
+            at=case["a_target_heading_deg"],
+            av=case["a_speed_kt"],
+            ar=case["a_turn_rate_deg_sec"],
+            bh=case["b_heading0_deg"],
+            bt=case["b_target_heading_deg"],
+            bv=case["b_speed_kt"],
+            br=case["b_turn_rate_deg_sec"],
+            threshold=case["separation_threshold_m"],
+            width=case["speed_diff_kt"],
+            horizon=case["projection_time_s"],
+            reference=classification,
         )
+        p = benchmark_case.packed()
         if [bool(packed_call(p, mode)) for mode in range(3)] != outcomes:
             raise RuntimeError("Packed directional benchmark differs from the keyword solver")
-        if original_packed is not None and bool(original_packed(p)) != outcomes[0]:
-            raise RuntimeError("Scalar directional benchmark differs from the baseline")
+        benchmark_cases.append(benchmark_case)
         packed.append(p)
         results.append({"suite": suite, "reference": classification, "safe": outcomes})
-    durations = np.empty((len(rows), 3, 5))
-    for round_index in range(5):
-        for index, case in enumerate(calls):
-            for shifted in range(3):
-                mode = (round_index + shifted) % 3
-                start = time.perf_counter_ns()
-                for _ in range(30):
-                    production_solver(**case, directional_mode=mode)
-                durations[index, mode, round_index] = (time.perf_counter_ns() - start) / 30 / 1000
-    per_case = np.median(durations, axis=2)
-    packed_modes = 3 if original_packed is None else 4
-    packed_durations = np.empty((len(rows), packed_modes, 5))
-    for round_index in range(5):
-        for index, p in enumerate(packed):
-            for shifted in range(packed_modes):
-                mode = (round_index + shifted) % packed_modes
-                start = time.perf_counter_ns()
-                for _ in range(30):
+    with _baseline_worker(baseline, benchmark_cases) as worker:
+        baseline_header = worker.header if worker is not None else None
+        if worker is not None and worker.header["outcomes"]["old_compiled"] != [row["safe"][0] for row in results]:
+            raise RuntimeError("Scalar directional benchmark differs from the baseline package")
+        durations = np.empty((len(rows), 3, 5))
+        for round_index in range(5):
+            for index, case in enumerate(calls):
+                for shifted in range(3):
+                    mode = (round_index + shifted) % 3
+                    start = time.perf_counter_ns()
+                    for _ in range(30):
+                        production_solver(**case, directional_mode=mode)
+                    durations[index, mode, round_index] = (time.perf_counter_ns() - start) / 30 / 1000
+        per_case = np.median(durations, axis=2)
+        packed_modes = 3 if worker is None else 4
+        packed_durations = np.empty((len(rows), packed_modes, 5))
+        for round_index in range(5):
+            for index, p in enumerate(packed):
+                for shifted in range(packed_modes):
+                    mode = (round_index + shifted) % packed_modes
                     if mode == 3:
-                        if original_packed is None:
-                            raise RuntimeError("Missing baseline packed solver")
-                        original_packed(p)
+                        if worker is None:
+                            raise RuntimeError("Missing baseline worker")
+                        packed_durations[index, mode, round_index] = worker.request("old_compiled", [index], 30)[
+                            "wall_us"
+                        ][0]
                     else:
-                        packed_call(p, mode)
-                packed_durations[index, mode, round_index] = (time.perf_counter_ns() - start) / 30 / 1000
+                        start = time.perf_counter_ns()
+                        for _ in range(30):
+                            packed_call(p, mode)
+                        packed_durations[index, mode, round_index] = (time.perf_counter_ns() - start) / 30 / 1000
     packed_per_case = np.median(packed_durations, axis=2)
     return {
         "modes": ["scalar", "endpoint directions", "endpoint and hull directions"],
         "cases": results,
         "packed_modes": ["scalar", "endpoint directions", "endpoint and hull directions"]
-        + (["original solver"] if baseline else []),
-        "baseline_sha256": hashlib.sha256(baseline.read_bytes()).hexdigest() if baseline else None,
+        + (["baseline package"] if baseline else []),
+        "baseline": baseline_header,
         "raw_us": durations.tolist(),
         "mean_us": per_case.mean(axis=0).tolist(),
         "packed_raw_us": packed_durations.tolist(),
@@ -480,7 +501,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--inputs", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--baseline", type=Path)
+    parser.add_argument(
+        "--baseline", type=Path, help="Directory containing the complete baseline geometric_safety package"
+    )
     args = parser.parse_args()
     output: dict[str, str | NumericalResult | BenchmarkResult] = {
         "source_sha256": hashlib.sha256(Path(ra.__file__).read_bytes()).hexdigest(),

@@ -3,42 +3,77 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import asdict, replace
+from dataclasses import replace
 import json
 import math
 import os
 from pathlib import Path
 import random
 import subprocess
-import sys
-from typing import TypedDict
+from typing import Literal, TypedDict
 
 from geometric_safety import heading, relevant_aircraft as ra
-from paper.benchmark_library_versions import (
-    KT,
-    Case,
+from paper.benchmark_contracts import (
     Json,
+    boolean,
     digest,
+    finite_number,
+    integer,
     list_value,
-    number,
+    module_hashes,
     object_json,
     object_value,
-    read_cases,
+    parse_list,
+    parse_mapping,
+    string,
 )
+from paper.benchmark_library_versions import KT, Case, read_cases
+from paper.isolated_worker import worker_command
 from paper.numerical_validation import SolverResult
+
+
+class ParityInterface(TypedDict):
+    status: Literal["certified_safe", "unresolved", "unsupported"]
+    reason: str
+    inflation_m: float
+    base_min_distance_m: float | None
+    base_closest_time_s: float | None
 
 
 class ParityRecord(TypedDict):
     id: str
     suite: str
     core: SolverResult
-    interface: heading.HeadingAssuranceResult
+    interface: ParityInterface
+
+
+class ParityReport(TypedDict):
+    seed: int
+    cases_sha256: str
+    package_root: str
+    source_sha256: dict[str, str]
+    corpus: Literal["standard", "saved_only"]
+    guard_m: float
+    records: list[ParityRecord]
 
 
 class ParityComparison(TypedDict):
     cases: int
     maximum_distance_change_m: dict[str, float]
     diagnostic_time_changes: dict[str, int]
+
+
+class ParitySummary(ParityComparison):
+    queries: int
+    decision_changes: int
+    seed: int
+    corpus: Literal["standard", "saved_only"]
+    guard_m: float
+    source_sha256: dict[str, dict[str, str]]
+    script_sha256: str
+    cases_sha256: str
+    raw_sha256: dict[str, str]
+    scope: str
 
 
 def corpus(path: Path) -> list[Case]:
@@ -159,45 +194,129 @@ def evaluate_cases(cases: list[Case]) -> list[ParityRecord]:
                 "id": case.id,
                 "suite": case.suite,
                 "core": (bool(core[0]), float(core[1]), float(core[2])),
-                "interface": interface,
+                "interface": {
+                    "status": interface.status,
+                    "reason": interface.reason,
+                    "inflation_m": interface.inflation_m,
+                    "base_min_distance_m": interface.base_min_distance_m,
+                    "base_closest_time_s": interface.base_closest_time_s,
+                },
             }
         )
     return rows
 
 
-def worker(cases_path: Path, output: Path) -> None:
-    rows = evaluate_cases(corpus(cases_path))
+def worker(cases_path: Path, output: Path, *, saved_only: bool = False) -> None:
+    cases = read_cases(cases_path) if saved_only else corpus(cases_path)
+    if not cases:
+        raise ValueError("Parity comparison has no cases")
+    rows = evaluate_cases(cases)
     package = Path(ra.__file__).parent
-    output.write_text(
-        json.dumps(
-            {
-                "seed": 2026101206,
-                "cases_sha256": digest(cases_path),
-                "source_sha256": {p.name: digest(p) for p in sorted(package.glob("*.py"))},
-                "records": rows,
-            },
-            indent=2,
-            default=asdict,
-        )
-        + "\n"
+    report: ParityReport = {
+        "seed": 2026101206,
+        "cases_sha256": digest(cases_path),
+        "package_root": str(package.resolve()),
+        "source_sha256": module_hashes(package),
+        "corpus": "saved_only" if saved_only else "standard",
+        "guard_m": ra.TURN_CERT_FP_GUARD_M,
+        "records": rows,
+    }
+    output.write_text(json.dumps(report, indent=2) + "\n")
+
+
+def parse_record(value: Json) -> ParityRecord:
+    row = object_value(value)
+    core, interface = list_value(row["core"]), object_value(row["interface"])
+    if len(core) != 3:
+        raise ValueError("Parity core result must have three entries")
+    status: Literal["certified_safe", "unresolved", "unsupported"]
+    if interface["status"] == "certified_safe":
+        status = "certified_safe"
+    elif interface["status"] == "unresolved":
+        status = "unresolved"
+    elif interface["status"] == "unsupported":
+        status = "unsupported"
+    else:
+        raise ValueError("Unknown parity interface status")
+    distance, time_s = interface["base_min_distance_m"], interface["base_closest_time_s"]
+    return ParityRecord(
+        id=string(row["id"]),
+        suite=string(row["suite"]),
+        core=(boolean(core[0]), finite_number(core[1]), finite_number(core[2])),
+        interface=ParityInterface(
+            status=status,
+            reason=string(interface["reason"]),
+            inflation_m=finite_number(interface["inflation_m"]),
+            base_min_distance_m=None if distance is None else finite_number(distance),
+            base_closest_time_s=None if time_s is None else finite_number(time_s),
+        ),
     )
 
 
-def compare_reports(baseline: dict[str, Json], candidate: dict[str, Json]) -> ParityComparison:
+def read_parity_report(path: Path) -> ParityReport:
+    row = object_json(path.read_text())
+    selected_corpus: Literal["standard", "saved_only"]
+    if row["corpus"] == "standard":
+        selected_corpus = "standard"
+    elif row["corpus"] == "saved_only":
+        selected_corpus = "saved_only"
+    else:
+        raise ValueError("Unknown parity corpus")
+    records = parse_list(row["records"], parse_record)
+    if len({record["id"] for record in records}) != len(records):
+        raise ValueError("Parity report contains duplicate case IDs")
+    return ParityReport(
+        seed=integer(row["seed"]),
+        cases_sha256=string(row["cases_sha256"]),
+        package_root=string(row["package_root"]),
+        source_sha256=parse_mapping(row["source_sha256"], string),
+        corpus=selected_corpus,
+        guard_m=finite_number(row["guard_m"]),
+        records=records,
+    )
+
+
+def run_worker(source: Path, cases_path: Path, output: Path, cache: Path, *, saved_only: bool = False) -> ParityReport:
+    """Run the current harness against precisely the selected library package."""
+    package = source.resolve() / "geometric_safety"
+    if not (package / "__init__.py").is_file():
+        raise ValueError(f"Selected library has no geometric_safety package: {source}")
+    expected = module_hashes(package)
+    env = dict(os.environ, NUMBA_CACHE_DIR=str(cache.resolve()), PYTHONDONTWRITEBYTECODE="1")
+    arguments = ["--worker", "--cases", str(cases_path.resolve()), "--output", str(output.resolve())]
+    if saved_only:
+        arguments.append("--saved-only")
+    subprocess.run(worker_command("paper.validate_performance_parity", arguments, source), env=env, check=True)
+    report = read_parity_report(output)
+    if Path(report["package_root"]) != package or report["source_sha256"] != expected:
+        raise RuntimeError("Parity worker library identity differs from the selected source")
+    if report["cases_sha256"] != digest(cases_path):
+        raise RuntimeError("Parity worker evaluated a different case file")
+    expected_corpus = "saved_only" if saved_only else "standard"
+    expected_cases = read_cases(cases_path) if saved_only else corpus(cases_path)
+    if report["corpus"] != expected_corpus or [record["id"] for record in report["records"]] != [
+        case.id for case in expected_cases
+    ]:
+        raise RuntimeError("Parity worker did not evaluate the requested corpus")
+    return report
+
+
+def compare_reports(baseline: ParityReport, candidate: ParityReport) -> ParityComparison:
     """Validate saved decisions and distances, and count diagnostic time changes."""
-    before, after = [list_value(report["records"]) for report in (baseline, candidate)]
+    if baseline["corpus"] != candidate["corpus"] or baseline["cases_sha256"] != candidate["cases_sha256"]:
+        raise ValueError("Parity reports describe different input corpora")
+    before, after = baseline["records"], candidate["records"]
     if not before or not after:
         raise ValueError("Parity comparison has no records")
     if len(before) != len(after):
         raise ValueError("Parity record counts differ")
     distance_delta = {"core": 0.0, "interface": 0.0}
     time_changes = {"core": 0, "interface": 0}
-    for left, right in zip(before, after, strict=True):
-        a, b = object_value(left), object_value(right)
+    for a, b in zip(before, after, strict=True):
         if a["id"] != b["id"]:
             raise ValueError(f"Parity case IDs differ: {a['id']} / {b['id']}")
-        ac, bc = list_value(a["core"]), list_value(b["core"])
-        ai, bi = object_value(a["interface"]), object_value(b["interface"])
+        ac, bc = a["core"], b["core"]
+        ai, bi = a["interface"], b["interface"]
         if ac[0] != bc[0]:
             raise ValueError(f"Core decisions differ for {a['id']}: {ac} / {bc}")
         for field in ("status", "reason", "inflation_m"):
@@ -215,9 +334,9 @@ def compare_reports(baseline: dict[str, Json], candidate: dict[str, Json]) -> Pa
         ):
             if d0 is None or d1 is None:
                 raise ValueError(f"Missing {method} distance for {a['id']}")
-            if not math.isclose(number(d0), number(d1), rel_tol=2e-13, abs_tol=1e-7):
+            if not math.isclose(d0, d1, rel_tol=2e-13, abs_tol=1e-7):
                 raise ValueError(f"{method} distances differ for {a['id']}: {d0} / {d1}")
-            distance_delta[method] = max(distance_delta[method], abs(number(d1) - number(d0)))
+            distance_delta[method] = max(distance_delta[method], abs(d1 - d0))
             time_changes[method] += t0 != t1
     return {
         "cases": len(before),
@@ -233,49 +352,45 @@ def main() -> None:
     parser.add_argument("--candidate", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--worker", action="store_true")
+    parser.add_argument(
+        "--saved-only",
+        action="store_true",
+        help="Compare only the supplied cases; omit the standard seeded and boundary corpus",
+    )
     args = parser.parse_args()
     if args.worker:
-        worker(args.cases, args.output)
+        worker(args.cases, args.output, saved_only=args.saved_only)
         return
     if args.baseline is None or args.candidate is None:
         parser.error("--baseline and --candidate are required for a comparison")
     args.output.mkdir(exist_ok=False)
-    reports = []
+    reports: list[ParityReport] = []
     for role, source in (("baseline", args.baseline), ("candidate", args.candidate)):
-        env = dict(
-            os.environ,
-            PYTHONPATH=str(source.resolve()),
-            NUMBA_CACHE_DIR=str((args.output / (role + "_cache")).resolve()),
-        )
         path = args.output / (role + ".json")
-        subprocess.run(
-            [
-                sys.executable,
-                str(Path(__file__).resolve()),
-                "--worker",
-                "--cases",
-                str(args.cases.resolve()),
-                "--output",
-                str(path.resolve()),
-            ],
-            env=env,
-            check=True,
+        reports.append(
+            run_worker(source, args.cases, path, args.output / (role + "_cache"), saved_only=args.saved_only)
         )
-        reports.append(object_json(path.read_text()))
     comparison = compare_reports(reports[0], reports[1])
-    summary = {
-        **comparison,
+    summary: ParitySummary = {
+        "cases": comparison["cases"],
+        "maximum_distance_change_m": comparison["maximum_distance_change_m"],
+        "diagnostic_time_changes": comparison["diagnostic_time_changes"],
         "queries": 2 * comparison["cases"],
         "decision_changes": 0,
         "seed": 2026101206,
-        "guard_m": 1e-6,
+        "corpus": reports[0]["corpus"],
+        "guard_m": reports[1]["guard_m"],
         "source_sha256": {
             role: report["source_sha256"] for role, report in zip(("baseline", "candidate"), reports, strict=True)
         },
         "script_sha256": digest(Path(__file__)),
         "cases_sha256": digest(args.cases),
         "raw_sha256": {p.name: digest(p) for p in args.output.glob("*.json")},
-        "scope": "Empirical parity, including envelope and boundary cases; not a universal numerical proof.",
+        "scope": (
+            "Empirical parity on the supplied cases only; seeded and boundary cases were omitted."
+            if args.saved_only
+            else "Empirical parity, including envelope and boundary cases; not a universal numerical proof."
+        ),
     }
     (args.output / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
     print(json.dumps(summary, indent=2))

@@ -15,7 +15,7 @@ import pytest
 
 from geometric_safety import relevant_aircraft as ra
 from paper import run_turn_numerics as scalar, validate_directional_production as directional
-from paper.numerical_validation import require_solver_parity
+from paper.numerical_validation import TurnCase, require_solver_parity
 
 
 def test_missing_directional_hook_is_rejected() -> None:
@@ -41,9 +41,104 @@ def test_duplicate_directional_hook_is_rejected() -> None:
         directional.instrument_solver(duplicated)
 
 
+@pytest.mark.parametrize("copies", [0, 2])
+def test_directional_comparison_hook_count_is_checked(copies: int) -> None:
+    source = inspect.getsource(ra._catch_up_projection_interval_with_turns_local.py_func)
+
+    class ChangeComparisonCount(ast.NodeTransformer):
+        def visit_If(self, node: ast.If) -> ast.If | list[ast.stmt]:
+            self.generic_visit(node)
+            if (
+                isinstance(node.test, ast.Compare)
+                and isinstance(node.test.left, ast.Name)
+                and node.test.left.id == "directional_lower_bound_m"
+            ):
+                return [copy.deepcopy(node) for _ in range(copies)]
+            return node
+
+    changed = ast.unparse(ChangeComparisonCount().visit(ast.parse(source)))
+    with pytest.raises(RuntimeError, match="directional comparison hook structure changed"):
+        directional.instrument_solver(changed)
+
+
+@pytest.mark.parametrize(
+    ("case", "accepted"),
+    [
+        pytest.param(
+            TurnCase(
+                rel_pos0=np.array([-16275.427595662642, -1869.405801333638]),
+                a_heading0_deg=333.10591142974397,
+                a_target_heading_deg=468.17322508293364,
+                a_turn_rate_deg_sec=4.840129415919734,
+                a_speed_kt=43.324606601140104,
+                b_heading0_deg=180.67285395037473,
+                b_target_heading_deg=315.62898407457567,
+                b_turn_rate_deg_sec=4.170835218813311,
+                b_speed_kt=65.32498085256013,
+                speed_diff_kt=21.705951616144652,
+                projection_time_s=353.1763872205616,
+                separation_threshold_m=819.157998033264,
+                eta_const_m=50.29671091288135,
+                eta_rate_mps=7.178747868370947,
+                turn_speed_schedule_uncertainty_kt=0.0,
+                turn_delay_max_s=9.84478429322914,
+                turn_rate_error_max=0.17319354504124035,
+            ),
+            True,
+            id="compiled-acceptance",
+        ),
+        pytest.param(
+            TurnCase(
+                rel_pos0=np.array([-65093.71340190715, -113592.95473134817]),
+                a_heading0_deg=155.55803313141513,
+                a_target_heading_deg=235.95618554301575,
+                a_turn_rate_deg_sec=0.6795549553793536,
+                a_speed_kt=305.85338379295905,
+                b_heading0_deg=328.4452576778782,
+                b_target_heading_deg=464.92411909936015,
+                b_turn_rate_deg_sec=5.984993695081028,
+                b_speed_kt=599.1660002263113,
+                speed_diff_kt=1.3427246376336852e-06,
+                projection_time_s=933.187713557014,
+                separation_threshold_m=107801.9311396253,
+                eta_const_m=112.68555033338264,
+                eta_rate_mps=5.382912010396175,
+                turn_speed_schedule_uncertainty_kt=0.0,
+                turn_delay_max_s=9.851790945341058,
+                turn_rate_error_max=0.10947221953661,
+            ),
+            False,
+            id="compiled-rejection",
+        ),
+    ],
+)
+def test_directional_trace_records_compiled_decision(case: TurnCase, accepted: bool) -> None:
+    # These binary64 boundary inputs exercise both directions of disagreement
+    # between Python reconstruction and the compiled acceptance comparison.
+    solver = directional.traced_solver()
+    trace = np.full((2048, 5), np.nan)
+    result = solver(**case, study_trace=trace)
+    assert result == ra._catch_up_projection_interval_with_turns_local(**case)
+    rows = trace[~np.isnan(trace[:, 0])]
+    assert len(rows) > 0
+    assert rows[0, 0] == 0.0
+    assert rows[0, 1] == case["projection_time_s"]
+    assert rows[0, 4] == float(accepted)
+    if accepted:
+        assert len(rows) == 1
+        assert result[0]
+    else:
+        # A subsequent subinterval demonstrates that the full interval failed.
+        assert len(rows) > 1
+        assert rows[1, 1] - rows[1, 0] < case["projection_time_s"]
+    with pytest.raises(RuntimeError, match="trace capacity exceeded"):
+        solver(**case, study_trace=np.empty((0, 5)))
+
+
 @pytest.fixture(scope="module")
 def numerical_result() -> directional.NumericalResult:
-    return directional.numerical_checks(8, 42)
+    # Encounter 32 includes the compiled-acceptance boundary case above.
+    return directional.numerical_checks(33, 2026092031)
 
 
 def test_directional_audit_uses_real_production_and_reference(numerical_result: directional.NumericalResult) -> None:
@@ -52,6 +147,21 @@ def test_directional_audit_uses_real_production_and_reference(numerical_result: 
     assert numerical_result["precision_rechecks"] > 0
     assert numerical_result["negative_reference_acceptances"] == 0
     assert numerical_result["scalar_acceptances_lost"] == 0
+
+
+def test_directional_audit_keeps_compiled_acceptance(numerical_result: directional.NumericalResult) -> None:
+    records = [
+        record
+        for record in numerical_result["records"]
+        if record["case"]["rel_pos0"] == [-16275.427595662642, -1869.405801333638]
+        and record["case"]["separation_threshold_m"] == 819.157998033264
+        and record["left_s"] == 0.0
+        and record["right_s"] == record["case"]["projection_time_s"]
+    ]
+    assert len(records) == 1
+    assert records[0]["accepted"]
+    assert records[0]["reference_residual_m"] > 0.0
+    assert numerical_result["accepted"] == sum(record["accepted"] for record in numerical_result["records"])
 
 
 def test_scalar_audit_uses_real_production_and_reference(tmp_path: Path) -> None:

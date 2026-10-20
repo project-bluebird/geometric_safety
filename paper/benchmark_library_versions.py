@@ -9,11 +9,11 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
+from contextlib import suppress
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 import functools
-import hashlib
 import json
 import math
 import os
@@ -24,20 +24,43 @@ import statistics
 import subprocess
 import sys
 import time
-from typing import TYPE_CHECKING, TextIO, cast
+from typing import TYPE_CHECKING, TextIO
 
 import numba
 import numpy as np
 from numpy.typing import NDArray
 
 from geometric_safety import relevant_aircraft as ra
+from paper.benchmark_contracts import (
+    BenchmarkChecks,
+    BenchmarkReport,
+    DecisionDifference,
+    MethodStatistics,
+    Outcomes,
+    Statistics,
+    SummaryGroup,
+    TimingRequest,
+    TimingResponse,
+    Timings,
+    WorkerHeader,
+    WorkerRole,
+    digest,
+    list_value,
+    module_hashes,
+    number,
+    object_json,
+    object_value,
+    parse_manifest,
+    parse_request,
+    parse_response,
+    parse_worker_header,
+)
+from paper.isolated_worker import worker_command
 
 if TYPE_CHECKING:
     from geometric_safety.heading import HeadingMotion
 
-type Json = None | bool | int | float | str | list[Json] | dict[str, Json]
 type FloatArray = NDArray[np.float64]
-type Timings = dict[str, list[list[float]]]
 
 OLD_REVISION = "9b7869d363286e69aa45471c11d13b83861320e9"
 KT = 1852.0 / 3600.0
@@ -52,34 +75,21 @@ METHODS = (
 )
 
 
-def object_json(text: str) -> dict[str, Json]:
-    """Narrow the untyped JSON boundary used for our own saved records and IPC."""
-    value = json.loads(text)
-    if not isinstance(value, dict):
-        raise ValueError("Expected a JSON object")
-    return cast("dict[str, Json]", value)
-
-
-def object_value(value: Json) -> dict[str, Json]:
-    if not isinstance(value, dict):
-        raise ValueError("Expected an object")
-    return value
-
-
-def list_value(value: Json) -> list[Json]:
-    if not isinstance(value, list):
-        raise ValueError("Expected a list")
-    return value
-
-
-def number(value: Json) -> float:
-    if not isinstance(value, int | float):
-        raise ValueError("Expected a number")
-    return float(value)
-
-
-def digest(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+@dataclass(frozen=True)
+class BenchmarkOptions:
+    inputs: Path
+    old_source: Path
+    old_archive: Path
+    manifest: Path
+    output: Path
+    cpu: int = 6
+    rounds: int = 7
+    repeats: int = 16
+    tail_rounds: int = 31
+    before_source: Path | None = None
+    before_manifest: Path | None = None
+    expected_recovered: int = 36
+    require_before_decision_parity: bool = False
 
 
 @dataclass(frozen=True)
@@ -404,11 +414,11 @@ def api_methods(case: Case) -> tuple[dict[str, Callable[[], bool]], float]:
     }, inflation
 
 
-def worker(cases_path: Path, role: str) -> None:
+def worker(cases_path: Path, role: WorkerRole) -> None:
     started = time.perf_counter()
     cases = read_cases(cases_path)
     calls: dict[str, list[Callable[[], bool]]] = {}
-    outcomes: dict[str, list[bool]] = {}
+    outcomes: Outcomes = {}
     inflations: list[float] = []
     for case in cases:
         p = case.packed()
@@ -436,30 +446,26 @@ def worker(cases_path: Path, role: str) -> None:
         if not (outcomes[api_prefix + "interface_prebuilt"] == outcomes[api_prefix + "interface_core_only"]):
             raise RuntimeError("Benchmark validation failed: interface and effective core decisions differ")
     package = Path(ra.__file__).parent
-    print(
-        json.dumps(
-            {
-                "ready": True,
-                "role": role,
-                "preparation_seconds": time.perf_counter() - started,
-                "source_sha256": {p.name: digest(p) for p in sorted(package.glob("*.py"))},
-                "outcomes": outcomes,
-                "inflation_m": inflations,
-                "python": platform.python_version(),
-                "numpy": np.__version__,
-                "numba": numba.__version__,
-                "affinity": sorted(os.sched_getaffinity(0)),
-            }
-        ),
-        flush=True,
-    )
+    header: WorkerHeader = {
+        "ready": True,
+        "role": role,
+        "preparation_seconds": time.perf_counter() - started,
+        "source_sha256": module_hashes(package),
+        "outcomes": outcomes,
+        "inflation_m": inflations,
+        "python": platform.python_version(),
+        "numpy": np.__version__,
+        "numba": numba.__version__,
+        "affinity": sorted(os.sched_getaffinity(0)),
+    }
+    print(json.dumps(header), flush=True)
     for line in sys.stdin:
-        request = object_json(line)
+        request = parse_request(line)
         if request["op"] == "stop":
             return
-        method = str(request["method"])
-        indices = [int(number(v)) for v in list_value(request["indices"])]
-        repeats = int(number(request["repeats"]))
+        method = request["method"]
+        indices = request["indices"]
+        repeats = request["repeats"]
         wall, cpu = [], []
         for index in indices:
             call = calls[method][index]
@@ -473,65 +479,127 @@ def worker(cases_path: Path, role: str) -> None:
                 raise RuntimeError(f"Benchmark validation failed: timed decision changed for {method}, case {index}")
             wall.append(elapsed / repeats / 1000.0)
             cpu.append(cpu_elapsed / repeats / 1000.0)
-        print(json.dumps({"wall_us": wall, "cpu_us": cpu}), flush=True)
+        response: TimingResponse = {"wall_us": wall, "cpu_us": cpu}
+        print(json.dumps(response), flush=True)
 
 
 @dataclass
 class Worker:
     process: subprocess.Popen[str]
     log: TextIO
-    header: dict[str, Json]
+    header: WorkerHeader
 
-    def request(self, method: str, indices: list[int], repeats: int) -> dict[str, Json]:
+    def request(self, method: str, indices: list[int], repeats: int) -> TimingResponse:
         if not (self.process.stdin is not None):
             raise RuntimeError("Benchmark validation failed: self.process.stdin is not None")
         if not (self.process.stdout is not None):
             raise RuntimeError("Benchmark validation failed: self.process.stdout is not None")
-        self.process.stdin.write(
-            json.dumps({"op": "time", "method": method, "indices": indices, "repeats": repeats}) + "\n"
-        )
+        request = TimingRequest(op="time", method=method, indices=indices, repeats=repeats)
+        self.process.stdin.write(json.dumps(request) + "\n")
         self.process.stdin.flush()
         response = self.process.stdout.readline()
         if not response:
             raise RuntimeError(f"Worker ended with {self.process.poll()}; inspect its log")
-        return object_json(response)
+        return parse_response(response, len(indices))
 
-    def close(self) -> None:
-        if self.process.poll() is None:
-            if not (self.process.stdin is not None):
-                raise RuntimeError("Benchmark validation failed: self.process.stdin is not None")
-            self.process.stdin.write('{"op":"stop"}\n')
-            self.process.stdin.flush()
-            self.process.wait(timeout=30)
-        self.log.close()
+    def close(self, *, grace_seconds: float = 30.0, termination_seconds: float = 5.0) -> None:
+        shutdown_process(self.process, self.log, grace_seconds=grace_seconds, termination_seconds=termination_seconds)
 
 
-def start_worker(role: str, args: argparse.Namespace, cases_path: Path) -> Worker:
+def shutdown_process(
+    process: subprocess.Popen[str], log: TextIO, *, grace_seconds: float = 30.0, termination_seconds: float = 5.0
+) -> None:
+    """Stop, escalate if needed, reap, then close every owned stream."""
+    try:
+        if process.poll() is None:
+            if process.stdin is not None:
+                try:
+                    process.stdin.write('{"op":"stop"}\n')
+                    process.stdin.flush()
+                except (OSError, ValueError):
+                    # A worker may have closed its input while exiting or failing.
+                    pass
+            try:
+                process.wait(timeout=grace_seconds)
+            except subprocess.TimeoutExpired:
+                with suppress(ProcessLookupError):
+                    process.terminate()
+                try:
+                    process.wait(timeout=termination_seconds)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait()
+        else:
+            process.wait()
+    finally:
+        errors: list[Exception] = []
+        for stream in (process.stdin, process.stdout, log):
+            if stream is not None:
+                try:
+                    stream.close()
+                except Exception as error:
+                    errors.append(error)
+        if errors:
+            raise ExceptionGroup("Benchmark stream cleanup failed", errors)
+
+
+def close_workers(workers: Iterable[Worker]) -> None:
+    errors: list[Exception] = []
+    for worker_info in workers:
+        try:
+            worker_info.close()
+        except Exception as error:
+            errors.append(error)
+    if errors:
+        raise ExceptionGroup("Benchmark worker cleanup failed", errors)
+
+
+def start_worker(role: WorkerRole, cases_path: Path, output: Path, source: Path | None = None) -> Worker:
+    """Start the current harness against one complete, verified package."""
+    if role != "current" and source is None:
+        raise ValueError(f"A baseline source is required for the {role} worker")
+    if source is not None and not (source / "geometric_safety" / "__init__.py").is_file():
+        raise ValueError("Source must be a directory containing a complete geometric_safety package")
+    expected_source = module_hashes(source / "geometric_safety") if source is not None else None
     env = os.environ.copy()
-    env.update({"NUMBA_CACHE_DIR": str(args.output / (role + "_cache")), "PYTHONDONTWRITEBYTECODE": "1"})
+    env.update({"NUMBA_CACHE_DIR": str(output / (role + "_cache")), "PYTHONDONTWRITEBYTECODE": "1"})
     env.pop("PYTHONPATH", None)
-    if role == "old":
-        env["PYTHONPATH"] = str(args.old_source.resolve())
-    elif role == "before":
-        env["PYTHONPATH"] = str(args.before_source.resolve())
-    log = (args.output / (role + "_worker.log")).open("w")
-    process = subprocess.Popen(
-        [sys.executable, str(Path(__file__).resolve()), "--worker", role, "--cases", str(cases_path)],
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=log,
-        text=True,
-        env=env,
-    )
-    if not (process.stdout is not None):
-        raise RuntimeError("Benchmark validation failed: process.stdout is not None")
-    response = process.stdout.readline()
-    if not response:
-        raise RuntimeError(f"{role} worker failed during preparation; inspect its log")
-    return Worker(process, log, object_json(response))
+    log = (output / (role + "_worker.log")).open("w")
+    process: subprocess.Popen[str] | None = None
+    try:
+        process = subprocess.Popen(
+            worker_command(
+                "paper.benchmark_library_versions", ["--worker", role, "--cases", str(cases_path.resolve())], source
+            ),
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=log,
+            text=True,
+            env=env,
+        )
+        if process.stdout is None:
+            raise RuntimeError("Benchmark worker has no output stream")
+        response = process.stdout.readline()
+        if not response:
+            raise RuntimeError(f"{role} worker failed during preparation; inspect its log")
+        header = parse_worker_header(object_json(response))
+        if header["role"] != role:
+            raise ValueError("Benchmark worker reported a different role")
+        if expected_source is not None and header["source_sha256"] != expected_source:
+            raise RuntimeError("Benchmark worker source identity differs from the selected package")
+        return Worker(process, log, header)
+    except BaseException as error:
+        try:
+            if process is None:
+                log.close()
+            else:
+                shutdown_process(process, log)
+        except Exception as cleanup_error:
+            error.add_note(f"Worker startup cleanup also failed: {cleanup_error}")
+        raise
 
 
-def statistics_us(values: list[float]) -> dict[str, float]:
+def statistics_us(values: list[float]) -> Statistics:
     data = np.array(values)
     return {
         "mean": float(data.mean()),
@@ -551,9 +619,7 @@ def measure(
     seed: int,
     label: str,
 ) -> tuple[Timings, Timings]:
-    owners = {
-        method: role for role, worker_info in workers.items() for method in object_value(worker_info.header["outcomes"])
-    }
+    owners = {method: role for role, worker_info in workers.items() for method in worker_info.header["outcomes"]}
     methods = (*METHODS, *(method for method in owners if method not in METHODS))
     wall: Timings = {method: [[0.0] * len(indices) for _ in range(rounds)] for method in methods}
     cpu: Timings = {method: [[0.0] * len(indices) for _ in range(rounds)] for method in methods}
@@ -568,17 +634,16 @@ def measure(
             order = methods[shift:] + methods[:shift]
             for method in order:
                 response = workers[owners[method]].request(method, chunk, repeats)
-                for key, destination in (("wall_us", wall), ("cpu_us", cpu)):
-                    values = list_value(response[key])
+                for values, destination in ((response["wall_us"], wall), (response["cpu_us"], cpu)):
                     for index, value in zip(chunk, values, strict=True):
-                        destination[method][round_index][positions[index]] = number(value)
+                        destination[method][round_index][positions[index]] = value
         print(f"{label}: round {round_index + 1}/{rounds}, {len(indices)} inputs", flush=True)
     if not (all(0 <= i < len(cases) for i in indices)):
         raise RuntimeError("Benchmark validation failed: all((0 <= i < len(cases) for i in indices))")
     return wall, cpu
 
 
-def summary(cases: list[Case], raw: Timings, outcomes: dict[str, list[bool]]) -> dict[str, object]:
+def summary(cases: list[Case], raw: Timings, outcomes: Outcomes) -> dict[str, SummaryGroup]:
     groups = [
         "all",
         *sorted({case.suite for case in cases}),
@@ -587,7 +652,7 @@ def summary(cases: list[Case], raw: Timings, outcomes: dict[str, list[bool]]) ->
         "all_three_accept",
         "core_interface_same_decision",
     ]
-    result: dict[str, object] = {}
+    result: dict[str, SummaryGroup] = {}
     for group in groups:
         indices = [
             i
@@ -605,23 +670,23 @@ def summary(cases: list[Case], raw: Timings, outcomes: dict[str, list[bool]]) ->
                 and outcomes["core_python"][i] == outcomes["interface_prebuilt"][i]
             )
         ]
-        result[group] = {
-            "count": len(indices),
-            "methods": {
-                method: {
+        result[group] = SummaryGroup(
+            count=len(indices),
+            methods={
+                method: MethodStatistics(
                     **statistics_us([statistics.median(round_values[i] for round_values in values) for i in indices]),
-                    "accepted": sum(outcomes[method][i] for i in indices),
-                    "slowest_ids": sorted(indices, key=lambda i: statistics.median(v[i] for v in values), reverse=True)[
+                    accepted=sum(outcomes[method][i] for i in indices),
+                    slowest_ids=sorted(indices, key=lambda i: statistics.median(v[i] for v in values), reverse=True)[
                         :10
                     ],
-                }
+                )
                 for method, values in raw.items()
             },
-        }
+        )
     return result
 
 
-def checks(cases: list[Case], outcomes: dict[str, list[bool]]) -> dict[str, object]:
+def checks(cases: list[Case], outcomes: Outcomes) -> BenchmarkChecks:
     positions = {case.id: i for i, case in enumerate(cases)}
     for name in ("small-turn-collision", "half-turn-collision"):
         index = positions[name]
@@ -647,7 +712,7 @@ def checks(cases: list[Case], outcomes: dict[str, list[bool]]) -> dict[str, obje
         )
     ):
         raise RuntimeError("Benchmark validation failed: a saved unsafe case was accepted")
-    disagreements = [
+    disagreements: list[DecisionDifference] = [
         {
             "id": case.id,
             "suite": case.suite,
@@ -669,7 +734,7 @@ def checks(cases: list[Case], outcomes: dict[str, list[bool]]) -> dict[str, obje
     }
 
 
-def run(args: argparse.Namespace) -> None:
+def run(args: BenchmarkOptions) -> None:
     started_at_utc = datetime.now(UTC).isoformat()
     args.output.mkdir(exist_ok=False)
     os.sched_setaffinity(0, {args.cpu})
@@ -681,31 +746,30 @@ def run(args: argparse.Namespace) -> None:
     )
     workers: dict[str, Worker] = {}
     try:
-        for role in ("old", "before", "current") if args.before_source else ("old", "current"):
+        roles: tuple[WorkerRole, ...] = ("old", "before", "current") if args.before_source else ("old", "current")
+        for role in roles:
             print(f"Preparing isolated {role} worker", flush=True)
-            workers[role] = start_worker(role, args, cases_path)
+            source = args.old_source if role == "old" else args.before_source if role == "before" else None
+            workers[role] = start_worker(role, cases_path, args.output, source)
         outcomes = {
-            name: [bool(v) for v in list_value(values)]
-            for worker_info in workers.values()
-            for name, values in object_value(worker_info.header["outcomes"]).items()
+            name: values for worker_info in workers.values() for name, values in worker_info.header["outcomes"].items()
         }
         checked = checks(cases, outcomes)
-        manifest = object_json(args.manifest.read_text())
-        expected = object_value(object_value(manifest["provenance"])["module_sha256"])
-        actual = object_value(workers["current"].header["source_sha256"])
+        manifest = parse_manifest(args.manifest)
+        expected = manifest["provenance"]["module_sha256"]
+        actual = workers["current"].header["source_sha256"]
         if not (all((actual[Path(name).name] == value for name, value in expected.items()))):
             raise RuntimeError("Benchmark validation failed: installed candidate does not match its manifest")
-        expected_old = {p.name: digest(p) for p in (args.old_source / "geometric_safety").glob("*.py")}
-        if not (object_value(workers["old"].header["source_sha256"]) == expected_old):
-            raise RuntimeError("Benchmark validation failed: original library source identity differs")
         if not (workers["old"].header["numpy"] == workers["current"].header["numpy"]):
             raise RuntimeError("Benchmark validation failed: original and candidate NumPy versions differ")
         if not (workers["old"].header["numba"] == workers["current"].header["numba"]):
             raise RuntimeError("Benchmark validation failed: original and candidate Numba versions differ")
         if args.before_source:
-            before_manifest = object_json(args.before_manifest.read_text())
-            before_expected = object_value(object_value(before_manifest["provenance"])["module_sha256"])
-            before_actual = object_value(workers["before"].header["source_sha256"])
+            if args.before_manifest is None:
+                raise ValueError("A baseline manifest is required with --before-source")
+            before_manifest = parse_manifest(args.before_manifest)
+            before_expected = before_manifest["provenance"]["module_sha256"]
+            before_actual = workers["before"].header["source_sha256"]
             if not (all((before_actual[Path(name).name] == value for name, value in before_expected.items()))):
                 raise RuntimeError("Benchmark validation failed: baseline does not match its manifest")
             if not (workers["before"].header["python"] == workers["current"].header["python"]):
@@ -765,13 +829,13 @@ def run(args: argparse.Namespace) -> None:
             for line in Path("/proc/cpuinfo").read_text().splitlines()
             if line.startswith("model name")
         )
-        report = {
+        report: BenchmarkReport = {
             "protocol": {
                 "host": platform.node(),
                 "started_at_utc": started_at_utc,
                 "old_revision": OLD_REVISION,
                 "current_wheel_sha256": manifest["wheel_sha256"],
-                "before_manifest_sha256": digest(args.before_manifest) if args.before_source else None,
+                "before_manifest_sha256": digest(args.before_manifest) if args.before_manifest is not None else None,
                 "expected_recovered_false_rejections": args.expected_recovered if args.before_source else None,
                 "require_before_decision_parity": args.require_before_decision_parity,
                 "current_manifest_sha256": digest(args.manifest),
@@ -829,8 +893,7 @@ def run(args: argparse.Namespace) -> None:
         (args.output / "results.json").write_text(json.dumps(report, indent=2) + "\n")
         print(json.dumps({"summary": report["summary"], "slow_summary": report["slow_summary"]}), flush=True)
     finally:
-        for worker_info in workers.values():
-            worker_info.close()
+        close_workers(workers.values())
 
 
 def main() -> None:
@@ -856,9 +919,32 @@ def main() -> None:
     if args.require_before_decision_parity and not args.before_source:
         parser.error("--require-before-decision-parity requires --before-source")
     if args.worker:
+        if args.cases is None:
+            parser.error("--cases is required for a worker")
         worker(args.cases, args.worker)
     else:
-        run(args)
+        for name in ("inputs", "old_source", "old_archive", "manifest", "output"):
+            if getattr(args, name) is None:
+                parser.error(f"--{name.replace('_', '-')} is required for a benchmark")
+        if min(args.rounds, args.repeats, args.tail_rounds) <= 0:
+            parser.error("--rounds, --repeats and --tail-rounds must be positive")
+        run(
+            BenchmarkOptions(
+                inputs=args.inputs,
+                old_source=args.old_source,
+                old_archive=args.old_archive,
+                manifest=args.manifest,
+                output=args.output,
+                cpu=args.cpu,
+                rounds=args.rounds,
+                repeats=args.repeats,
+                tail_rounds=args.tail_rounds,
+                before_source=args.before_source,
+                before_manifest=args.before_manifest,
+                expected_recovered=args.expected_recovered,
+                require_before_decision_parity=args.require_before_decision_parity,
+            )
+        )
 
 
 if __name__ == "__main__":

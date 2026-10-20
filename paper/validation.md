@@ -12,7 +12,7 @@ uv run --locked python -m paper.validate_performance_numerics \
   --output numerical_reference.json
 ```
 
-The audit compares the scalar and directional interval bounds with an
+The audit compares the directional interval bounds with an
 independent 80-digit calculation over 512 seeded encounters, including
 threshold probes. Selected comparisons are repeated at 120 digits. It uses
 the actual binary64 candidate directions, then independently integrates the
@@ -30,6 +30,13 @@ bound for every supported input.
 `paper.run_turn_numerics` separately audits the scalar certificate with the
 directional calculation disabled. It has independent calibration and
 validation seeds. Neither audit changes the production numerical guard.
+
+To run that separate scalar calibration and held-out validation:
+
+```bash
+uv run --locked python -m paper.run_turn_numerics \
+  --output-dir /path/to/new/scalar-audit
+```
 
 ## Fixed timing inputs
 
@@ -105,6 +112,31 @@ arbitrary bounded speed profiles and can therefore reject more inputs. Compare
 zero-width speed intervals or the effective-core measurement when separating
 interface overhead from the cost of its broader motion class.
 
+## Comparing directional modes
+
+`paper.validate_directional_production` compares the current scalar, endpoint
+direction and endpoint-plus-hull direction modes. Its optional `--baseline`
+argument takes a directory containing a complete `geometric_safety/` package,
+not an individual solver file:
+
+```bash
+uv run --locked python -m paper.validate_directional_production \
+  --inputs paper/fixtures/heading_encounters.json \
+  --baseline /path/to/baseline \
+  --output /path/to/directional.json
+```
+
+The baseline uses the same isolated Linux worker as the package benchmark.
+The report's `baseline` object records every module hash, runtime versions and
+checked decisions, replacing the single-file `baseline_sha256` field. Baseline
+timings are measured inside that worker; compilation, preparation and IPC are
+excluded. The candidate modes are measured in the calling process.
+
+This comparison requires the baseline's decisions to match the current scalar
+mode. A difference stops the comparison. Use `paper.benchmark_library_versions`
+when comparing versions with known decision changes. Omitting `--baseline`
+compares only the three current modes and records `baseline: null`.
+
 ## Comparing two versions of the heading interface
 
 An additional baseline package can be supplied to the benchmark using
@@ -130,3 +162,12 @@ check adds 20,000 seeded encounters and 33 numerical-guard boundary cases.
 It checks decisions and distance diagnostics, and reports changes in time
 diagnostics separately. A changed decision, missing records or mismatched
 case identifiers prevents a successful summary.
+
+Each source path must contain a `geometric_safety/` package. Package-only
+exports and full archived checkouts are supported. Workers import the selected
+package before loading the current validation tools, and verify its location
+and source hashes. They do not use an archived checkout's `paper/` tools.
+
+For a focused regression comparison, `--saved-only` evaluates only the supplied
+cases. Its reports record that the seeded and boundary cases were omitted.
+Omit this option for the standard comparison described above.
