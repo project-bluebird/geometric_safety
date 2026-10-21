@@ -34,6 +34,16 @@ def example(preset_id: str = "vertical_clearance") -> VisualParams:
     return next(p.params for p in presets() if p.id == preset_id).model_copy(deep=True)
 
 
+@pytest.mark.parametrize("endpoint", ["/api/time_sweep", "/api/grid"])
+@pytest.mark.parametrize("rounding", [True, False])
+def test_visualiser_does_not_coerce_boolean_rounding(client: TestClient, endpoint: str, rounding: bool) -> None:
+    payload = example().model_dump()
+    payload["vertical_rounding_fl"] = rounding
+    response = client.post(endpoint, json=payload)
+    assert response.status_code == 422
+    assert "vertical_rounding_fl" in response.text
+
+
 @pytest.mark.parametrize("filename", ["relevant_aircraft.js", "relevant_aircraft.css"])
 def test_page_refreshes_changed_assets(tmp_path: Path, filename: str) -> None:
     # Use a complete app copy to change real served assets without altering the

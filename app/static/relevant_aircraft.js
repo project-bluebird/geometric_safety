@@ -94,6 +94,7 @@
   let detailRequest = null;
   /** @type {AbortController | null} */
   let gridRequest = null;
+  let gridRevision = 0;
   /** @type {number | null} */
   let pending = null;
   /** @param {string} id @param {string} value @returns {void} */
@@ -352,8 +353,7 @@
         "certified_safe",
         "unresolved",
         "unsupported",
-      ]) &&
-      isPoint(value.b_position_m)
+      ])
     );
   }
 
@@ -464,7 +464,10 @@
   function invalidate(keepGrid = false) {
     revision += 1;
     detailRequest?.abort();
-    gridRequest?.abort();
+    if (!keepGrid) {
+      gridRevision += 1;
+      gridRequest?.abort();
+    }
     if (pending !== null) clearTimeout(pending);
     detail = null;
     ["plots", "timeControls", "resultFacts", "geometryNotice"].forEach((id) => {
@@ -1211,7 +1214,7 @@
     gridRequest?.abort();
     const request = new AbortController();
     gridRequest = request;
-    const currentRevision = revision;
+    const currentRevision = gridRevision;
     text("gridStatus", "Evaluating map…");
     try {
       const data = checked(
@@ -1219,13 +1222,13 @@
         isGrid,
         "position map",
       );
-      if (currentRevision !== revision || request.signal.aborted) return;
+      if (currentRevision !== gridRevision || request.signal.aborted) return;
       grid = data;
       $("gridCanvas").hidden = false;
       drawGrid();
       renderGridStatus();
     } catch (error) {
-      if (!request.signal.aborted && currentRevision === revision)
+      if (!request.signal.aborted && currentRevision === gridRevision)
         text("gridStatus", errorMessage(error));
     }
   }
@@ -1367,7 +1370,6 @@
     invalidate(true);
     inputElement("b_lat").value = String(grid.lats[i]);
     inputElement("b_lon").value = String(grid.lons[j]);
-    grid.b_position_m = [grid.east_m[j], grid.north_m[i]];
     selectElement("preset").value = "custom";
     text("presetDescription", "Aircraft B’s position selected from the map.");
     drawGrid();

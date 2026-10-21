@@ -136,7 +136,6 @@ export interface GridPayload {
   lons: number[];
   statuses: Status[][];
   counts: Record<Status, number>;
-  b_position_m: Point;
 }
 
 export interface Preset {

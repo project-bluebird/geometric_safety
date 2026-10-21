@@ -349,6 +349,23 @@ def test_error_units_api_parity_and_map_selection(page: Page, live_url: str) -> 
     expect(page.locator("#gridCanvas")).to_be_visible()
 
 
+def test_position_edit_preserves_an_inflight_map_request(page: Page) -> None:
+    page.locator("#mapSection > summary").click()
+    page.locator("#grid_density").fill("15")
+    # Start the real request and edit B in one browser task, before a response can
+    # be delivered. The grid depends on the other declarations, not B's selection.
+    with page.expect_response(lambda response: response.url.endswith("/api/grid")) as pending:
+        page.evaluate("""() => {
+            document.getElementById('refreshGridBtn').click();
+            const latitude = document.getElementById('b_lat');
+            latitude.value = String(Number(latitude.value) + 0.02);
+            latitude.dispatchEvent(new Event('input', {bubbles: true}));
+        }""")
+    assert pending.value.ok, pending.value.text()
+    expect(page.locator("#gridStatus")).to_contain_text("certified ·")
+    expect(page.locator("#gridCanvas")).to_be_visible()
+
+
 def test_fixed_axes_altitude_ticks_and_responsive_layout(page: Page, tmp_path: Path) -> None:
     ticks = NUMBERS.validate_python(
         page.evaluate(

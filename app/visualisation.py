@@ -77,7 +77,7 @@ class VisualParams(BaseModel):
     vertical_enabled: bool = False
     minimum_vertical_rate_fpm: float = Field(default=1000.0, ge=0.0, le=10_000.0)
     required_vertical_gap_fl: float = Field(default=10.0, gt=0.0, le=100.0)
-    vertical_rounding_fl: int = Field(default=10, ge=0, le=100)
+    vertical_rounding_fl: int = Field(default=10, ge=0, le=100, strict=True)
     grid_density: int = Field(default=41, ge=15, le=101)
     view_half_extent_nm: float = Field(default=25.0, ge=5.0, le=100.0)
 
@@ -156,7 +156,6 @@ class GridPayload:
     lons: list[float]
     statuses: list[list[Status]]
     counts: dict[Status, int]
-    b_position_m: Point
 
 
 def _certify(params: VisualParams, a: HeadingMotion, b: HeadingMotion, b_lat: float, b_lon: float) -> Certificate:
@@ -334,8 +333,7 @@ def build_grid(params: VisualParams) -> GridPayload:
     for row in statuses:
         for status in row:
             counts[status] += 1
-    relative = _relative_position_from_latlon(params.a.lat, params.a.lon, params.b.lat, params.b.lon)
-    return GridPayload(axis, axis, lats, lons, statuses, counts, (-relative[0], -relative[1]))
+    return GridPayload(axis, axis, lats, lons, statuses, counts)
 
 
 class Preset(BaseModel):
