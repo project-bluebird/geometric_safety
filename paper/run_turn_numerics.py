@@ -29,6 +29,7 @@ import numba
 import numpy as np
 
 from geometric_safety import relevant_aircraft as ra
+from paper.isolated_worker import run_isolated
 from paper.numerical_validation import (
     ProductionSolver,
     ReferenceCertificate,
@@ -402,7 +403,13 @@ def main() -> None:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--calibration", type=int, default=600)
     parser.add_argument("--validation", type=int, default=1800)
+    parser.add_argument("--audit-worker", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
+    if not args.audit_worker:
+        run_isolated(
+            "paper.run_turn_numerics", [*sys.argv[1:], "--audit-worker"], Path(ra.__file__).resolve().parents[1]
+        )
+        return
     args.output_dir.mkdir(parents=True, exist_ok=False)
     mp.mp.dps = 80
     solver, instrumented_source = traced_solver()

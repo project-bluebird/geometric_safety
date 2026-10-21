@@ -6,6 +6,11 @@ development dependencies installed by `uv sync --locked`. Each pytest run uses
 a fresh Numba cache, because persistent compiled callers can retain an older
 version of an imported helper.
 
+The numerical audits also execute in isolated processes with fresh Python bytecode and compiler
+caches, including calls to `numerical_checks`. Workers check package and harness
+hashes before importing the library and after completing the calculation.
+Directional benchmarks also verify their input file across this interval.
+
 ## Independent numerical reference
 
 ```bash

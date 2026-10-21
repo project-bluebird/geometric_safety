@@ -20,6 +20,7 @@ import math
 import os
 from pathlib import Path
 import subprocess
+import sys
 from tempfile import TemporaryDirectory
 import time
 from typing import TypedDict, cast
@@ -47,7 +48,7 @@ from paper.benchmark_contracts import (
     string,
 )
 from paper.benchmark_library_versions import Case, Worker, start_worker
-from paper.isolated_worker import worker_command
+from paper.isolated_worker import run_isolated, worker_command
 from paper.numerical_validation import (
     FloatArray,
     ProductionSolver,
@@ -280,6 +281,22 @@ def traced_solver() -> StudySolver:
 
 
 def numerical_checks(n: int, seed: int) -> NumericalResult:
+    """Audit the selected package in a new process, independent of loaded JIT code."""
+    require_positive_encounters(n)
+    with TemporaryDirectory(prefix="directional-audit-") as directory:
+        output = Path(directory) / "audit.json"
+        run_isolated(
+            "paper.validate_directional_production",
+            ["--numerical-worker", "--encounters", str(n), "--seed", str(seed), "--output", str(output)],
+            Path(ra.__file__).resolve().parent.parent,
+        )
+        # This private worker writes NumericalResult directly after validating it.
+        result = cast("NumericalResult", json.loads(output.read_text()))
+    validate_numerical_result(result)
+    return result
+
+
+def _numerical_checks_current_process(n: int, seed: int) -> NumericalResult:
     require_positive_encounters(n)
     # Numba's ParamSpec dispatcher stubs do not preserve TypedDict/tuple unpacking in ty.
     production_solver = cast("ProductionSolver", ra._catch_up_projection_interval_with_turns_local)
@@ -474,13 +491,15 @@ def benchmark(inputs: Path, baseline: Path | None = None) -> BenchmarkResult:
     if baseline is not None and not (baseline / "geometric_safety" / "__init__.py").is_file():
         raise ValueError("Baseline must be a directory containing a complete geometric_safety package")
     package = Path(ra.__file__).resolve().parent
+    source_hashes = module_hashes(package)
+    inputs_hash = hashlib.sha256(inputs.read_bytes()).hexdigest()
     with TemporaryDirectory(prefix="directional-candidate-") as directory:
         output = Path(directory) / "benchmark.json"
         arguments = ["--benchmark-worker", "--inputs", str(inputs.resolve()), "--output", str(output)]
         if baseline is not None:
             arguments.extend(("--baseline", str(baseline.resolve())))
         completed = subprocess.run(
-            worker_command("paper.validate_directional_production", arguments, package.parent),
+            worker_command("paper.validate_directional_production", arguments, package.parent, inputs=(inputs,)),
             env=dict(os.environ, NUMBA_CACHE_DIR=str(Path(directory) / "cache"), PYTHONDONTWRITEBYTECODE="1"),
             capture_output=True,
             text=True,
@@ -489,9 +508,9 @@ def benchmark(inputs: Path, baseline: Path | None = None) -> BenchmarkResult:
         if completed.returncode:
             raise RuntimeError(f"Directional benchmark worker failed:\n{completed.stderr}")
         result = _parse_benchmark_result(object_json(output.read_text()))
-    if result["source_sha256"] != module_hashes(package):
+    if result["source_sha256"] != source_hashes or source_hashes != module_hashes(package):
         raise RuntimeError("Directional candidate package changed during measurement")
-    if result["inputs_sha256"] != hashlib.sha256(inputs.read_bytes()).hexdigest():
+    if result["inputs_sha256"] != inputs_hash or inputs_hash != hashlib.sha256(inputs.read_bytes()).hexdigest():
         raise RuntimeError("Directional benchmark inputs changed during measurement")
     return result
 
@@ -623,16 +642,33 @@ def _benchmark_current_process(inputs: Path, baseline: Path | None = None) -> Be
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--inputs", type=Path, required=True)
+    parser.add_argument("--inputs", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument(
         "--baseline", type=Path, help="Directory containing the complete baseline geometric_safety package"
     )
     parser.add_argument("--benchmark-worker", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--numerical-worker", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--audit-worker", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--encounters", type=int, default=512, help=argparse.SUPPRESS)
+    parser.add_argument("--seed", type=int, default=2026092031, help=argparse.SUPPRESS)
     args = parser.parse_args()
+    if args.numerical_worker:
+        metrics = _numerical_checks_current_process(args.encounters, args.seed)
+        args.output.write_text(json.dumps(metrics) + "\n")
+        return
+    if args.inputs is None:
+        parser.error("--inputs is required for the full audit and benchmark")
     if args.benchmark_worker:
         result = _benchmark_current_process(args.inputs, args.baseline)
         args.output.write_text(json.dumps(result) + "\n")
+        return
+    if not args.audit_worker:
+        run_isolated(
+            "paper.validate_directional_production",
+            [*sys.argv[1:], "--audit-worker"],
+            Path(ra.__file__).resolve().parents[1],
+        )
         return
     output: dict[str, str | dict[str, str] | NumericalResult | BenchmarkResult] = {
         "source_sha256": module_hashes(Path(ra.__file__).parent),
@@ -643,7 +679,7 @@ def main() -> None:
         "reference_source_sha256": hashlib.sha256(Path(inspect.getfile(certificate)).read_bytes()).hexdigest(),
     }
     for split, n, seed in (("calibration", 128, 2026092030), ("validation", 512, 2026092031)):
-        split_result = numerical_checks(n, seed)
+        split_result = _numerical_checks_current_process(n, seed)
         output[split] = split_result
         print(json.dumps({k: v for k, v in split_result.items() if k != "records"}), flush=True)
     benchmark_result = benchmark(args.inputs, args.baseline)

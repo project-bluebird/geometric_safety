@@ -10,7 +10,7 @@ import os
 from pathlib import Path
 import random
 import subprocess
-from typing import Literal, TypedDict
+from typing import TYPE_CHECKING, Literal, TypedDict
 
 from geometric_safety import heading, relevant_aircraft as ra
 from paper.benchmark_contracts import (
@@ -30,7 +30,9 @@ from paper.benchmark_contracts import (
 )
 from paper.benchmark_library_versions import KT, Case, read_cases
 from paper.isolated_worker import worker_command
-from paper.numerical_validation import SolverResult
+
+if TYPE_CHECKING:
+    from paper.numerical_validation import SolverResult
 
 
 class ParityInterface(TypedDict):

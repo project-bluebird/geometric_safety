@@ -11,12 +11,24 @@ import shutil
 import signal
 import subprocess
 import sys
+import sysconfig
+import tarfile
 from typing import TextIO
+import venv
 
 import pytest
 
 from geometric_safety import relevant_aircraft as ra
-from paper.benchmark_contracts import TimingRequest, WorkerRole, list_value, module_hashes, object_json, object_value
+from paper.benchmark_contracts import (
+    TimingRequest,
+    WorkerRole,
+    list_value,
+    module_hashes,
+    object_json,
+    object_value,
+    parse_response,
+    parse_worker_header,
+)
 from paper.benchmark_library_versions import (
     Case,
     Worker,
@@ -24,8 +36,9 @@ from paper.benchmark_library_versions import (
     shutdown_process,
     start_worker,
 )
+from paper.isolated_worker import worker_command
 from paper.validate_directional_production import benchmark
-from paper.validate_performance_parity import compare_reports, run_worker
+from paper.validate_performance_parity import compare_reports, read_parity_report, run_worker
 
 
 def _snapshot(destination: Path, *, archived_paper: bool = False, without_heading: bool = False) -> Path:
@@ -438,6 +451,8 @@ def test_directional_candidate_recompiles_after_a_helper_edit(tmp_path: Path) ->
     harness = Path(__file__).resolve().parents[2]
     code = """
 import sys
+import sysconfig
+import tarfile
 from pathlib import Path
 sys.path.insert(0, sys.argv[1])
 import geometric_safety
@@ -461,3 +476,169 @@ benchmark(Path(sys.argv[3]))
     changed = subprocess.run(command, env=environment, capture_output=True, text=True, check=False)
     assert changed.returncode != 0, changed.stdout
     assert "accepted a reference-unsafe case" in changed.stderr
+
+
+@pytest.mark.parametrize("changed_file", ["package", "inputs"])
+def test_directional_benchmark_rejects_edits_during_package_import(tmp_path: Path, changed_file: str) -> None:
+    source = _snapshot(tmp_path / "candidate")
+    inputs = _directional_inputs(tmp_path / "inputs.json")
+    target = source / "geometric_safety/util.py" if changed_file == "package" else inputs
+    initialiser = source / "geometric_safety/__init__.py"
+    # A real package edits a source/input file during worker import. This is
+    # deterministic and exercises the interval before compilation and timing.
+    with initialiser.open("a") as handle:
+        handle.write(
+            "\nimport sys\nfrom pathlib import Path\n"
+            "if '--module' in sys.argv:\n"
+            f"    changed = Path({str(target)!r})\n"
+            "    changed.write_text(changed.read_text() + '\\n')\n"
+        )
+    code = """
+import sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+import geometric_safety
+sys.path.insert(0, sys.argv[2])
+from paper.validate_directional_production import benchmark
+benchmark(Path(sys.argv[3]))
+"""
+    completed = subprocess.run(
+        [sys.executable, "-I", "-c", code, str(source), str(Path(__file__).parents[2]), str(inputs)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode != 0, completed.stdout
+    assert "changed during" in completed.stderr
+
+
+def test_parity_evaluates_an_archived_package_without_instrumentation(tmp_path: Path) -> None:
+    # Complete package exported from 553df793c7cb68a391cfa5f988004151b27bf126.
+    archive = Path(__file__).parents[1] / "fixtures" / "library-553df793.tar.gz"
+    source = tmp_path / "archived"
+    with tarfile.open(archive) as package:
+        package.extractall(source, filter="data")
+    assert not (source / "geometric_safety" / "_instrumentation.py").exists()
+    assert (source / "geometric_safety" / "heading.py").is_file()
+    cases = _case_file(tmp_path / "cases.json")
+    baseline = run_worker(source, cases, tmp_path / "baseline.json", tmp_path / "baseline_cache", saved_only=True)
+    current = run_worker(
+        Path(ra.__file__).parents[1], cases, tmp_path / "current.json", tmp_path / "current_cache", saved_only=True
+    )
+    assert baseline["package_root"] == str((source / "geometric_safety").resolve())
+    assert baseline["source_sha256"] == module_hashes(source / "geometric_safety")
+    assert [row["core"][0] for row in baseline["records"]] == [True, True, False]
+    assert [row["interface"]["status"] for row in baseline["records"]] == [
+        "certified_safe",
+        "certified_safe",
+        "unresolved",
+    ]
+    assert compare_reports(baseline, current)["cases"] == 3
+
+
+@pytest.fixture
+def installed_candidate(tmp_path: Path) -> tuple[Path, Path]:
+    environment = tmp_path / "environment"
+    venv.EnvBuilder(with_pip=False).create(environment)
+    python = environment / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    result = subprocess.run(
+        [str(python), "-I", "-c", "import sysconfig; print(sysconfig.get_path('purelib'))"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    site_packages = Path(result.stdout.strip())
+    # Install the complete library in this environment. Reuse the locked
+    # dependencies without copying the parent environment's editable finder.
+    _snapshot(site_packages)
+    (site_packages / "dependencies.pth").write_text(sysconfig.get_path("purelib") + "\n")
+    module = site_packages / "geometric_safety" / "relevant_aircraft.py"
+    source = module.read_text()
+    guard = "TURN_CERT_FP_GUARD_M = 1e-6"
+    assert source.count(guard) == 1
+    module.write_text(source.replace(guard, "TURN_CERT_FP_GUARD_M = 1.0"))
+    normal_import = subprocess.run(
+        [str(python), "-I", "-c", "import geometric_safety; print(geometric_safety.__file__)"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert Path(normal_import.stdout.strip()) == site_packages / "geometric_safety" / "__init__.py"
+    return python, site_packages
+
+
+@pytest.mark.parametrize("explicit_source", [False, True])
+def test_worker_selects_installed_candidate_unless_source_is_explicit(
+    tmp_path: Path, installed_candidate: tuple[Path, Path], explicit_source: bool
+) -> None:
+    python, installed = installed_candidate
+    checkout = Path(ra.__file__).parents[1]
+    selected = checkout if explicit_source else installed
+    output = tmp_path / "parity.json"
+    command = worker_command(
+        "paper.validate_performance_parity",
+        ["--worker", "--saved-only", "--cases", str(_case_file(tmp_path / "cases.json")), "--output", str(output)],
+        checkout if explicit_source else None,
+    )
+    command[0] = str(python)
+    subprocess.run(command, check=True, capture_output=True, text=True)
+    report = read_parity_report(output)
+    assert module_hashes(installed / "geometric_safety") != module_hashes(checkout / "geometric_safety")
+    assert report["package_root"] == str((selected / "geometric_safety").resolve())
+    assert report["source_sha256"] == module_hashes(selected / "geometric_safety")
+    assert [row["core"][0] for row in report["records"]] == [True, explicit_source, False]
+    assert [row["interface"]["status"] for row in report["records"]] == [
+        "certified_safe",
+        "certified_safe" if explicit_source else "unresolved",
+        "unresolved",
+    ]
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Benchmark workers record Linux CPU affinity")
+def test_benchmark_measures_installed_candidate_without_source(
+    tmp_path: Path, installed_candidate: tuple[Path, Path]
+) -> None:
+    python, installed = installed_candidate
+    command = worker_command(
+        "paper.benchmark_library_versions",
+        ["--worker", "current", "--cases", str(_case_file(tmp_path / "cases.json"))],
+    )
+    command[0] = str(python)
+    request = TimingRequest(op="time", method="core_compiled", indices=[0, 1, 2], repeats=2)
+    result = subprocess.run(
+        command, input=json.dumps(request) + '\n{"op": "stop"}\n', check=True, capture_output=True, text=True
+    )
+    lines = result.stdout.splitlines()
+    assert len(lines) == 2
+    header = parse_worker_header(object_json(lines[0]))
+    assert header["source_sha256"] == module_hashes(installed / "geometric_safety")
+    assert header["source_sha256"] != module_hashes(Path(ra.__file__).parent)
+    assert header["outcomes"]["core_python"] == header["outcomes"]["core_compiled"] == [True, False, False]
+    assert header["outcomes"]["interface_prebuilt"] == [True, False, False]
+    response = parse_response(lines[1], 3)
+    assert all(math.isfinite(value) and value > 0.0 for value in response["wall_us"])
+
+
+@pytest.mark.parametrize("missing", ["package", "submodule"])
+def test_installed_candidate_does_not_fall_back_to_checkout(
+    tmp_path: Path, installed_candidate: tuple[Path, Path], missing: str
+) -> None:
+    python, installed = installed_candidate
+    package = installed / "geometric_safety"
+    if missing == "package":
+        shutil.rmtree(package)
+    else:
+        (package / "heading.py").unlink()
+    output = tmp_path / "parity.json"
+    command = worker_command(
+        "paper.validate_performance_parity",
+        ["--worker", "--saved-only", "--cases", str(_case_file(tmp_path / "cases.json")), "--output", str(output)],
+    )
+    command[0] = str(python)
+    result = subprocess.run(command, check=False, capture_output=True, text=True)
+    assert result.returncode != 0
+    if missing == "package":
+        assert "ModuleNotFoundError: No installed geometric_safety package" in result.stderr
+    else:
+        assert "ModuleNotFoundError: geometric_safety.heading is absent from the selected library" in result.stderr
+    assert not output.exists()

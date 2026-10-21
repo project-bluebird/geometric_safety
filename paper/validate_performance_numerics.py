@@ -3,10 +3,12 @@
 import argparse
 import json
 from pathlib import Path
+import sys
 
 from geometric_safety import relevant_aircraft as ra
 from paper import numerical_validation, turn_numerical_reference, validate_directional_production
 from paper.benchmark_contracts import digest
+from paper.isolated_worker import run_isolated
 from paper.validate_directional_production import NumericalResult
 
 
@@ -20,8 +22,16 @@ class PerformanceNumericalResult(NumericalResult):
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--audit-worker", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
-    metrics = validate_directional_production.numerical_checks(512, 2026092031)
+    if not args.audit_worker:
+        run_isolated(
+            "paper.validate_performance_numerics",
+            [*sys.argv[1:], "--audit-worker"],
+            Path(ra.__file__).resolve().parents[1],
+        )
+        return
+    metrics = validate_directional_production._numerical_checks_current_process(512, 2026092031)
     report = PerformanceNumericalResult(
         **metrics,
         source_sha256={
