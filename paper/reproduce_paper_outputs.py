@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 import hashlib
 import json
 import os
@@ -96,7 +96,7 @@ def parse_args() -> argparse.Namespace:
         "--archive",
         type=Path,
         default=None,
-        help="Compact paper-run .tar.gz archive to import empirical figures from.",
+        help="Paper-run .tar.gz archive containing saved clearance-grid data and empirical figures.",
     )
     parser.add_argument(
         "--grid-density",
@@ -134,11 +134,17 @@ def find_latest_paper_run_archive(library_root: Path) -> Path | None:
     """Return the newest compact paper-run archive, if one exists."""
     result_dir = library_root / "paper" / "results"
     archives = sorted(
-        (path for path in result_dir.glob("*.tar.gz") if not path.name.startswith("projection_")),
+        result_dir.glob("*.tar.gz"),
         key=lambda path: path.stat().st_mtime,
         reverse=True,
     )
-    return archives[0] if archives else None
+    for path in archives:
+        with tarfile.open(path, "r:gz") as archive:
+            if any(
+                member.isfile() and member.name.endswith("/main_evaluation/campaign_summary.json") for member in archive
+            ):
+                return path
+    return None
 
 
 def locate_run_root(path: Path) -> Path:
@@ -195,7 +201,7 @@ def relative_to_root(path: Path, root: Path) -> str:
         return str(path.resolve())
 
 
-def run_application_figures(args: argparse.Namespace) -> list[dict[str, str]]:
+def run_application_figures(args: argparse.Namespace, run_root: Path | None) -> list[dict[str, str]]:
     records: list[dict[str, str]] = []
     manuscript_root = args.manuscript_root.resolve()
     library_root = args.library_root.resolve()
@@ -227,23 +233,33 @@ def run_application_figures(args: argparse.Namespace) -> list[dict[str, str]]:
                     ]
                 )
             else:
-                with resolved_run_root(
-                    run_root=args.run_root, archive=args.archive, library_root=library_root
-                ) as run_root:
-                    saved_source = run_root / "rendered_figures/application/fig_clearance_grid_source.json.gz"
-                    if not saved_source.is_file():
-                        raise FileNotFoundError(f"Missing saved clearance-grid source: {saved_source}")
-                    print(
-                        "IMPORT clearance-grid source: "
-                        "saved-paper-run/rendered_figures/application/fig_clearance_grid_source.json.gz"
-                    )
-                    if not args.dry_run:
-                        source_path.parent.mkdir(parents=True, exist_ok=True)
-                        shutil.copy2(saved_source, source_path)
+                if run_root is None:
+                    raise ValueError("A saved paper run is required to render the clearance grid")
+                saved_source = run_root / "rendered_figures/application/fig_clearance_grid_source.json.gz"
+                if not saved_source.is_file():
+                    raise FileNotFoundError(f"Missing saved clearance-grid source: {saved_source}")
+                print(
+                    "IMPORT clearance-grid source: "
+                    "saved-paper-run/rendered_figures/application/fig_clearance_grid_source.json.gz"
+                )
+                if not args.dry_run:
+                    source_path.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(saved_source, source_path)
                 command.append("--read-source-json")
         print(f"RENDER {label}: {relative_to_root(output_path, manuscript_root)}")
         if not args.dry_run:
             subprocess.run(command, cwd=library_root, check=True)
+            if source_path is not None:
+                records.append(
+                    {
+                        "label": "clearance-grid source",
+                        "output": relative_to_root(source_path, manuscript_root),
+                        "source": module_name
+                        if args.recompute_clearance_grid
+                        else "saved-paper-run/rendered_figures/application/fig_clearance_grid_source.json.gz",
+                        "sha256": sha256_file(source_path),
+                    }
+                )
             records.append(
                 {
                     "label": label,
@@ -255,31 +271,26 @@ def run_application_figures(args: argparse.Namespace) -> list[dict[str, str]]:
     return records
 
 
-def copy_empirical_figures(args: argparse.Namespace) -> list[dict[str, str]]:
+def copy_empirical_figures(args: argparse.Namespace, run_root: Path) -> list[dict[str, str]]:
     records: list[dict[str, str]] = []
     manuscript_root = args.manuscript_root.resolve()
-    with resolved_run_root(
-        run_root=args.run_root,
-        archive=args.archive,
-        library_root=args.library_root.resolve(),
-    ) as run_root:
-        for label, source_rel, target_rel in EMPIRICAL_FIGURES:
-            source_path = run_root / source_rel
-            target_path = manuscript_root / target_rel
-            if not source_path.exists():
-                raise FileNotFoundError(f"Missing rendered source for {label}: {source_path}")
-            print(f"IMPORT {label}: {relative_to_root(target_path, manuscript_root)}")
-            if not args.dry_run:
-                target_path.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(source_path, target_path)
-                records.append(
-                    {
-                        "label": label,
-                        "output": relative_to_root(target_path, manuscript_root),
-                        "source": f"saved-paper-run/{source_rel}",
-                        "sha256": sha256_file(target_path),
-                    }
-                )
+    for label, source_rel, target_rel in EMPIRICAL_FIGURES:
+        source_path = run_root / source_rel
+        target_path = manuscript_root / target_rel
+        if not source_path.exists():
+            raise FileNotFoundError(f"Missing rendered source for {label}: {source_path}")
+        print(f"IMPORT {label}: {relative_to_root(target_path, manuscript_root)}")
+        if not args.dry_run:
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source_path, target_path)
+            records.append(
+                {
+                    "label": label,
+                    "output": relative_to_root(target_path, manuscript_root),
+                    "source": f"saved-paper-run/{source_rel}",
+                    "sha256": sha256_file(target_path),
+                }
+            )
     return records
 
 
@@ -305,10 +316,22 @@ def main() -> None:
     args.manuscript_root = args.manuscript_root.resolve()
 
     records: list[dict[str, str]] = []
-    if not args.skip_application:
-        records.extend(run_application_figures(args))
-    if not args.skip_empirical:
-        records.extend(copy_empirical_figures(args))
+    with ExitStack() as stack:
+        run_root = None
+        if not args.skip_empirical or (not args.skip_application and not args.recompute_clearance_grid):
+            run_root = stack.enter_context(
+                resolved_run_root(
+                    run_root=args.run_root,
+                    archive=args.archive,
+                    library_root=args.library_root,
+                )
+            )
+        if not args.skip_application:
+            records.extend(run_application_figures(args, run_root))
+        if not args.skip_empirical:
+            if run_root is None:
+                raise ValueError("A saved paper run is required to import empirical figures")
+            records.extend(copy_empirical_figures(args, run_root))
     write_manifest(args, records)
 
 

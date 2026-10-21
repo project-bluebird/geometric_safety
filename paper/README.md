@@ -261,6 +261,11 @@ remain scalar. Full row output includes `near_threshold_production_rows.csv`
 (or `.csv.gz`) for this pass. Archived evaluations retain the settings used to generate them,
 and aggregation rejects a mixture of scalar and directional default results.
 
+Without an explicit archive, figure reproduction selects the newest archive
+containing a paper evaluation summary. The archive is extracted once for both
+the clearance-grid source and empirical figures. The manifest records a separate
+hash for the saved grid data as well as for its rendered PDF.
+
 To export a different archive, use the
 [archive reproduction command](#reproducing-from-the-included-archive) with that
 archive's path as `--archive`.
