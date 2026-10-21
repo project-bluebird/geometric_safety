@@ -1,381 +1,121 @@
-"""
-Relative-aircraft catch-up projection using convex geometry.
+"""Continuous-time lateral separation under bounded speed uncertainty.
 
-Plain-language overview
------------------------
-This module asks a practical controller-style question:
+The straight-heading solver projects onto one displacement hull over the full
+horizon. The turn-aware solver constructs fixed-time relative-position hulls and
+certifies the intervals between samples. Each aircraft may make one fixed-rate
+shortest turn, then continue on its target heading. These low-level functions use
+constant speeds during turns; the heading interface adds envelopes for bounded
+speed variation. See docs/motion-models.md for interface assumptions and limits.
 
-    "Given where two aircraft are now, where they are pointed, how fast they might be
-    going, and how they may turn, can they possibly come too close within the next
-    few minutes?"
+The derivation below uses exact real arithmetic. The implementation uses floating
+point and a comparison margin, TURN_CERT_FP_GUARD_M. That margin is not a proved
+error bound for the complete calculation. A False result can mean a separation
+loss or an interval that could not be certified; it does not establish a conflict.
 
-The key idea is not to simulate one nominal future. Instead, we construct the entire
-envelope of futures allowed by the model and then ask whether any member of that
-envelope enters the protected separation region.
-
-There are two versions of the calculation:
-
-1. Straight-heading method
-   If both aircraft keep a fixed heading, the full set of possible relative motions can
-   be collapsed into one convex 2-D shape. The problem then becomes: how close can that
-   shape come to the origin? Under its assumptions, this version is exact.
-
-2. Turn-aware method
-   If one or both aircraft are turning at a fixed rate toward a target heading, the
-   possible relative positions still form a simple convex shape at any one chosen time,
-   but that shape changes over time. The method therefore:
-   - computes the exact worst-case distance at selected times,
-   - certifies whole time intervals using an interval-local bound on how fast the
-     reachable hull can move,
-   - and treats any interval that cannot be certified finely enough as unsafe.
-
-In short:
-
-    straight flight -> one exact geometric check,
-    turning flight -> many exact geometric checks plus a conservative time certificate.
-
-This means the turn-aware version is intentionally cautious: it should only say "safe"
-when the whole modelled time horizon has been certified safe. The public API also
-offers an optional additional robustness buffer for in-turn speed variation beyond the
-core constant-speed turn model.
-
-Formal statement
-----------------
-The remainder of this docstring recasts the same idea in a more formal style.
-
-The underlying question is:
-
-    Given two aircraft states now, bounded speed uncertainty, and a finite horizon
-    [0, T], can any admissible motion bring the aircraft closer than a required
-    separation distance D?
-
-Both public methods answer that same decision problem, but under different kinematic
-models:
-
-1. `catch_up_projection_interval`
-   Exact for fixed headings and bounded constant speeds.
-2. `catch_up_projection_interval_with_turns`
-   Exact in speed and conservative in time when each aircraft may execute one fixed-rate
-   turn toward a target heading and then continue straight.
-
-The sections below are intended to bridge implementation and exposition: they define the
-objects being optimised, explain why the straight-line method reduces to a single convex
-projection, and explain why the turning method requires a certified search in time.
-
-
-Problem statement
------------------
-Fix a local east/north tangent plane. Let
-
-    p_A(0), p_B(0) in R^2
-
-be the current aircraft positions, and define the initial relative position
-
-    r_0 = p_A(0) - p_B(0).
-
-Let each aircraft speed lie in a closed interval
-
-    s_A in [s_A^-, s_A^+],   s_B in [s_B^-, s_B^+],
-
-with speeds treated as constant over the projection horizon once chosen. The core
-quantity of interest is
-
-    d_* = min ||p_A(t) - p_B(t)||
-          over t in [0, T] and all admissible speeds.
-
-The safety decision is then simply:
-
-    safe  <=>  d_* >= D.
-
-So the aim is not to predict one nominal closest approach, but to bound the worst case
-over an admissible envelope of motion.
-
-
-Method 1: Straight headings
----------------------------
-For the straight-line model, each aircraft has a fixed heading. If `u_A` and `u_B` are
-the corresponding unit heading vectors, then
-
-    p_A(t) = p_A(0) + t s_A u_A,
-    p_B(t) = p_B(0) + t s_B u_B.
-
-Hence the relative motion is
+Straight-heading geometry
+-------------------------
+In local east/north coordinates, let r_0 = p_A(0) - p_B(0), with speeds in closed
+intervals [s_A^-, s_A^+] and [s_B^-, s_B^+]. For fixed unit headings u_A and u_B,
 
     r(t) = r_0 + t (s_A u_A - s_B u_B).
 
-The set of admissible relative velocities is the image of the speed rectangle under an
-affine map:
+The relative-velocity set is the affine image of the speed rectangle:
 
-    V = { s_A u_A - s_B u_B : s_A in [s_A^-, s_A^+], s_B in [s_B^-, s_B^+] }.
+    V = {s_A u_A - s_B u_B : s_A in [s_A^-, s_A^+], s_B in [s_B^-, s_B^+]}.
 
-Because the speed intervals are one-dimensional, `V` is the convex hull of the four
-corner velocities obtained from the speed extremes. Over the full horizon, the set of
-all admissible relative displacements is
+Its four speed-corner velocities v_i determine the full displacement set:
 
-    S(T) = { t v : t in [0, T], v in V }.
+    S(T) = {t v : t in [0, T], v in V} = conv({0} union {T v_i}).
 
-Since `V` is convex and contains all admissible relative velocities,
-
-    S(T) = conv({0} union {T v_i}),
-
-where `v_i` are the four extreme relative velocities. This reduces the continuous-time
-reachability problem to a single compact convex polygon in displacement space.
-
-The worst-case separation becomes
+Convexity of V gives the second equality. Projecting -r_0 onto S(T) therefore
+finds the worst-case separation over every admissible speed pair and time:
 
     d_* = min_{d in S(T)} ||r_0 + d||.
 
-Equivalently, one projects `-r_0` onto `S(T)`:
+The same reachable set covers measurable time-varying speeds within the fixed
+bounds: at each time, their average speeds lie in those intervals. The helper
+_closest_time_from_projection recovers a time from the displacement geometry
+when that recovery is numerically available.
 
-    d^* = argmin_{d in S(T)} ||d - (-r_0)||.
+One fixed-rate turn, then straight
+---------------------------------
+For initial heading h_0, target h_T and nonzero rate magnitude omega, the turn
+lasts tau = |Delta h| / omega. The shortest signed heading change determines its
+direction. Equal headings give straight flight regardless of the supplied rate;
+a nonzero heading change requires a nonzero rate.
 
-Then
-
-    d_* = ||r_0 + d^*||.
-
-Thus the straight-line method is exact under its model: one convex hull construction and
-one Euclidean projection solve the full problem. The reported closest time is recovered
-geometrically from the location of the projection on the displacement cone.
-
-
-Method 2: One fixed-rate turn, then straight
---------------------------------------------
-The turn-aware method assumes each aircraft follows a deterministic heading profile:
-
-    - start at heading h_0,
-    - turn at fixed rate `turn_rate_deg_sec` toward target heading h_T,
-    - stop turning once the target heading is reached,
-    - continue straight on h_T thereafter.
-
-Let Delta h be the signed heading change and let
-
-    tau = |Delta h| / |turn_rate_deg_sec|
-
-be the turn duration when `turn_rate_deg_sec != 0`. Write the unit heading vector as
-
-    u(h) = (sin h, cos h).
-
-For a fixed speed s, the aircraft position can be written in the form
+With u(h) = (sin h, cos h), position at a fixed speed s is
 
     p(t; s) = p(0) + s b(t),
-
-where the basis vector `b(t)` depends only on the heading profile, not on speed:
-
     b(t) = integral_0^t u(h(xi)) d xi.
 
-Because the heading profile is piecewise simple, this integral is available in closed
-form. During the turn,
+The heading changes linearly during the turn and stays fixed afterwards.
+_turn_displacement_basis integrates the rotating unit vector analytically,
+then adds (t - tau) u(h_T) after the turn. Position is affine in speed, so the
+relative-position set at a chosen time is
 
-    h(t) = h_0 + sigma |turn_rate_deg_sec| t,
+    R(t) = r_0 + {s_A b_A(t) - s_B b_B(t)
+                 : s_A in [s_A^-, s_A^+], s_B in [s_B^-, s_B^+]}.
 
-with `sigma` the turn direction, so `b(t)` is obtained by analytically integrating the
-rotating unit vector. After the turn, one appends the straight segment
+This is a point, segment or parallelogram described by four speed corners.
+Projecting the origin onto it gives d(t) = dist(0, R(t)). Continuous-time
+certification must then bound d_* = min_{t in [0, T]} d(t).
 
-    (t - tau) u(h_T).
+Interval certificates
+---------------------
+Each corner trajectory has velocity s_A u_A(t) - s_B u_B(t). A valid Lipschitz
+constant for d(t) on I = [t_0, t_1] is
 
-This closed-form basis is what `_turn_displacement_basis` computes.
+    L_I = sup_{t in I} max_i ||s_A u_A(t) - s_B u_B(t)||.
 
-The key structural fact is that, at any fixed time t, position is affine in speed.
-Therefore the relative-position set at that time is
+The hull cannot move faster in Hausdorff distance than its fastest corner, and
+distance to a set is 1-Lipschitz in that distance. The global bound
+s_A^+ + s_B^+ is also valid and remains available for scalar ablations.
 
-    R(t) = r_0 + { s_A b_A(t) - s_B b_B(t)
-                   : s_A in [s_A^-, s_A^+], s_B in [s_B^-, s_B^+] }.
-
-Again this is the image of a speed rectangle under an affine map, so `R(t)` is a small
-convex polygon: a point, segment, or parallelogram described by the four speed-corner
-combinations. The exact worst-case distance at time t is then
-
-    d(t) = min_{r in R(t)} ||r||,
-
-which is computed by projecting the origin onto that polygon.
-
-Thus, unlike the straight-line method, the difficulty is no longer the speed envelope at
-a fixed time; that part remains exact and convex. The difficulty is minimising `d(t)`
-over continuous time:
-
-    d_* = min_{t in [0, T]} d(t).
-
-
-Certified adaptive time search
-------------------------------
-The implementation does not march over a fixed time grid. Instead it evaluates `d(t)`
-exactly at selected times and certifies whole time intervals as safe whenever possible.
-
-Let `R(t)` be the fixed-time reachable relative-position hull and let
-
-    d(t) = dist(0, R(t)).
-
-Each hull corner is a trajectory of the form
-
-    r_i(t) = r_0 + s_A b_A(t) - s_B b_B(t),
-
-so its instantaneous speed is
-
-    ||r_i'(t)|| = ||s_A u_A(t) - s_B u_B(t)||.
-
-A valid Lipschitz constant for `d(t)` on an interval `I = [t_0, t_1]` is therefore
-
-    L_I = sup_{t in I} max_i ||r_i'(t)||,
-
-because the convex hull cannot move faster, in Hausdorff distance, than its fastest
-corner and distance-to-set is 1-Lipschitz with respect to that motion.
-
-This is tighter than the simpler global bound
-
-    L_global = s_A^+ + s_B^+,
-
-which remains available as an opt-out for comparison. The local bound is the
-default because it uses the known heading profiles on the interval instead of
-assuming worst-case anti-parallel closing everywhere.
-
-The practical reason this is fast is that each heading profile is piecewise linear in
-time: turn at fixed rate until a known completion time, then hold the target heading.
-Hence the relative heading on any subinterval between turn-completion events is linear.
-For one speed corner pair,
+For a speed-corner pair and relative heading delta(t),
 
     ||s_A u_A(t) - s_B u_B(t)||^2
-        = s_A^2 + s_B^2 - 2 s_A s_B cos(delta(t)),
+        = s_A^2 + s_B^2 - 2 s_A s_B cos(delta(t)).
 
-with `delta(t)` the relative heading. Over a linear-heading subinterval, the maximum is
-attained at an endpoint or at an internal anti-parallel crossing
+Between turn-completion events delta(t) is linear. Its maximum relative speed
+occurs at an endpoint or an anti-parallel crossing, delta(t) = (2k + 1) pi.
+_interval_local_lipschitz_mps checks these candidates on each piece.
 
-    delta(t) = (2k + 1) pi.
-
-So the interval-local bound can be computed exactly with a constant amount of work:
-check the interval endpoints, split only at turn-completion events if needed, and test
-whether an anti-parallel crossing occurs on each linear piece.
-
-Once a Lipschitz constant `L_I` is available, an interval [t_0, t_1] with endpoint
-distances `d_0 = d(t_0)` and `d_1 = d(t_1)` satisfies the lower bound
+Given endpoint distances d_0 and d_1, every time in the interval satisfies
 
     d(t) >= (d_0 + d_1 - L_I (t_1 - t_0)) / 2.
 
-Therefore:
+If this lower bound reaches the required separation, it certifies the interval.
+Otherwise the solver tests fixed separating directions obtained from the endpoint
+hulls and their combined hull. For each speed corner, its projection q(t) obeys
 
-    if (d_0 + d_1 - L_I (t_1 - t_0)) / 2 >= D,
-    the entire interval is certified safe.
+    q(t) >= max(q(t_0) + m (t - t_0), q(t_1) - M (t_1 - t)),
 
-When the scalar bound fails, the solver also tests fixed separating directions from
-the endpoint hulls and their combined hull. Along each direction, bounds on the
-projected velocities give two affine lower bounds for every speed corner, one from
-each interval endpoint. Their maximum bounds that corner throughout the interval.
-Taking the minimum over the four corners covers every admissible speed pair.
+where m and M bound its projected velocity. The minimum over all four corners
+also bounds every convex combination. A direction whose bound reaches the
+threshold therefore certifies the entire reachable hull over the interval.
+_directional_lower_bound_from_samples reuses the cached endpoint geometry.
 
-The algorithm starts with [0, T]. If neither certificate succeeds, it samples the
-midpoint exactly, splits the interval in two, and repeats. Refinement continues until
-each interval is either:
+The search starts with [0, T]. When neither certificate succeeds, it samples the
+midpoint and subdivides. A sampled distance below the threshold rejects the
+query immediately. An interval still uncertified at the minimum width also
+returns False. Deviation envelopes inflate the threshold; their nondecreasing
+bounds are evaluated at the right endpoint to cover the whole interval.
 
-    - certified safe, or
-    - smaller than a configured minimum interval width.
+Numerical geometry and diagnostics
+----------------------------------
+_speed_rectangle_corner_points constructs the shared affine geometry. Both
+convex_hull and its small_convex_hull alias use the same monotone-chain builder
+with filtered orientation predicates and exact expansion arithmetic for uncertain
+signs. If an orientation cannot be resolved, the builder returns an enclosing
+rectangle. Its distance can underestimate the true hull distance, preserving the
+conservative direction of the geometric check.
 
-Intervals that remain uncertified at that minimum width are conservatively treated as
-unsafe. This gives the central guarantee:
-
-    the turn-aware method never returns "safe" unless all remaining time intervals have
-    been certified safe under the model.
-
-The reported `min_distance_m` and `closest_time_s` in the turning case are informative
-diagnostics based on sampled points and interval certificates. The boolean safety result
-is the primary mathematically guaranteed output.
-
-
-Relationship between the two methods
-------------------------------------
-The straight-line method solves one global convex projection problem because the entire
-reachable set over [0, T] collapses into a single displacement hull.
-
-The turn-aware method solves a family of exact convex projection problems, one per
-sampled time, because turning destroys the simple cone structure in time even though the
-speed envelope remains convex at each fixed time.
-
-So the distinction is:
-
-    straight headings: exact in speed, exact in time,
-    fixed-rate turns: exact in speed, conservative in time.
-
-
-Structured hull optimization
-----------------------------
-Both methods share the same fixed-time geometric core:
-
-    base + s_A a_basis - s_B b_basis,
-
-with `s_A` and `s_B` drawn from closed speed intervals. The image of the speed
-rectangle is therefore determined by just four speed-corner points.
-
-This observation is now used explicitly in the implementation:
-
-1. A shared helper constructs those four corner points for both
-   - the straight-line displacement hull at `t = T`, and
-   - the turn-aware relative-position hull at a fixed time `t`.
-2. The hot-path hull construction for these tiny 4- and 5-point inputs uses a
-   specialized small-set hull builder rather than the full generic monotone-chain
-   implementation.
-3. The generic `convex_hull` function is retained as a reference implementation and
-   sanity oracle; tests compare the optimized structured path against it.
-
-This optimization does not change the mathematics of the reachable sets. It only
-exploits the fact that the relevant hulls in this module are tiny and highly
-structured.
-
-
-How this maps to functions
---------------------------
-- `heading_to_unit_vector`: heading -> east/north direction.
-- `latlon_to_local_xy`: latitude/longitude -> local east/north coordinates.
-- `small_convex_hull`: optimized hull builder for the module's tiny structured inputs.
-- `_speed_rectangle_corner_points`: shared affine speed-corner kernel.
-- `compute_relative_velocity_hull`: straight-line reachable displacement hull over
-  [0, T].
-- `closest_point_on_convex_polygon`: Euclidean projection onto a convex polygon.
-- `_closest_time_from_projection`: straight-line time recovery from the projected point.
-- `catch_up_projection_interval`: exact straight-line safety test.
-- `_turn_displacement_basis`: closed-form unit-speed displacement for a turn-then-straight
-  heading law.
-- `_interval_local_lipschitz_mps`: exact interval-local corner-speed supremum used as a
-  turn-aware Lipschitz constant.
-- `_relative_position_hull_at_time`: exact relative-position hull at one time.
-- `_min_distance_to_relative_hull_at_time`: exact worst-case distance at one time.
-- `_interval_distance_lower_bound`: Lipschitz certificate for a time interval.
-- `catch_up_projection_interval_with_turns`: adaptive certified time search.
-
-
-Safety interpretation
----------------------
-- Straight-line method:
-  - the full `(is_separated, min_distance_m, closest_time_s)` tuple is exact under the
-    fixed-heading, bounded-constant-speed model.
-- Turn-aware method:
-  - exact in speed,
-  - conservative in time,
-  - and certified safe only when every remaining interval has been proved safe.
-- The turn-aware API can optionally inflate the separation threshold by a conservative
-  robustness buffer if one wants protection against speed variation during an active
-  turn, beyond the core constant-speed model.
-- If `is_separated` is `True` in the turn-aware method, the model certifies that no
-  admissible speed realisation violates separation in the horizon considered.
-- If `is_separated` is `False` in the turn-aware method, a separation loss is feasible
-  in the modelled envelope or an interval could not be certified safe at the configured
-  time resolution. With the optional robustness buffer enabled, `False` can also mean
-  that the buffered threshold could not be certified even though the raw model remained
-  clear of the nominal threshold.
-- In the turn-aware method, `min_distance_m` and `closest_time_s` are diagnostics that
-  summarize the most critical sampled point or interval certificate encountered.
-- This is a deterministic reachability check, not a probability-of-conflict estimate.
-
-
-Assumptions and limits
-----------------------
-- Horizontal 2-D kinematics only.
-- Local tangent-plane projection; appropriate for local interactions, not long-haul
-  geodesic fidelity.
-- Symmetric bounded speed uncertainty, clipped at zero.
-- No wind, acceleration, or stochastic dynamics.
-- Straight-line mode assumes headings are constant over [0, T].
-- Turn-aware mode assumes at most one fixed-rate turn per aircraft, from current
-  heading to target heading, followed by straight flight.
-- Turn-aware mode is conservative in time because it certifies intervals rather than
-  solving the continuous-time minimum in closed form.
+In turning cases, min_distance_m and closest_time_s describe a sampled minimum
+or an interval bound encountered during certification, not necessarily the global
+closest approach. Unavailable times are NaN. The straight result can also carry a
+conservative distance after the enclosing-rectangle fallback. Callers requiring
+explicit diagnostic kinds should use the heading interface.
 """
 
 import math
@@ -1159,9 +899,6 @@ def _relative_position_corners_at_time(
     np.ndarray
         Four speed corners, including duplicates or collinear points.
     """
-    # For a fixed time, position = start + speed * basis(time). The speed bounds for A
-    # and B therefore generate a four-corner rectangle in speed space, which maps to at
-    # most four corner points in relative-position space.
     a_basis = _turn_displacement_basis(a_heading0_deg, a_target_heading_deg, a_turn_rate_deg_sec, t_s)
     b_basis = _turn_displacement_basis(b_heading0_deg, b_target_heading_deg, b_turn_rate_deg_sec, t_s)
     return _speed_rectangle_corner_points(

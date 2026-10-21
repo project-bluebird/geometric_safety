@@ -518,14 +518,13 @@ For isolated lateral-solver timings:
 uv run --locked python scripts/benchmark_relevant_aircraft.py --random-cases 5000
 ```
 
+The `fixed_time_evals_py` column counts hull samples in the solver's Python
+control flow, with compiled geometry helpers. It can differ from the compiled
+path near floating-point decision boundaries. Decisions, diagnostics and timings
+come from the compiled solver.
+
 See [numerical validation and timing](paper/validation.md) for comparisons
 between package versions, and [paper reproduction](paper/README.md) for the
 figure and numerical-check scripts. An interactive geometry walkthrough is
 also available in
 [`relative_aircraft_projection_walkthrough.ipynb`](relative_aircraft_projection_walkthrough.ipynb).
-
-
-The standalone visualisation helpers share the solver's finite-heading and
-nonzero-rate requirements for a changed target. The unused flat web-payload
-adapters and debug-payload builder in `demo_utils` have been removed; the web
-application uses `app.visualisation` and its nested aircraft inputs.

@@ -67,32 +67,7 @@ N_JOBS=128 ./paper/run_full_results.sh \
     paper_eval_outputs/paper_full_$(date +%Y%m%d_%H%M%S)
 ```
 
-This writes the following key files for the default five-seed full run:
-
-```text
-paper_eval_outputs/<run>/
-  logs/
-    main_evaluation.log
-    projection_sweep.log
-  main_evaluation/
-    campaign_summary.json
-    campaign_runs.csv
-    run_00_seed_<seed>/
-      summary.json
-      run_record.json
-      stress_map_source.csv
-      near_threshold_default_margin_summary.csv
-      table_*.csv
-    run_01_seed_<seed+step>/
-      ...
-    ...
-  projection_full/
-    summary.json
-    projection_rows.csv.gz
-    *_summary_by_latitude.csv
-    *_by_excursion.csv
-    mixed_turn_by_excursion_and_turn_count.csv
-```
+The saved data and log paths are listed in [Output structure](#output-structure).
 
 With the script defaults, the first run directory is
 `run_00_seed_20260325`. If `REPEAT_SEEDS=1`, `paper.run_evaluation`
@@ -107,38 +82,10 @@ After the data stage completes, render figures from the saved outputs:
 ./paper/render_paper_figures.sh paper_eval_outputs/<run>
 ```
 
-This writes the empirical paper-evaluation PDFs under:
-
-```text
-paper_eval_outputs/<run>/rendered_figures/
-  application/
-    fig_lateral_overlap_schematic.pdf
-    fig_clearance_grid.pdf
-    fig_clearance_grid_source.json.gz
-  main/
-    fig_crossing.pdf
-    fig_nominal_proxy_miss.pdf
-    fig_stress_maps.pdf
-    fig_ablation.pdf
-    fig_sampled_proxy_miss.pdf
-  projection_deterministic_51_cap_100nmi/
-    projection_min_error_vs_excursion.pdf
-    ...
-```
-
-It also writes the versioned supplementary projection artifact:
-
-```text
-paper/results/projection_deterministic_51_cap_100nmi.tar.gz
-```
-
-and a compact archive of the full saved run:
-
-```text
-paper/results/<run>.tar.gz
-```
-
-See `paper/reproducibility_manifest.md` for artifact-to-claim mappings.
+Figures go under `rendered_figures/`. The script also writes the capped projection
+archive and a compact archive of the complete run under `paper/results/`; see
+[Output structure](#output-structure) and the
+[artifact-to-claim mapping](reproducibility_manifest.md).
 
 To check that a completed run contains the expected source artifacts:
 
@@ -148,7 +95,7 @@ uv run python -m paper.check_reproducibility_artifacts \
     paper_eval_outputs/<run> --require-rendered
 ```
 
-#### Manual data commands
+### Running individual stages
 
 #### Step 1: Main evaluation (5 seeds, 100k encounters per suite)
 
@@ -179,12 +126,13 @@ uv run python -m paper.run_projection_sweep \
     --compress-rows
 ```
 
-#### Step 3: Render figures
+#### Render figures from saved data
 
 This reads the saved outputs and renders figures without rerunning the
 expensive evaluation. The path below is the first seed run produced by
 the default full pipeline; use the matching `run_00_seed_<seed>` path if
-the seed is changed.
+the seed is changed. For a single-seed run, use
+`paper_eval_outputs/paper_full/main_evaluation` directly.
 
 ```bash
 uv run python -m paper.run_evaluation \
@@ -244,67 +192,60 @@ uv run python -m paper.check_reproducibility_artifacts \
 
 ## Output structure
 
-After running the full pipeline, the relevant output directories contain:
+The default five-seed pipeline writes:
 
 ```text
-paper_eval_outputs/<run>/main_evaluation/
-  campaign_summary.json
-  campaign_runs.csv
-  run_00_seed_<seed>/
+paper_eval_outputs/<run>/
+  logs/
+    main_evaluation.log
+    projection_sweep.log
+  main_evaluation/
+    campaign_summary.json
+    campaign_runs.csv
+    run_00_seed_<seed>/
+      summary.json
+      run_record.json
+      stress_map_source.csv
+      near_threshold_default_margin_summary.csv
+      table_1_experiment_design.csv
+      table_2_straight_exactness.csv
+      table_3_mixed_turn_results.csv
+      table_4_runtime_summary.csv
+    run_01_seed_<seed+step>/
+      ...
+  projection_full/
     summary.json
-    run_record.json
-    stress_map_source.csv
-    near_threshold_default_margin_summary.csv
-    table_1_experiment_design.csv
-    table_2_straight_exactness.csv
-    table_3_mixed_turn_results.csv
-    table_4_runtime_summary.csv
-  run_01_seed_<seed+step>/
-    ...
-paper_eval_outputs/<run>/rendered_figures/
-  application/
-    fig_lateral_overlap_schematic.pdf
-    fig_clearance_grid.pdf
-    fig_clearance_grid_source.json.gz
-  main/
-    fig_crossing.pdf
-    fig_nominal_proxy_miss.pdf
-    fig_stress_maps.pdf
-    fig_ablation.pdf
-    fig_sampled_proxy_miss.pdf
-  projection_deterministic_51_cap_100nmi/
-    projection_min_error_vs_excursion.pdf
-    projection_error_by_range_and_horizon.pdf
-    projection_orientation_disagreement.pdf
-    projection_disagreement_by_excursion.pdf
-paper/results/
-  projection_deterministic_51_cap_100nmi.tar.gz
-    summary.json
-    projection_rows.csv
-    straight_summary_by_latitude.csv
-    straight_by_excursion.csv
-    mixed_turn_summary_by_latitude.csv
-    mixed_turn_by_excursion.csv
+    projection_rows.csv.gz
+    *_summary_by_latitude.csv
+    *_by_excursion.csv
     mixed_turn_by_excursion_and_turn_count.csv
-    projection_min_error_vs_excursion.pdf
-    projection_error_by_range_and_horizon.pdf
-    projection_orientation_disagreement.pdf
-    projection_disagreement_by_excursion.pdf
+  rendered_figures/
+    application/
+      fig_lateral_overlap_schematic.pdf
+      fig_clearance_grid.pdf
+      fig_clearance_grid_source.json.gz
+    main/
+      fig_crossing.pdf
+      fig_nominal_proxy_miss.pdf
+      fig_stress_maps.pdf
+      fig_ablation.pdf
+      fig_sampled_proxy_miss.pdf
+    projection_deterministic_51_cap_100nmi/
+      projection_min_error_vs_excursion.pdf
+      projection_error_by_range_and_horizon.pdf
+      projection_orientation_disagreement.pdf
+      projection_disagreement_by_excursion.pdf
+paper/results/
+  <run>.tar.gz
+  projection_deterministic_51_cap_100nmi.tar.gz
 ```
 
-### Figure Mapping
+The projection archive contains the capped `summary.json`, `projection_rows.csv`,
+straight and mixed-turn summary tables, and the four projection PDFs shown above.
+The [reproducibility manifest](reproducibility_manifest.md) maps the outputs to
+manuscript figures and claims.
 
-The full rendering stage writes the paper figures plus a few diagnostic
-scenario figures retained for reproducibility.
-
-| Script output | Paper figure |
-| ------------- | --------------- |
-| `fig_lateral_overlap_schematic.pdf` | Main-paper introductory lateral-overlap schematic |
-| `fig_clearance_grid.pdf` | Main-paper clearance-grid illustration |
-| `fig_stress_maps.pdf` | Main-paper mixed-turn stress-map figure |
-| `fig_ablation.pdf` | Main-paper near-threshold ablation figure |
-| `fig_sampled_proxy_miss.pdf` | Supplementary sampled-heuristic figure |
-| `projection_min_error_vs_excursion.pdf` | Supplementary projection-sensitivity figure |
+### Figure sources
 
 The schematic application figures are deterministic. The clearance-grid figure
 is rendered from the archive's saved source grid, and the empirical PDFs are
@@ -315,14 +256,9 @@ The near-threshold Lipschitz/stopping-width ablation explicitly disables the
 directional certificate in both its timed solver and evaluation counter. Other
 evaluations retain the production default.
 
-To export the generated figure files from another archive:
-
-```bash
-mkdir -p paper_figure_repro
-uv run python -m paper.reproduce_paper_outputs \
-    --output-root paper_figure_repro \
-    --archive paper/results/<run>.tar.gz
-```
+To export a different archive, use the
+[archive reproduction command](#reproducing-from-the-included-archive) with that
+archive's path as `--archive`.
 
 ## Key paper claims and where to verify them
 
@@ -347,20 +283,6 @@ Optional diagnostics:
 | ------- | ------- |
 | `uv run python -m paper.run_projection_sanity` | Multi-latitude validation |
 | `uv run python -m paper.run_projection_anchors` | Anchor-mode comparison |
-
-## Regenerating figures from existing data
-
-To re-render main figures without re-running the evaluation:
-
-```bash
-uv run python -m paper.run_evaluation \
-    --render-figures-from \
-    paper_eval_outputs/<run>/main_evaluation/run_00_seed_20260325
-```
-
-For a non-default seed, replace `run_00_seed_20260325` with the first
-per-seed run directory in `main_evaluation/`. For a single-seed run,
-use `paper_eval_outputs/<run>/main_evaluation` directly.
 
 ## Robustness campaigns
 

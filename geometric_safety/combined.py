@@ -205,7 +205,7 @@ def catch_up_projection_interval_with_vertical(
     """
     Evaluate straight-line lateral safety with an independent vertical overlap check.
 
-    The vertical model returns the first time at which the remaining cleared-to-selected
+    The vertical model estimates the first time at which the remaining cleared-to-selected
     level bands are separated by `required_vertical_gap_fl`. The lateral solver is then
     only required to certify the interval before that vertical resolution time. If the
     bands are already resolved, the function returns safe with lateral diagnostics at
@@ -248,7 +248,7 @@ def catch_up_projection_interval_with_vertical(
     vertical_rounding_fl : int, optional
         Flight-level rounding step used before measuring the vertical gap. The lower
         compared level is rounded upward and the higher compared level downward.
-        Values less than or equal to zero disable rounding and use exact band edges.
+        Values less than or equal to zero use unrounded floating-point band edges.
 
     Returns
     -------
@@ -256,20 +256,24 @@ def catch_up_projection_interval_with_vertical(
         `(is_safe, lateral_min_distance_m, lateral_closest_time_s,
         vertical_resolution_time_s)`.
 
-        `vertical_resolution_time_s` is the first time at which the vertical bands are
+        `vertical_resolution_time_s` estimates the first time at which the vertical bands are
         resolved, or `VERTICAL_OVERLAP_NEVER_RESOLVES_S` if they never resolve. If the
         vertical bands are already resolved, the lateral distance/time pair describes
         the current geometry at `t=0`.
 
     Notes
     -----
-    The vertical and lateral checks remain separate. The vertical model first determines
-    when cleared-to-selected level bands resolve; the straight-line lateral solver then
-    certifies only the period before that time. If the bands never resolve, the full
-    lateral projection horizon is checked. Callers using this as a safety filter should
-    pass a conservative low vertical rate that all filtered aircraft are expected to
-    meet or exceed. The supplied lateral kinematics remain fixed during climb/descent;
-    altitude-driven lateral speed changes are not modelled.
+    The lateral horizon ends at the estimated vertical resolution time, or at the
+    full projection horizon if the bands do not resolve. The timing calculation
+    uses floating-point band edges and, with rounding enabled, a 1e-9 FL tolerance
+    per edge. It does not independently verify the unrounded gap. Use
+    `certify_heading_separation_with_vertical` for exact verification of that gap
+    before shortening the horizon.
+
+    Pass a conservative low vertical rate that both aircraft meet or exceed while
+    progressing immediately towards their selected levels, without overshoot, and
+    remaining there on arrival. Lateral speed bounds must hold during climb/descent;
+    altitude-driven lateral speed changes are not modelled by this wrapper.
     """
     # Work out the independent vertical timing first. This is the gate that decides
     # whether the lateral check can be shortened or skipped altogether.
@@ -387,7 +391,7 @@ def catch_up_projection_interval_with_turns_and_vertical(
     vertical_rounding_fl : int, optional
         Flight-level rounding step used before measuring the vertical gap. The lower
         compared level is rounded upward and the higher compared level downward.
-        Values less than or equal to zero disable rounding and use exact band edges.
+        Values less than or equal to zero use unrounded floating-point band edges.
     use_interval_local_lipschitz : bool, optional
         If True, use the tighter interval-local Lipschitz bound in the turn-aware
         lateral solver. If False, use its simpler global bound.
@@ -400,19 +404,22 @@ def catch_up_projection_interval_with_turns_and_vertical(
         `(is_safe, lateral_min_distance_m, lateral_closest_time_s,
         vertical_resolution_time_s)`.
 
-        `vertical_resolution_time_s` is the first time at which the vertical bands are
+        `vertical_resolution_time_s` estimates the first time at which the vertical bands are
         resolved, or `VERTICAL_OVERLAP_NEVER_RESOLVES_S` if they never resolve. The
         lateral distance/time pair is reported from the shortened turn-aware lateral
         horizon, or from `t=0` when the vertical bands are already resolved.
 
     Notes
     -----
-    This function preserves the turn-aware lateral solver's conservative time
-    certification. It only shortens the lateral horizon when the independent vertical
-    timing check proves that the level bands resolve earlier. Callers using this as a
-    safety filter should pass a conservative low vertical rate that all filtered
-    aircraft are expected to meet or exceed. The supplied lateral kinematics remain
-    fixed during climb/descent; altitude-driven lateral speed changes are not modelled.
+    The vertical timing estimate has the rounding tolerance and floating-point
+    limitations described in `catch_up_projection_interval_with_vertical`. It does
+    not independently verify the unrounded gap. Use
+    `certify_heading_separation_with_vertical` for that verification.
+
+    The turn-aware solver checks the resulting lateral horizon. Both aircraft must
+    meet or exceed the minimum vertical rate while progressing immediately towards
+    their selected levels, without overshoot, and remain there on arrival. Lateral
+    speed bounds must hold throughout climb/descent.
     """
     # The vertical calculation is intentionally shared with the fixed-heading wrapper;
     # only the lateral certification method changes below.

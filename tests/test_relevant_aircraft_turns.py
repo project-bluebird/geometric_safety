@@ -54,9 +54,7 @@ def assert_hulls_equivalent(hull_a: np.ndarray, hull_b: np.ndarray, abs_tol: flo
     """
     Assert that two convex hulls describe the same closed set.
 
-    The optimized structured hull builders may return a different cyclic ordering from
-    the generic monotone-chain reference. We therefore compare the represented sets
-    geometrically rather than comparing raw vertex arrays directly.
+    Compare represented sets so cyclic vertex ordering does not affect the result.
     """
     for vertex in hull_a:
         _proj, distance = closest_point_on_convex_polygon(vertex, hull_b)
@@ -398,8 +396,8 @@ class TestHelpers:
 
         assert np.allclose(corners, expected, atol=1e-12)
 
-    def test_compute_relative_velocity_hull_matches_generic_reference(self) -> None:
-        """The optimized straight-line hull should match the retained generic reference."""
+    def test_compute_relative_velocity_hull_matches_speed_corners(self) -> None:
+        """The straight displacement hull includes zero and the four speed corners."""
         a_heading = 86.07215429731461
         b_heading = 359.34847733836904
         a_speed = 356.1049998158458
@@ -407,7 +405,7 @@ class TestHelpers:
         speed_diff = 21.85042676853181
         T = 923.7721875173809
 
-        optimized_hull = compute_relative_velocity_hull(a_heading, a_speed, b_heading, b_speed, speed_diff, T)
+        actual_hull = compute_relative_velocity_hull(a_heading, a_speed, b_heading, b_speed, speed_diff, T)
 
         dir_a = heading_to_unit_vector(a_heading)
         dir_b = heading_to_unit_vector(b_heading)
@@ -427,10 +425,10 @@ class TestHelpers:
         )
         reference_hull = convex_hull(reference_points)
 
-        assert_hulls_equivalent(optimized_hull, reference_hull)
+        assert_hulls_equivalent(actual_hull, reference_hull)
 
-    def test_relative_position_hull_matches_generic_reference(self) -> None:
-        """The fixed-time optimized hull should match the retained generic reference."""
+    def test_relative_position_hull_matches_speed_corners(self) -> None:
+        """The fixed-time hull encloses the four explicitly constructed speed corners."""
         rel_pos0 = np.array([1200.0, -3400.0], dtype=np.float64)
         t_s = 35.0
         a_min, a_max = 140.0, 165.0
@@ -438,7 +436,7 @@ class TestHelpers:
         a_basis = _turn_displacement_basis(0.0, 45.0, 3.0, t_s)
         b_basis = _turn_displacement_basis(210.0, 180.0, 2.0, t_s)
 
-        optimized_hull = _relative_position_hull_at_time(
+        actual_hull = _relative_position_hull_at_time(
             rel_pos0=rel_pos0,
             a_heading0_deg=0.0,
             a_target_heading_deg=45.0,
@@ -463,7 +461,7 @@ class TestHelpers:
         )
         reference_hull = convex_hull(reference_corners)
 
-        assert_hulls_equivalent(optimized_hull, reference_hull)
+        assert_hulls_equivalent(actual_hull, reference_hull)
 
     def test_interval_distance_lower_bound_formula(self) -> None:
         """The helper should implement the stated Lipschitz lower-bound formula."""
@@ -1240,7 +1238,7 @@ class TestPhase2PostTurn:
             projection_time_s=proj_time,
         )
 
-        # Numerically verify at min/max speeds
+        # Check the nominal-speed trajectory against the bounded-speed decision.
         dt = 1.0
         traj_a = simulate_arc_trajectory(
             a_lat, a_lon, a_heading0, a_target, a_speed_kt, turn_rate_deg_sec, dt, proj_time, a_lat, a_lon
@@ -1250,7 +1248,7 @@ class TestPhase2PostTurn:
         )
         actual_min_dist, _ = compute_min_separation_numerical(traj_a, traj_b)
 
-        # Both model and simulation should agree on separation for nominal speeds
+        # A certified decision must also cover this sampled nominal-speed trajectory.
         if is_sep:
             assert actual_min_dist >= separation_m * 0.9
 
@@ -1795,7 +1793,8 @@ class TestProperties:
         assert min_dist >= 0.0
         assert 0.0 <= closest_time <= 900.0
 
-        # With zero speed_diff the result should match a single numerical simulation exactly
+        # For a certified result, check the sampled constant-speed trajectory with
+        # the 5% tolerance below; this does not compare global minima or closest times.
         dt = 0.5
         traj_a = simulate_arc_trajectory(a_lat, a_lon, 0.0, 30.0, 350.0, turn_rate_deg_sec, dt, 900.0, a_lat, a_lon)
         traj_b = simulate_arc_trajectory(b_lat, b_lon, 180.0, 180.0, 350.0, 0.0, dt, 900.0, a_lat, a_lon)

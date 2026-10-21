@@ -44,7 +44,8 @@ class ExecutionModelConfig:
     ``ou_speed_sigma_kt`` enables mean-reverting speed drift over the whole horizon,
     clipped to the admissible interval. This violates the constant-speed assumption
     everywhere, not only during turns. ``roll_time_s`` replaces the instant-rate turn
-    with a trapezoidal rate profile that ramps in and out over the given time.
+    with a rate that ramps up linearly over the given time and stops abruptly when
+    the target heading is reached.
     ``heading_jitter_deg`` adds piecewise-constant track-keeping error, redrawn every
     ``heading_jitter_period_s`` seconds.
     """
@@ -312,9 +313,8 @@ def _perturbed_displacement(
     if is_turning:
         executed_rate_deg_s = abs(turn_rate_deg_sec) * draw.turn_rate_scale
         if draw.roll_time_s > 0.0:
-            # Trapezoidal rate transient: the rate ramps in over roll_time_s and the
-            # cumulative angle is clamped at the commanded turn angle. The ramp-in lag
-            # is the out-of-class element; the clamp approximates the roll-out.
+            # Ramp-in delays the accumulated turn angle; clamping stops the turn
+            # at the target without a roll-out ramp.
             ramp = np.clip((mid_times - draw.turn_delay_s) / draw.roll_time_s, 0.0, 1.0)
             cumulative_angle_deg = np.minimum(np.cumsum(executed_rate_deg_s * ramp * dts_s), abs(turn_angle_deg))
             headings_deg = heading0_deg + math.copysign(1.0, turn_angle_deg) * cumulative_angle_deg
