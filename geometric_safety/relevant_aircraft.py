@@ -400,7 +400,25 @@ def _closest_time_from_projection(closest_vec: NDArray[np.float64], hull: NDArra
     return T * best_alpha if best_alpha <= 1.0 else math.nan
 
 
-@numba.njit(cache=True, fastmath=True)
+@numba.njit(cache=True, fastmath=False)
+def _lateral_parameters_within_numerical_range(
+    a_speed_kt: float,
+    b_speed_kt: float,
+    speed_diff_kt: float,
+    projection_time_s: float,
+    separation_threshold_m: float = 0.0,
+) -> bool:
+    """Check individual bounds before forming speed intervals or taking shortcuts."""
+    return (
+        _scalar_within_numerical_range(a_speed_kt)
+        and _scalar_within_numerical_range(b_speed_kt)
+        and _scalar_within_numerical_range(speed_diff_kt)
+        and _scalar_within_numerical_range(projection_time_s)
+        and _scalar_within_numerical_range(separation_threshold_m)
+    )
+
+
+@numba.njit(cache=True, fastmath=False)
 def compute_relative_velocity_hull(
     a_heading: float,
     a_speed_kt: float,
@@ -434,6 +452,12 @@ def compute_relative_velocity_hull(
     scaled by `T`. Including the origin makes the hull represent all intermediate times
     in one object rather than only the exact-time slice at `t = T`.
     """
+    if (
+        not math.isfinite(a_heading)
+        or not math.isfinite(b_heading)
+        or not _lateral_parameters_within_numerical_range(a_speed_kt, b_speed_kt, speed_diff_kt, projection_time_s)
+    ):
+        return np.full((1, 2), np.nan)
     a_min = max(a_speed_kt - speed_diff_kt, 0.0) * KT_TO_MPS
     a_max = (a_speed_kt + speed_diff_kt) * KT_TO_MPS
     b_min = max(b_speed_kt - speed_diff_kt, 0.0) * KT_TO_MPS
@@ -583,7 +607,9 @@ def catch_up_projection_interval(
     else:
         rel_pos0 = np.asarray(rel_pos_override, dtype=np.float64)
 
-    if not _scalar_within_numerical_range(projection_time_s):
+    if not _lateral_parameters_within_numerical_range(
+        a_speed_kt, b_speed_kt, speed_diff_kt, projection_time_s, separation_threshold_m
+    ):
         return False, math.nan, math.nan
     if velocity_hull is None:
         a_max_speed_mps = (a_speed_kt + speed_diff_kt) * KT_TO_MPS
@@ -650,7 +676,7 @@ def _turn_displacement_basis(
     # the supplied turn rate gives the angular speed.
     signed_turn_rate_rad_per_s = signed_turn_rate_deg_sec * DEG_TO_RAD
     turn_time_s = clip_value(t_s, 0.0, turn_duration_s)
-    heading0_rad = heading0_deg * DEG_TO_RAD
+    heading0_rad = np.fmod(heading0_deg, 360.0) * DEG_TO_RAD
     half_sweep = 0.5 * signed_turn_rate_rad_per_s * turn_time_s
     # The chord has the midpoint heading and length t * sinc(half_sweep).
     # This avoids subtracting almost equal trigonometric values or dividing by rate.
@@ -678,10 +704,10 @@ def _heading_at_time_from_turn_parameters(
     turn_duration_s: float,
     t_s: float,
 ) -> float:
-    """Evaluate a heading using an already resolved shortest-turn law."""
+    """Continue a reduced initial heading without wrapping during the turn."""
     if signed_turn_rate_deg_sec == 0.0:
-        return target_heading_deg
-    return heading0_deg + signed_turn_rate_deg_sec * clip_value(t_s, 0.0, turn_duration_s)
+        return np.fmod(target_heading_deg, 360.0)
+    return np.fmod(heading0_deg, 360.0) + signed_turn_rate_deg_sec * clip_value(t_s, 0.0, turn_duration_s)
 
 
 @numba.njit(cache=True, fastmath=True)
@@ -1404,7 +1430,14 @@ def _validate_deviation_envelope(
     turn_rate_error_max: float,
 ) -> None:
     """Reject undeclared or impossible deviation bounds before fast arithmetic."""
-    for value in (eta_const_m, eta_rate_mps, turn_speed_schedule_uncertainty_kt, turn_delay_max_s, turn_rate_error_max):
+    # A homogeneous tuple also accepts mixed integer, float32 and float64 callers.
+    for value in (
+        np.float64(eta_const_m),
+        np.float64(eta_rate_mps),
+        np.float64(turn_speed_schedule_uncertainty_kt),
+        np.float64(turn_delay_max_s),
+        np.float64(turn_rate_error_max),
+    ):
         if not math.isfinite(value) or value < 0.0:
             raise ValueError("Deviation envelope bounds must be finite and nonnegative")
     if turn_rate_error_max >= 1.0:
@@ -1453,6 +1486,11 @@ def _catch_up_projection_interval_with_turns_local(
     b_turn_angle_deg, _, _ = shortest_turn_parameters(b_heading0_deg, b_target_heading_deg, b_turn_rate_deg_sec)
     a_is_turning = a_turn_angle_deg != 0.0
     b_is_turning = b_turn_angle_deg != 0.0
+
+    if not _lateral_parameters_within_numerical_range(
+        a_speed_kt, b_speed_kt, speed_diff_kt, projection_time_s, separation_threshold_m
+    ) or not _scalar_within_numerical_range(min_cert_interval_s):
+        return False, math.nan, math.nan
 
     # Convert the speed envelope once; the remaining geometry uses metres and seconds.
     a_min_speed_mps = max((a_speed_kt - speed_diff_kt), 0.0) * KT_TO_MPS
@@ -1590,8 +1628,8 @@ def _catch_up_projection_interval_with_turns_local(
     if not _scalar_within_numerical_range(end_dist_m):
         return False, math.nan, math.nan
     if end_dist_m < separation_threshold_m + eta_horizon_m + TURN_CERT_FP_GUARD_M:
-        _record_solver_diagnostic(diagnostic_out, DIAGNOSTIC_SAMPLED_MINIMUM, projection_time_s, projection_time_s)
-        return False, end_dist_m, projection_time_s
+        _record_solver_diagnostic(diagnostic_out, DIAGNOSTIC_SAMPLED_MINIMUM, best_sample_time_s, best_sample_time_s)
+        return False, best_sample_dist_m, best_sample_time_s
     if initial_lower_bound_m >= separation_threshold_m + eta_horizon_m + TURN_CERT_FP_GUARD_M:
         _record_solver_diagnostic(diagnostic_out, DIAGNOSTIC_SAMPLED_MINIMUM, best_sample_time_s, best_sample_time_s)
         return True, best_sample_dist_m, best_sample_time_s
@@ -1868,8 +1906,10 @@ def catch_up_projection_interval_with_turns(
     projected-motion bounds to certify intervals as safe. Intervals that cannot be certified at the
     configured minimum width are treated as unsafe.
 
-    When both target headings equal their initial headings, it delegates to the
-    exact straight-line `catch_up_projection_interval`. A changed target heading
+    When both target headings equal their initial headings and the constant and
+    linear deviation bounds are zero, it uses the exact straight-line hull calculation.
+    Nonzero deviation bounds retain the interval certificate and sampled diagnostics.
+    A changed target heading
     requires a nonzero turn rate, however small the instructed turn. Headings and
     rates must be finite even for unchanged headings; invalid values raise
     ValueError. Deviation bounds must be finite and nonnegative, and the

@@ -4,6 +4,7 @@ from fractions import Fraction
 import math
 from typing import Literal
 
+import mpmath as mp
 import numpy as np
 from numpy.typing import NDArray
 import pytest
@@ -17,8 +18,10 @@ from geometric_safety import (
     certify_heading_separation,
     certify_heading_separation_with_vertical,
 )
+from geometric_safety.relevant_aircraft import _turn_displacement_basis
 from geometric_safety.util import EARTH_RADIUS_IN_METERS, KT_TO_MPS
 from geometric_safety.vertical import time_to_vertical_overlap_resolution
+from paper.turn_numerical_reference import basis
 
 
 def _motion(heading: float, lower: float, upper: float, target: float | None = None) -> HeadingMotion:
@@ -357,21 +360,10 @@ def test_unrounded_vertical_resolution_reaches_the_exact_verifier() -> None:
 
 
 def _reference_displacement(heading: float, target: float, speed: float, time: float) -> NDArray[np.float64]:
-    """Integrate a constant-speed, 3 degree/s shortest turn independently."""
-    angle = (target - heading + 180.0) % 360.0 - 180.0
-    theta = math.radians(heading)
-    if angle == 0.0:
-        return speed * time * np.array([math.sin(theta), math.cos(theta)])
-    omega = math.copysign(math.radians(3.0), angle)
-    duration = abs(angle) / 3.0
-    turn_time = min(time, duration)
-    half_angle = omega * turn_time / 2.0
-    chord = 2.0 * math.sin(half_angle) / omega
-    displacement = chord * np.array([math.sin(theta + half_angle), math.cos(theta + half_angle)])
-    if time > duration:
-        final = math.radians(target)
-        displacement += (time - duration) * np.array([math.sin(final), math.cos(final)])
-    return speed * displacement
+    """Use the independent antiderivative reference at 80 decimal digits."""
+    with mp.workdps(80):
+        displacement = basis(mp.mpf(heading), mp.mpf(target), mp.mpf(3), mp.mpf(time))
+        return np.array([float(mp.mpf(speed) * coordinate) for coordinate in displacement])
 
 
 @pytest.mark.parametrize(
@@ -390,23 +382,27 @@ def test_constructed_collision_families_are_never_certified(family: str) -> None
         a_speed, b_speed = 250.0, 150.0
         if family == "stationary":
             b_speed = 0.0
-        a = _motion(heading, a_speed - 20.0, a_speed + 20.0, target if target != heading else None)
+        a = _motion(heading, a_speed, a_speed, target if target != heading else None)
         b = _motion(
             b_heading,
-            max(0.0, b_speed - 20.0),
-            b_speed + 20.0 if b_speed else 0.0,
+            b_speed,
+            b_speed,
             b_target if b_target != b_heading else None,
         )
         time = float(rng.uniform(0.1, 599.9))
         a_displacement = _reference_displacement(heading, target, a_speed, time)
         b_displacement = _reference_displacement(b_heading, b_target, b_speed, time)
         relative = b_displacement - a_displacement
-        assert np.linalg.norm(relative + a_displacement - b_displacement) < 1e-7
+        actual_a = a_speed * _turn_displacement_basis(heading, target, 3.0, time)
+        actual_b = b_speed * _turn_displacement_basis(b_heading, b_target, 3.0, time)
+        np.testing.assert_allclose(actual_a, a_displacement, rtol=0.0, atol=1e-7)
+        np.testing.assert_allclose(actual_b, b_displacement, rtol=0.0, atol=1e-7)
+        assert np.linalg.norm(relative + actual_a - actual_b) < 1e-7
         result = certify_heading_separation(
             (float(relative[0]), float(relative[1])),
             a,
             b,
-            separation_threshold_m=1000.0,
+            separation_threshold_m=1.0,
             horizon_s=600.0,
         )
         assert result.status == "unresolved", (family, heading, target, b_heading, b_target, time, result)

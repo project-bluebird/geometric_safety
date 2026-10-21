@@ -411,10 +411,14 @@ differences on either side retain their direction, including near a heading
 wrap. Legacy turn queries require finite headings and rates, including for
 unchanged headings. Deviation bounds must be finite and nonnegative, with
 relative turn-rate error below one; invalid declarations raise `ValueError`.
-An already vertically separated pair needs only its current position for
-lateral diagnostics, so an unused future turn does not prevent that shortcut.
+These declarations are checked even when vertical separation suffices.
+Only the requirement for a nonzero rate on a changed heading is skipped
+when the future turn is unused. Legacy vertical helpers require finite
+levels, rates, times, gaps and rounding steps and raise `ValueError` otherwise.
 
-Legacy lateral queries outside the numerical domain return `False` with
+Legacy nominal speeds, speed-uncertainty widths, thresholds and horizons
+must be finite and nonnegative. Invalid values and lateral queries outside
+the numerical domain return `False` with
 unavailable distance/time diagnostics. Always inspect the decision before
 using the diagnostics. For turning queries, the legacy distance/time pair
 is not a guaranteed continuous-time minimum.

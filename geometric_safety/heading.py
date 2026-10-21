@@ -242,8 +242,8 @@ def _straight_query(
     horizon_s: float,
 ) -> tuple[bool, float, float]:
     # Unlike the turn kernel, this path retains independent, asymmetric intervals.
-    a_basis = heading_to_unit_vector(math.fmod(a.target_heading_deg, 360.0)) * horizon_s
-    b_basis = heading_to_unit_vector(math.fmod(b.target_heading_deg, 360.0)) * horizon_s
+    a_basis = heading_to_unit_vector(a.target_heading_deg) * horizon_s
+    b_basis = heading_to_unit_vector(b.target_heading_deg) * horizon_s
     corners = _speed_rectangle_corner_points(
         np.zeros(2),
         a_basis,
@@ -338,12 +338,12 @@ def certify_heading_separation(
         # Explicit defaults keep Numba on its normal dispatch path for repeated queries.
         safe, distance, closest_time = _catch_up_projection_interval_with_turns_local(
             rel_pos0=relative_position,
-            a_heading0_deg=math.fmod(a.heading0_deg, 360.0),
-            a_target_heading_deg=math.fmod(a.target_heading_deg, 360.0),
+            a_heading0_deg=a.heading0_deg,
+            a_target_heading_deg=a.target_heading_deg,
             a_speed_kt=a_speed_kt,
             a_turn_rate_deg_sec=a.turn_rate_deg_s,
-            b_heading0_deg=math.fmod(b.heading0_deg, 360.0),
-            b_target_heading_deg=math.fmod(b.target_heading_deg, 360.0),
+            b_heading0_deg=b.heading0_deg,
+            b_target_heading_deg=b.target_heading_deg,
             b_speed_kt=b_speed_kt,
             b_turn_rate_deg_sec=b.turn_rate_deg_s,
             separation_threshold_m=threshold,

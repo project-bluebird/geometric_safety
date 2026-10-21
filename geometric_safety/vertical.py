@@ -22,6 +22,24 @@ _ROUNDING_GRID_EPSILON_FL = 1.0e-9
 VERTICAL_OVERLAP_NEVER_RESOLVES_S = -1.0
 
 
+@numba.njit(cache=True, fastmath={"contract"})
+def _validate_vertical_motion(current_fl: float, selected_fl: float, vertical_rate_fpm: float, t_s: float) -> None:
+    """Reject missing motion declarations before level comparisons or grid conversion."""
+    if not math.isfinite(current_fl) or not math.isfinite(selected_fl) or not math.isfinite(vertical_rate_fpm):
+        raise ValueError("Flight levels and vertical rate must be finite")
+    if not math.isfinite(t_s):
+        raise ValueError("Elapsed time must be finite")
+
+
+@numba.njit(cache=True, fastmath={"contract"})
+def _validate_vertical_options(required_gap_fl: float, rounded: int) -> None:
+    """Check the gap and grid without changing legacy nonpositive rounding semantics."""
+    if not math.isfinite(required_gap_fl):
+        raise ValueError("Required vertical gap must be finite")
+    if not math.isfinite(rounded):
+        raise ValueError("Vertical rounding must be finite")
+
+
 @numba.njit(cache=True, fastmath=False)
 def _rate_fl_per_second(vertical_rate_fpm: float) -> float:
     """Convert a climb/descent rate magnitude in feet per minute to flight levels per second."""
@@ -58,6 +76,7 @@ def level_at_time_fl(current_fl: float, selected_fl: float, vertical_rate_fpm: f
     float
         Aircraft flight level at `t_s`.
     """
+    _validate_vertical_motion(current_fl, selected_fl, vertical_rate_fpm, t_s)
     # The vertical model is deliberately simple: fly at constant vertical rate toward
     # selected level, then clamp there once the selected level has been reached.
     rate_flps = _rate_fl_per_second(vertical_rate_fpm)
@@ -197,6 +216,7 @@ def vertical_band_gap_fl(
     float
         Signed gap between the remaining vertical bands, in flight levels.
     """
+    _validate_vertical_options(0.0, rounded)
     # Either B can be above A, or A can be above B. The signed gap is whichever of those
     # two directional gaps is larger; negative values mean both directions still overlap.
     b_above_a_gap_fl = _directional_band_gap_fl(
@@ -268,6 +288,7 @@ def vertical_bands_are_resolved(
         True if the computed gap, including the grid tolerance, reaches
         `required_gap_fl`.
     """
+    _validate_vertical_options(required_gap_fl, rounded)
     if required_gap_fl < 0.0:
         required_gap_fl = 0.0
     gap_fl = vertical_band_gap_fl(
@@ -504,6 +525,7 @@ def time_to_vertical_overlap_resolution(
     Rounded comparisons use a 1e-9 FL tolerance per edge, as documented by
     vertical_band_gap_fl. The returned boundary is a floating-point estimate.
     """
+    _validate_vertical_options(required_gap_fl, rounded)
     if required_gap_fl < 0.0:
         required_gap_fl = 0.0
 

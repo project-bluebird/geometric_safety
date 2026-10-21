@@ -5,6 +5,7 @@ import math
 
 import mpmath as mp
 import numpy as np
+from numpy.typing import NDArray
 import pytest
 
 from geometric_safety import relevant_aircraft as ra
@@ -117,3 +118,45 @@ def test_cartesian_projection_refuses_an_unsupported_horizon(horizon_s: float) -
     assert not separated
     assert math.isnan(distance)
     assert math.isnan(time_s)
+
+
+def _exact_earliest_time(point: NDArray[np.float64], hull: NDArray[np.float64], horizon: float) -> float:
+    """Enumerate feasible basic solutions of the displacement linear programme."""
+    x, y = Fraction(float(point[0])), Fraction(float(point[1]))
+    candidates: list[Fraction] = []
+    vertices = [(Fraction(float(vertex[0])), Fraction(float(vertex[1]))) for vertex in hull]
+    for ax, ay in vertices:
+        if ax * y == ay * x and (ax or ay):
+            alpha = x / ax if ax else y / ay
+            if 0 <= alpha <= 1:
+                candidates.append(alpha)
+        for bx, by in vertices:
+            determinant = ax * by - ay * bx
+            if not determinant:
+                continue
+            u = (x * by - y * bx) / determinant
+            v = (ax * y - ay * x) / determinant
+            if u >= 0 and v >= 0 and u + v <= 1:
+                candidates.append(u + v)
+    return float(min(candidates) * Fraction(horizon)) if candidates else math.nan
+
+
+@pytest.mark.parametrize("reciprocal", [False, True])
+def test_parallel_conflicts_keep_attainable_diagnostics(reciprocal: bool) -> None:
+    rng = np.random.default_rng(20261021)
+    exact_interiors = 0
+    for _ in range(80):
+        heading = float(rng.uniform(0.0, 360.0))
+        hull = ra.compute_relative_velocity_hull(heading, 282.54, heading + 180.0 * reciprocal, 327.29, 27.49, 738.9)
+        # Select an interior point, then independently solve for its attainable time
+        # using exact rational arithmetic on the represented hull coordinates.
+        point = hull.mean(axis=0) * 0.7
+        expected = _exact_earliest_time(point, hull, 738.9)
+        safe, distance, time_s = ra._straight_hull_projection_interval(-point, hull, 9260.0, 738.9)
+        assert not safe
+        assert distance == pytest.approx(0.0, abs=1e-8)
+        assert 0.0 <= time_s <= 738.9
+        if math.isfinite(expected):
+            exact_interiors += 1
+            assert time_s == pytest.approx(expected, rel=2e-13, abs=1e-10)
+    assert exact_interiors >= 30

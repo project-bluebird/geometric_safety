@@ -16,7 +16,9 @@ import numpy as np
 import pytest
 
 from geometric_safety.relevant_aircraft import (
+    DIAGNOSTIC_SAMPLED_MINIMUM,
     TurnInputs,
+    _catch_up_projection_interval_with_turns_local,
     _closest_time_from_projection,
     _deviation_envelope_m,
     _interval_distance_lower_bound,
@@ -1922,3 +1924,58 @@ class TestSafetyRegressions:
 
         assert not is_sep
         assert min_dist < separation_m
+
+
+@pytest.mark.parametrize("initial_east_m", [100.0, -200.0])
+def test_endpoint_rejection_preserves_the_smallest_sample(initial_east_m: float) -> None:
+    # A one-second quarter turn followed by 99 seconds eastbound at 1 m/s.
+    radius_m = 2.0 / math.pi
+    endpoint_distance_m = math.hypot(initial_east_m + radius_m + 99.0, radius_m)
+    expected_distance_m = min(abs(initial_east_m), endpoint_distance_m)
+    expected_time_s = 0.0 if abs(initial_east_m) < endpoint_distance_m else 100.0
+    assert abs(initial_east_m) > 50.0
+    assert endpoint_distance_m < 50.0 + 2.0 * 100.0
+
+    arguments: TurnInputs = {
+        "a_lat": 0.0,
+        "a_lon": initial_east_m / EARTH_RADIUS_IN_METERS * RAD_TO_DEG,
+        "b_lat": 0.0,
+        "b_lon": 0.0,
+        "a_heading0_deg": 0.0,
+        "a_target_heading_deg": 90.0,
+        "a_speed_kt": 1.0 / KT_TO_MPS,
+        "a_turn_rate_deg_sec": 90.0,
+        "b_heading0_deg": 0.0,
+        "b_target_heading_deg": 0.0,
+        "b_speed_kt": 0.0,
+        "b_turn_rate_deg_sec": 0.0,
+        "separation_threshold_m": 50.0,
+        "speed_diff_kt": 0.0,
+        "projection_time_s": 100.0,
+    }
+    diagnostic = np.full(3, np.nan)
+    local = _catch_up_projection_interval_with_turns_local(
+        np.array([initial_east_m, 0.0]),
+        a_heading0_deg=arguments["a_heading0_deg"],
+        a_target_heading_deg=arguments["a_target_heading_deg"],
+        a_speed_kt=arguments["a_speed_kt"],
+        a_turn_rate_deg_sec=arguments["a_turn_rate_deg_sec"],
+        b_heading0_deg=arguments["b_heading0_deg"],
+        b_target_heading_deg=arguments["b_target_heading_deg"],
+        b_speed_kt=arguments["b_speed_kt"],
+        b_turn_rate_deg_sec=arguments["b_turn_rate_deg_sec"],
+        separation_threshold_m=arguments["separation_threshold_m"],
+        speed_diff_kt=arguments["speed_diff_kt"],
+        projection_time_s=arguments["projection_time_s"],
+        eta_rate_mps=2.0,
+        diagnostic_out=diagnostic,
+    )
+    assert not local[0]
+    assert local[1] == pytest.approx(expected_distance_m, abs=1e-10)
+    assert local[2] == expected_time_s
+    assert tuple(diagnostic) == (DIAGNOSTIC_SAMPLED_MINIMUM, expected_time_s, expected_time_s)
+
+    exported = catch_up_projection_interval_with_turns(**arguments, eta_rate_mps=2.0)
+    assert not exported[0]
+    assert exported[1] == pytest.approx(expected_distance_m, abs=1e-8)
+    assert exported[2] == expected_time_s

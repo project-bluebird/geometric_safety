@@ -40,10 +40,7 @@ def _difference_of_products(a: float, b: float, c: float, d: float) -> float:
         c != 0.0 and d != 0.0 and abs(right) < minimum_product
     ):
         return math.nan
-    difference = left - right
-    # Knuth TwoDiff, as in heading_diff, also retains the subtraction residual.
-    right_virtual = left - difference
-    residual = (left - (difference + right_virtual)) + (right_virtual - right)
+    difference, residual = _two_diff(left, right)
     residual += _product_roundoff(a, b, left) - _product_roundoff(c, d, right)
     return difference + residual
 

@@ -18,10 +18,13 @@ from geometric_safety.heading import (
 from geometric_safety.relevant_aircraft import (
     TURN_SPEED_SCHEDULE_UNCERTAINTY_KT_DEFAULT,
     TURN_USE_INTERVAL_LOCAL_LIPSCHITZ_DEFAULT,
+    _geometry_within_numerical_domain,
+    _lateral_parameters_within_numerical_range,
+    _validate_deviation_envelope,
     catch_up_projection_interval,
     catch_up_projection_interval_with_turns,
 )
-from geometric_safety.util import latlon_to_local_xy
+from geometric_safety.util import _validate_heading_and_rate, latlon_to_local_xy
 from geometric_safety.vertical import (
     DEFAULT_VERTICAL_RATE_FPM,
     DEFAULT_VERTICAL_ROUNDING_FL,
@@ -181,7 +184,7 @@ def _combined_projection_horizon_s(projection_time_s: float, vertical_resolution
     return projection_time_s
 
 
-@numba.njit(cache=True, fastmath=True)
+@numba.njit(cache=True, fastmath=False)
 def catch_up_projection_interval_with_vertical(
     a_lat: float,
     a_lon: float,
@@ -275,8 +278,12 @@ def catch_up_projection_interval_with_vertical(
     remaining there on arrival. Lateral speed bounds must hold during climb/descent;
     altitude-driven lateral speed changes are not modelled by this wrapper.
     """
-    # Work out the independent vertical timing first. This is the gate that decides
-    # whether the lateral check can be shortened or skipped altogether.
+    if not _lateral_parameters_within_numerical_range(
+        a_speed_kt, b_speed_kt, speed_diff_kt, projection_time_s, separation_threshold_m
+    ):
+        return False, math.nan, math.nan, math.nan
+    if not math.isfinite(a_heading) or not math.isfinite(b_heading):
+        return False, math.nan, math.nan, math.nan
     vertical_resolution_time_s = time_to_vertical_overlap_resolution(
         a_current_fl=a_current_fl,
         a_selected_fl=a_selected_fl,
@@ -291,6 +298,8 @@ def catch_up_projection_interval_with_vertical(
     # safe from the start. Only the current positions are needed for diagnostics.
     if vertical_resolution_time_s == 0.0:
         position = latlon_to_local_xy(b_lat, b_lon, a_lat, a_lon)
+        if not _geometry_within_numerical_domain(position, 0.0, separation_threshold_m):
+            return False, math.nan, math.nan, vertical_resolution_time_s
         return True, math.hypot(position[0], position[1]), 0.0, vertical_resolution_time_s
 
     # Otherwise ask the existing straight-line lateral solver only about the period
@@ -421,8 +430,13 @@ def catch_up_projection_interval_with_turns_and_vertical(
     their selected levels, without overshoot, and remain there on arrival. Lateral
     speed bounds must hold throughout climb/descent.
     """
-    # The vertical calculation is intentionally shared with the fixed-heading wrapper;
-    # only the lateral certification method changes below.
+    _validate_heading_and_rate(a_heading0_deg, a_target_heading_deg, a_turn_rate_deg_sec)
+    _validate_heading_and_rate(b_heading0_deg, b_target_heading_deg, b_turn_rate_deg_sec)
+    _validate_deviation_envelope(0.0, 0.0, turn_speed_schedule_uncertainty_kt, 0.0, 0.0)
+    if not _lateral_parameters_within_numerical_range(
+        a_speed_kt, b_speed_kt, speed_diff_kt, projection_time_s, separation_threshold_m
+    ):
+        return False, math.nan, math.nan, math.nan
     vertical_resolution_time_s = time_to_vertical_overlap_resolution(
         a_current_fl=a_current_fl,
         a_selected_fl=a_selected_fl,
@@ -433,10 +447,11 @@ def catch_up_projection_interval_with_turns_and_vertical(
         rounded=vertical_rounding_fl,
     )
 
-    # Already-resolved vertical bands are a complete shortcut for the combined result,
-    # including turn-aware lateral cases. Future turn validity is immaterial here.
+    # A changed target with zero turn rate is allowed when no lateral check is needed.
     if vertical_resolution_time_s == 0.0:
         position = latlon_to_local_xy(b_lat, b_lon, a_lat, a_lon)
+        if not _geometry_within_numerical_domain(position, 0.0, separation_threshold_m):
+            return False, math.nan, math.nan, vertical_resolution_time_s
         return True, math.hypot(position[0], position[1]), 0.0, vertical_resolution_time_s
 
     # Certify turn-aware lateral separation only until vertical resolution. The turn

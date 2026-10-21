@@ -12,7 +12,7 @@ import numba
 import numpy as np
 from numpy.typing import NDArray
 
-from geometric_safety._numeric import _orientation_sign
+from geometric_safety._numeric import _orientation_sign, _two_diff
 
 # ---------------------------------------------------------------------------
 # Unit-conversion and physical constants
@@ -71,6 +71,7 @@ def heading_to_unit_vector(heading_deg: float) -> np.ndarray:
 
     This differs from the standard mathematical angle convention.
     """
+    heading_deg = np.fmod(heading_deg, 360.0)
     heading_rad = heading_deg * DEG_TO_RAD
     out = np.empty(2, dtype=np.float64)
     out[0] = np.sin(heading_rad)
@@ -103,16 +104,14 @@ def latlon_to_local_xy(lat: float, lon: float, ref_lat: float, ref_lon: float) -
         east  ≈ R cos(ref_lat) Δlon,
         north ≈ R Δlat.
 
-    Longitude differences use the shorter date-line crossing.
+    Longitude differences are reduced to [-180, 180), including unnormalised inputs.
     That is appropriate for local conflict checks, but not intended for long-range
     geodesic fidelity.
     """
+    if not math.isfinite(lat) or not math.isfinite(ref_lat):
+        return np.full(2, np.nan)
     d_lat = (lat - ref_lat) * DEG_TO_RAD
-    longitude_difference = lon - ref_lon
-    if longitude_difference > 180.0:
-        longitude_difference = (lon - 180.0) - (ref_lon + 180.0)
-    elif longitude_difference < -180.0:
-        longitude_difference = (lon + 180.0) - (ref_lon - 180.0)
+    longitude_difference = heading_diff(ref_lon, lon)
     d_lon = longitude_difference * DEG_TO_RAD
     ref_lat_rad = ref_lat * DEG_TO_RAD
     east = EARTH_RADIUS_IN_METERS * d_lon * np.cos(ref_lat_rad)
@@ -144,13 +143,7 @@ def heading_diff(h1: float, h2: float, abs_diff: bool = False) -> float:
 
     a = np.fmod(h2, 360.0)
     b = np.fmod(h1, 360.0)
-    difference = a - b
-    # Knuth TwoDiff: difference + residual is the exact difference of a and b.
-    b_virtual = a - difference
-    a_virtual = difference + b_virtual
-    b_roundoff = b_virtual - b
-    a_roundoff = a - a_virtual
-    residual = a_roundoff + b_roundoff
+    difference, residual = _two_diff(a, b)
 
     remainder = np.fmod(difference, 360.0)
     if remainder > 180.0 or (remainder == 180.0 and residual >= 0.0):
@@ -164,6 +157,13 @@ def heading_diff(h1: float, h2: float, abs_diff: bool = False) -> float:
 
 
 @numba.njit(cache=True, fastmath={"contract"})
+def _validate_heading_and_rate(heading0_deg: float, target_heading_deg: float, turn_rate_deg_sec: float) -> None:
+    """Validate finite motion declarations without requiring an executable turn."""
+    if not math.isfinite(heading0_deg) or not math.isfinite(target_heading_deg) or not math.isfinite(turn_rate_deg_sec):
+        raise ValueError("Headings and turn rate must be finite")
+
+
+@numba.njit(cache=True, fastmath={"contract"})
 def shortest_turn_parameters(
     heading0_deg: float, target_heading_deg: float, turn_rate_deg_sec: float
 ) -> tuple[float, float, float]:
@@ -173,9 +173,8 @@ def shortest_turn_parameters(
     Exact half-turn ties turn left. Equal headings have zero rate and duration.
     All headings and rates must be finite. A changed heading requires a nonzero rate magnitude.
     """
+    _validate_heading_and_rate(heading0_deg, target_heading_deg, turn_rate_deg_sec)
     angle_deg = heading_diff(heading0_deg, target_heading_deg)
-    if not math.isfinite(angle_deg) or not math.isfinite(turn_rate_deg_sec):
-        raise ValueError("Headings and turn rate must be finite")
     if angle_deg == 0.0:
         return 0.0, 0.0, 0.0
     if turn_rate_deg_sec == 0.0:
@@ -243,11 +242,15 @@ def convex_hull(pts: np.ndarray) -> np.ndarray:
         Hull vertices ordered counter-clockwise, with duplicate and collinear interior
         points removed. If the coordinate exponent range prevents a verified
         orientation, return the enclosing axis-aligned rectangle instead.
+        Vertices use float64. Non-finite inputs return one NaN vertex.
     """
     n = pts.shape[0]
 
     if n == 0:
         return np.empty((0, 2), dtype=np.float64)
+    for i in range(n):
+        if not math.isfinite(pts[i, 0]) or not math.isfinite(pts[i, 1]):
+            return np.full((1, 2), np.nan)
 
     # Selection-sort indices by (x, y) because `np.lexsort` is not available in Numba's
     # nopython mode.
@@ -303,7 +306,7 @@ def convex_hull(pts: np.ndarray) -> np.ndarray:
             p3 = pts_unique[i]
             orientation = _orientation_sign(p1, p2, p3)
             if not math.isfinite(orientation):
-                return _bounding_rectangle(pts)
+                return _bounding_rectangle(pts_unique)
             if orientation <= 0.0:
                 lower_len -= 1
             else:
@@ -321,7 +324,7 @@ def convex_hull(pts: np.ndarray) -> np.ndarray:
             p3 = pts_unique[i]
             orientation = _orientation_sign(p1, p2, p3)
             if not math.isfinite(orientation):
-                return _bounding_rectangle(pts)
+                return _bounding_rectangle(pts_unique)
             if orientation <= 0.0:
                 upper_len -= 1
             else:
@@ -383,8 +386,8 @@ def _point_in_convex_polygon(pt: np.ndarray, hull: np.ndarray) -> bool:
     sign = 0
     # Shewchuk's orient2d first-stage error filter, with binary64 unit roundoff.
     # https://www.cs.cmu.edu/~quake/robust.html
-    # Uncertain orientations count as boundary; no exact-predicate claim is made.
-    # Keep fastmath disabled so reassociation cannot invalidate the filter.
+    # Resolve uncertain signs with the same predicate used by the hull builder.
+    # An unresolved exponent range still counts as boundary conservatively.
     unit_roundoff = 2.0**-53
     orientation_error_factor = (3.0 + 16.0 * unit_roundoff) * unit_roundoff
 
@@ -397,7 +400,9 @@ def _point_in_convex_polygon(pt: np.ndarray, hull: np.ndarray) -> bool:
         error = orientation_error_factor * (abs(left) + abs(right))
 
         if abs(cross) <= error:
-            continue
+            cross = _orientation_sign(a, b, pt)
+            if not math.isfinite(cross) or cross == 0.0:
+                continue
 
         # For a convex polygon with consistent winding, the cross-product sign must not
         # change as we walk around the boundary.
