@@ -818,6 +818,15 @@ def _evaluate_near_threshold_chunk(
         base_row = encounter_to_row(encounter)
         base_row.update(outcome_to_row("reference", reference))
         margin_nmi = reference.margin_m / NMI_TO_M
+        production_row = dict(base_row)
+        production_row.update(outcome_to_row("proposed", evaluate_proposed(encounter)))
+        production_row.update(
+            directional_mode=2,
+            lipschitz_mode="local",
+            dt_min_s=3.0,
+            margin_bin_nmi=margin_bin_label(margin_nmi, MARGIN_BINS_NMI),
+        )
+        rows.append(production_row)
         for use_local in (True, False):
             for dt_min_s in config.dt_min_values_s:
                 start = time.perf_counter()
@@ -865,6 +874,8 @@ def run_near_threshold_suite(
                 row for chunk_rows in executor.map(_evaluate_near_threshold_chunk, chunk_args) for row in chunk_rows
             ]
 
+    default_rows = [row for row in rows if row["directional_mode"] == 2]
+    rows = [row for row in rows if row["directional_mode"] == 0]
     grouped: dict[tuple[str, float], list[dict[str, Any]]] = {}
     for row in rows:
         grouped.setdefault((row["lipschitz_mode"], float(row["dt_min_s"])), []).append(row)
@@ -884,11 +895,18 @@ def run_near_threshold_suite(
                 "median_runtime_us": float(statistics.median(runtimes_us)),
             }
         )
-    default_rows = filter_default_near_threshold_rows(rows)
     margin_summary = summarize_by_margin_bin(rows)
     default_margin_summary = summarize_by_margin_bin(default_rows)
     return {
         "rows": rows,
+        "default_rows": default_rows,
+        "default_summary": {
+            "directional_mode": 2,
+            "lipschitz_mode": "local",
+            "dt_min_s": 3.0,
+            "n": len(default_rows),
+            "certified_n": sum(int(row["proposed_is_safe"]) for row in default_rows),
+        },
         "summary_rows": summary_rows,
         "margin_summary": margin_summary,
         "default_margin_summary": default_margin_summary,
@@ -1006,11 +1024,6 @@ def summarize_by_margin_bin(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             }
         )
     return sorted(summary, key=lambda row: row["margin_bin_nmi"])
-
-
-def filter_default_near_threshold_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Return rows for the default near-threshold certification setting."""
-    return [row for row in rows if row["lipschitz_mode"] == "local" and abs(float(row["dt_min_s"]) - 3.0) <= 1e-12]
 
 
 def build_uniform_times(projection_time_s: float, dt_s: float) -> np.ndarray:

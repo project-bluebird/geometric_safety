@@ -29,7 +29,13 @@ from paper.evaluation import (
     outcomes_equivalent,
     run_near_threshold_suite,
 )
-from paper.run_evaluation import reconstruct_run_record_from_summary, render_existing_figures, write_csv
+from paper.run_evaluation import (
+    build_campaign_summary,
+    reconstruct_near_threshold_record,
+    reconstruct_run_record_from_summary,
+    render_existing_figures,
+    write_csv,
+)
 
 
 def test_turn_local_core_matches_public_api_default_interval() -> None:
@@ -399,3 +405,34 @@ def test_lipschitz_ablation_isolates_the_scalar_certificate() -> None:
             assert bool(row["proposed_is_safe"]) == scalar.is_safe
             directional_difference |= count != directional_count or scalar.is_safe != directional.is_safe
     assert directional_difference
+
+
+def test_near_threshold_default_uses_production_decisions() -> None:
+    config = EvaluationConfig.quick_defaults()
+    encounters = generate_near_threshold_suite(12, config.seed, config)
+    results = run_near_threshold_suite(encounters, config=config)
+    defaults = results["default_rows"]
+    assert len(defaults) == len(encounters)
+    expected_safe = 0
+    for referenced, row in zip(encounters, defaults, strict=True):
+        production = evaluate_proposed(referenced.encounter)
+        assert row["directional_mode"] == 2
+        assert row["lipschitz_mode"] == "local"
+        assert row["dt_min_s"] == 3.0
+        assert row["proposed_is_safe"] == production.is_safe
+        expected_safe += int(production.is_safe)
+    record = reconstruct_near_threshold_record(results, {"near_threshold_n": len(encounters)})
+    assert record["default_local_dt3_certified_n"] == expected_safe
+    assert sum(row["n"] for row in results["default_margin_summary"]) == len(encounters)
+
+
+def test_campaign_cannot_mix_scalar_and_directional_defaults() -> None:
+    with pytest.raises(ValueError, match="same near-threshold default certificate"):
+        build_campaign_summary(
+            [{"near_threshold": {}}, {"near_threshold": {"default_directional_mode": 2}}],
+            profile="quick",
+            repeat_seeds=2,
+            seed_step=1,
+            row_output_mode="none",
+            write_plots=False,
+        )

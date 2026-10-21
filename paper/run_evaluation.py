@@ -276,6 +276,7 @@ def run_single_evaluation(
             "summary_rows": near_threshold_results["summary_rows"],
             "margin_summary": near_threshold_results["margin_summary"],
             "default_margin_summary": near_threshold_results["default_margin_summary"],
+            "default_summary": near_threshold_results["default_summary"],
         },
         "narrative_scenarios": narrative,
         "kernel_runtime": kernel_runtime,
@@ -296,6 +297,9 @@ def run_single_evaluation(
         near_threshold_rows=near_threshold_results["rows"],
         sampled_proxy_miss=narrative["sampled_proxy_miss"],
     )
+    if row_output_mode == "all":
+        suffix = ".csv.gz" if compress_rows else ".csv"
+        write_csv(output_dir / f"near_threshold_production_rows{suffix}", near_threshold_results["default_rows"])
 
     write_csv(output_dir / "table_1_experiment_design.csv", build_table_1(config))
     write_csv(output_dir / "table_2_straight_exactness.csv", build_table_2(straight_results["summary"]))
@@ -341,7 +345,6 @@ def build_run_record(
 ) -> dict[str, Any]:
     straight_rows = straight_results["rows"]
     mixed_rows = mixed_results["rows"]
-    near_threshold_rows = near_threshold_results["rows"]
 
     straight_oracle_safe_n = sum(int(row["oracle_is_safe"]) for row in straight_rows)
     straight_oracle_unsafe_n = len(straight_rows) - straight_oracle_safe_n
@@ -355,9 +358,7 @@ def build_run_record(
     mixed_nominal = confusion_counts(eligible_mixed_rows, "reference_is_safe", "nominal_proxy_is_safe")
     mixed_coarse = confusion_counts(eligible_mixed_rows, "reference_is_safe", "coarse_proxy_is_safe")
 
-    near_default_rows = [
-        row for row in near_threshold_rows if row["lipschitz_mode"] == "local" and float(row["dt_min_s"]) == 3.0
-    ]
+    near_default_rows = near_threshold_results["default_rows"]
     near_default_certified_n = sum(int(row["proposed_is_safe"]) for row in near_default_rows)
     near_default_total_n = len(near_default_rows)
 
@@ -393,6 +394,7 @@ def build_run_record(
         },
         "near_threshold": {
             "accepted_n": config.near_threshold_n,
+            "default_directional_mode": 2,
             "default_local_dt3_certified_n": near_default_certified_n,
             "default_local_dt3_total_n": near_default_total_n,
         },
@@ -703,18 +705,27 @@ def reconstruct_near_threshold_record(
     near_threshold_summary: dict[str, Any],
     config: dict[str, Any],
 ) -> dict[str, Any]:
-    default_row = next(
-        row
-        for row in near_threshold_summary["summary_rows"]
-        if row["lipschitz_mode"] == "local" and float(row["dt_min_s"]) == 3.0
-    )
-    total_n = int(default_row["n"])
-    certified_n = recover_count_from_rate(float(default_row["certification_rate"]), total_n)
+    if "default_summary" in near_threshold_summary:
+        default_row = near_threshold_summary["default_summary"]
+        total_n = int(default_row["n"])
+        certified_n = int(default_row["certified_n"])
+        directional_mode = int(default_row["directional_mode"])
+    else:
+        # Archived scalar evaluations store the default among their ablation rows.
+        default_row = next(
+            row
+            for row in near_threshold_summary["summary_rows"]
+            if row["lipschitz_mode"] == "local" and float(row["dt_min_s"]) == 3.0
+        )
+        total_n = int(default_row["n"])
+        certified_n = recover_count_from_rate(float(default_row["certification_rate"]), total_n)
+        directional_mode = 0
     expected_total_n = int(config["near_threshold_n"])
     if total_n != expected_total_n:
         raise ValueError("Near-threshold summary row does not match config near_threshold_n.")
     return {
         "accepted_n": expected_total_n,
+        "default_directional_mode": directional_mode,
         "default_local_dt3_certified_n": certified_n,
         "default_local_dt3_total_n": total_n,
     }
@@ -844,6 +855,9 @@ def build_campaign_summary(
     row_output_mode: str,
     write_plots: bool,
 ) -> dict[str, Any]:
+    default_modes = {int(record["near_threshold"].get("default_directional_mode", 0)) for record in run_records}
+    if len(default_modes) != 1:
+        raise ValueError("Campaign records must use the same near-threshold default certificate")
     straight_total_n = sum(int(record["straight"]["n"]) for record in run_records)
     straight_nominal_false_safe_n = sum(int(record["straight"]["nominal_proxy_false_safe_n"]) for record in run_records)
     straight_nominal_false_unsafe_n = sum(
@@ -926,6 +940,7 @@ def build_campaign_summary(
                 "coarse_proxy_disagreement_rate": safe_divide(coarse_disagreement_n, mixed_total_eligible_n),
             },
             "near_threshold": {
+                "default_directional_mode": next(iter(default_modes)),
                 "default_local_dt3_total_n": near_default_total_n,
                 "default_local_dt3_certified_n": near_default_certified_n,
                 "default_local_dt3_certification_rate": safe_divide(near_default_certified_n, near_default_total_n),

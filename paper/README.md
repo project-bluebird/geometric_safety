@@ -254,7 +254,12 @@ with the current solver; `--grid-density` applies only in that mode.
 
 The near-threshold Lipschitz/stopping-width ablation explicitly disables the
 directional certificate in both its timed solver and evaluation counter. Other
-evaluations retain the production default.
+evaluations retain the production default. Near-threshold headline counts and
+the default margin-bin summary use a separate production pass with directional
+mode 2. Its settings and counts appear in `default_summary`; the ablation rows
+remain scalar. Full row output includes `near_threshold_production_rows.csv`
+(or `.csv.gz`) for this pass. Archived evaluations retain the settings used to generate them,
+and aggregation rejects a mixture of scalar and directional default results.
 
 To export a different archive, use the
 [archive reproduction command](#reproducing-from-the-included-archive) with that
