@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import ast
 from collections.abc import Mapping
-import inspect
 import math
 from types import FunctionType
 from typing import Protocol, TypedDict, Unpack, cast
@@ -17,6 +16,8 @@ import mpmath as mp
 import numba
 import numpy as np
 from numpy.typing import NDArray
+
+from geometric_safety._instrumentation import python_function as python_function
 
 type FloatArray = NDArray[np.float64]
 type SolverResult = tuple[bool, float, float]
@@ -78,16 +79,6 @@ class ReferenceCertificate(TypedDict):
     left_distance: mp.mpf
     right_distance: mp.mpf
     lipschitz: mp.mpf
-
-
-def python_function(dispatcher: object) -> FunctionType:
-    """Recover the Python function for source and globals instrumentation."""
-    if not callable(dispatcher):
-        raise TypeError("Numerical instrumentation requires a callable")
-    function = inspect.unwrap(dispatcher)
-    if not isinstance(function, FunctionType):
-        raise TypeError("Numerical instrumentation requires a Python function")
-    return function
 
 
 def solver_ast(source: str, name: str, guard: float | None = None) -> tuple[ast.Module, ast.FunctionDef]:

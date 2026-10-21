@@ -13,8 +13,8 @@ import numba
 import numpy as np
 
 from geometric_safety import relevant_aircraft as ra
+from geometric_safety._instrumentation import counted_python_function
 from geometric_safety.util import DEG_TO_RAD, EARTH_RADIUS_IN_METERS, KT_TO_MPS, NMI_TO_M, RAD_TO_DEG
-from paper.numerical_validation import python_function
 
 DEFAULT_REF_LAT = 51.0
 DEFAULT_REF_LON = -1.0
@@ -614,39 +614,29 @@ def count_fixed_time_evals(
     use_interval_local_lipschitz: bool,
     directional_mode: int = 2,
 ) -> tuple[int, MethodOutcome]:
-    """Count fixed-time hull evaluations using the Python shadow of the local core."""
-    py_func = python_function(ra._catch_up_projection_interval_with_turns_local)
-    globals_dict = py_func.__globals__
-    original = globals_dict["_sample_relative_hull_at_time"]
-    counter = {"n": 0}
-
-    def wrapped(*args: object, **kwargs: object) -> object:
-        counter["n"] += 1
-        return original(*args, **kwargs)
-
-    globals_dict["_sample_relative_hull_at_time"] = wrapped
-    try:
-        result = py_func(
-            rel_pos0=encounter.rel_pos0(),
-            a_heading0_deg=encounter.a_heading0_deg,
-            a_target_heading_deg=encounter.a_target_heading_deg,
-            a_speed_kt=encounter.a_speed_kt,
-            a_turn_rate_deg_sec=encounter.a_turn_rate_deg_sec,
-            b_heading0_deg=encounter.b_heading0_deg,
-            b_target_heading_deg=encounter.b_target_heading_deg,
-            b_speed_kt=encounter.b_speed_kt,
-            b_turn_rate_deg_sec=encounter.b_turn_rate_deg_sec,
-            separation_threshold_m=encounter.separation_threshold_m,
-            speed_diff_kt=encounter.speed_diff_kt,
-            projection_time_s=encounter.projection_time_s,
-            use_interval_local_lipschitz=use_interval_local_lipschitz,
-            turn_speed_schedule_uncertainty_kt=0.0,
-            min_cert_interval_s=dt_min_s,
-            directional_mode=directional_mode,
-        )
-    finally:
-        globals_dict["_sample_relative_hull_at_time"] = original
-    return counter["n"], MethodOutcome.from_tuple(result, encounter.separation_threshold_m)
+    """Count samples in the local core's Python control flow, retaining compiled geometry helpers."""
+    py_func, counter = counted_python_function(
+        ra._catch_up_projection_interval_with_turns_local, "_sample_relative_hull_at_time"
+    )
+    result = py_func(
+        rel_pos0=encounter.rel_pos0(),
+        a_heading0_deg=encounter.a_heading0_deg,
+        a_target_heading_deg=encounter.a_target_heading_deg,
+        a_speed_kt=encounter.a_speed_kt,
+        a_turn_rate_deg_sec=encounter.a_turn_rate_deg_sec,
+        b_heading0_deg=encounter.b_heading0_deg,
+        b_target_heading_deg=encounter.b_target_heading_deg,
+        b_speed_kt=encounter.b_speed_kt,
+        b_turn_rate_deg_sec=encounter.b_turn_rate_deg_sec,
+        separation_threshold_m=encounter.separation_threshold_m,
+        speed_diff_kt=encounter.speed_diff_kt,
+        projection_time_s=encounter.projection_time_s,
+        use_interval_local_lipschitz=use_interval_local_lipschitz,
+        turn_speed_schedule_uncertainty_kt=0.0,
+        min_cert_interval_s=dt_min_s,
+        directional_mode=directional_mode,
+    )
+    return counter.calls, MethodOutcome.from_tuple(result, encounter.separation_threshold_m)
 
 
 def warm_up_numba(config: EvaluationConfig) -> None:
