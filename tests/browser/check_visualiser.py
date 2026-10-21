@@ -184,6 +184,7 @@ def test_presets_unsupported_motion_and_real_server_validation(page: Page) -> No
     [
         ("minimum_vertical_rate_fpm", ""),
         ("required_vertical_gap_fl", "-1"),
+        ("required_vertical_gap_fl", "0"),
         ("vertical_rounding_fl", "0.5"),
         ("a_current_fl", ""),
         ("a_selected_fl", "1001"),
@@ -309,6 +310,43 @@ def test_error_units_api_parity_and_map_selection(page: Page, live_url: str) -> 
     assert selected.b.lat == grid.lats[len(grid.lats) // 2]
     assert selected.b.lon == grid.lons[len(grid.lons) // 2]
     expect(page.locator("#preset")).to_have_value("custom")
+
+    # Changing only B's coordinates preserves the map and moves its marker.
+    before_marker = NUMBERS.validate_python(page.evaluate("window.canvasDraws.gridCanvas.circles.at(-1)"))
+    count_text = page.locator("#gridStatus").inner_text()
+    page.locator("#b_lat").fill(str(selected.b.lat + 0.03))
+    page.locator("#b_lon").fill(str(selected.b.lon + 0.02))
+    expect(page.locator("#gridCanvas")).to_be_visible()
+    expect(page.locator("#gridStatus")).to_have_text(count_text)
+    with page.expect_response(lambda response: response.url.endswith("/api/time_sweep")) as detail_response:
+        page.locator("#evaluateBtn").click()
+    updated = DETAIL.validate_python(detail_response.value.json())
+    assert updated.geometry is not None
+    marker = NUMBERS.validate_python(page.evaluate("window.canvasDraws.gridCanvas.circles.at(-1)"))
+    assert marker[:2] != before_marker[:2]
+    east, north = updated.geometry.b.midpoint[0]
+    step = grid.east_m[1] - grid.east_m[0]
+    x, y, width, height = BOX.validate_python(page.evaluate("window.canvasDraws.gridCanvas.box"))
+    scale = min(width, height) / (grid.east_m[-1] - grid.east_m[0] + step)
+    expected_x = x + width / 2 + east * scale
+    expected_y = y + height / 2 - north * scale
+    assert marker[:2] == pytest.approx([expected_x, expected_y], abs=1e-6)
+
+    # Dispatch both real UI actions in one browser task so the cell click
+    # necessarily cancels an outstanding fetch, without delaying the server.
+    with page.expect_response(lambda response: response.url.endswith("/api/time_sweep")):
+        page.evaluate(
+            """({x, y}) => {
+          document.getElementById('refreshGridBtn').click();
+          const canvas = document.getElementById('gridCanvas');
+          const rect = canvas.getBoundingClientRect();
+          canvas.dispatchEvent(new MouseEvent('click', {bubbles: true,
+            clientX: rect.left + x, clientY: rect.top + y}));
+        }""",
+            {"x": x + width / 2, "y": y + height / 2},
+        )
+    expect(page.locator("#gridStatus")).to_have_text(count_text)
+    expect(page.locator("#gridCanvas")).to_be_visible()
 
 
 def test_fixed_axes_altitude_ticks_and_responsive_layout(page: Page, tmp_path: Path) -> None:

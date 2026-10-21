@@ -37,7 +37,7 @@ Point = tuple[float, float]
 class AircraftInput(BaseModel):
     model_config = ConfigDict(allow_inf_nan=False, extra="forbid")
 
-    lat: float = Field(ge=-90.0, le=90.0)
+    lat: float = Field(gt=-90.0, lt=90.0)
     lon: float = Field(ge=-180.0, le=180.0)
     heading_deg: float = Field(ge=0.0, le=360.0)
     target_heading_deg: float = Field(ge=0.0, le=360.0)
@@ -76,10 +76,25 @@ class VisualParams(BaseModel):
     relative_velocity_error_mps: float = Field(default=0.0, ge=0.0, le=500.0)
     vertical_enabled: bool = False
     minimum_vertical_rate_fpm: float = Field(default=1000.0, ge=0.0, le=10_000.0)
-    required_vertical_gap_fl: float = Field(default=10.0, ge=0.0, le=100.0)
+    required_vertical_gap_fl: float = Field(default=10.0, gt=0.0, le=100.0)
     vertical_rounding_fl: int = Field(default=10, ge=0, le=100)
     grid_density: int = Field(default=41, ge=15, le=101)
     view_half_extent_nm: float = Field(default=25.0, ge=5.0, le=100.0)
+
+    @model_validator(mode="after")
+    def explicit_vertical_declarations(self) -> Self:
+        if not self.vertical_enabled:
+            return self
+        missing: list[str] = []
+        for name, aircraft in (("a", self.a), ("b", self.b)):
+            missing.extend(
+                f"{name}.{field}" for field in ("current_fl", "selected_fl") if field not in aircraft.model_fields_set
+            )
+        if "minimum_vertical_rate_fpm" not in self.model_fields_set:
+            missing.append("minimum_vertical_rate_fpm")
+        if missing:
+            raise ValueError(f"Vertical checking requires explicit declarations: {', '.join(missing)}")
+        return self
 
 
 @dataclass(frozen=True)
@@ -339,6 +354,8 @@ def presets() -> list[Preset]:
         turn_rate_deg_s=0.0,
         speed_min_kt=315.0,
         speed_max_kt=365.0,
+        current_fl=330.0,
+        selected_fl=330.0,
     )
     b_lat, b_lon = local_xy_to_latlon(20.0 * NMI_TO_M, 0.0, a.lat, a.lon)
     b = AircraftInput(
@@ -349,9 +366,10 @@ def presets() -> list[Preset]:
         turn_rate_deg_s=0.0,
         speed_min_kt=315.0,
         speed_max_kt=365.0,
+        current_fl=330.0,
         selected_fl=350.0,
     )
-    clearance = VisualParams(a=a, b=b, vertical_enabled=True)
+    clearance = VisualParams(a=a, b=b, vertical_enabled=True, minimum_vertical_rate_fpm=1000.0)
     options = [
         Preset(
             id="vertical_clearance",

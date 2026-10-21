@@ -478,12 +478,31 @@
       grid = null;
       gridPlot = null;
       $("gridCanvas").hidden = true;
-      text("gridStatus", "Map needs evaluation for these inputs.");
     }
+    renderGridStatus();
+  }
+
+  /** @returns {void} */
+  function renderGridStatus() {
+    text("gridStatus", grid
+      ? `${grid.counts.certified_safe} certified · ${grid.counts.unresolved} unresolved · ${grid.counts.unsupported} unsupported cells`
+      : "Map needs evaluation for these inputs.");
   }
 
   /** @returns {boolean} */
   function validateInputs() {
+    for (const name of ["a_lat", "b_lat"]) {
+      const field = inputElement(name);
+      field.setCustomValidity(
+        Math.abs(field.valueAsNumber) === 90
+          ? "Latitude must be strictly between -90 and 90 degrees."
+          : "",
+      );
+    }
+    const gap = inputElement("required_vertical_gap_fl");
+    gap.setCustomValidity(
+      gap.valueAsNumber === 0 ? "The required vertical gap must be greater than zero." : "",
+    );
     const invalid = inputs.find((input) => !input.checkValidity());
     if (!invalid) return true;
     for (
@@ -1204,14 +1223,29 @@
       grid = data;
       $("gridCanvas").hidden = false;
       drawGrid();
-      text(
-        "gridStatus",
-        `${data.counts.certified_safe} certified · ${data.counts.unresolved} unresolved · ${data.counts.unsupported} unsupported cells`,
-      );
+      renderGridStatus();
     } catch (error) {
       if (!request.signal.aborted && currentRevision === revision)
         text("gridStatus", errorMessage(error));
     }
+  }
+
+  /** @returns {Point | null} */
+  function selectedMapPosition() {
+    if (!grid) return null;
+    const latitude = inputElement("b_lat").valueAsNumber;
+    const longitude = inputElement("b_lon").valueAsNumber;
+    if (!Number.isFinite(latitude) || !Number.isFinite(longitude) ||
+        latitude <= -90 || latitude >= 90 || longitude < -180 || longitude > 180) return null;
+    // The grid already supplies the affine latitude/longitude-to-local mapping.
+    // Wrap longitude differences so a map can straddle the date line.
+    const wrap = (/** @type {number} */ value) => ((value + 540) % 360) - 180;
+    return [
+      grid.east_m[0] + wrap(longitude - grid.lons[0]) / wrap(grid.lons[1] - grid.lons[0]) *
+        (grid.east_m[1] - grid.east_m[0]),
+      grid.north_m[0] + (latitude - grid.lats[0]) / (grid.lats[1] - grid.lats[0]) *
+        (grid.north_m[1] - grid.north_m[0]),
+    ];
   }
 
   /** @returns {void} */
@@ -1246,7 +1280,8 @@
         plot.ctx.fillRect(x, y, right - x + 0.3, bottom - y + 0.3);
       }
     dot(plot, [0, 0], colour.a, "A");
-    dot(plot, toNM(grid.b_position_m), colour.b, "B");
+    const position = selectedMapPosition();
+    if (position) dot(plot, toNM(position), colour.b, "B");
   }
 
   /** @param {string} id @returns {void} */
@@ -1261,7 +1296,9 @@
 
   inputs.forEach((input) => {
     input.addEventListener("input", () => {
-      invalidate();
+      const positionOnly = input.id === "b_lat" || input.id === "b_lon";
+      invalidate(positionOnly);
+      if (positionOnly) drawGrid();
       selectElement("preset").value = "custom";
       text("presetDescription", "Custom motion and separation bounds.");
       updateVerticalControls();

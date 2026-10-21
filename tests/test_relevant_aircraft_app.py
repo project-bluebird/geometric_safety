@@ -21,8 +21,7 @@ from geometric_safety import (
     certify_heading_separation_from_latlon,
     certify_heading_separation_with_vertical_from_latlon,
 )
-from geometric_safety.demo_utils import TURN_DEMO_SCENARIOS, build_turn_debug_payload
-from geometric_safety.relevant_aircraft import catch_up_projection_interval_with_turns
+from geometric_safety.demo_utils import heading_summary, turn_duration_s
 from geometric_safety.util import KT_TO_MPS, NMI_TO_M
 
 
@@ -307,41 +306,51 @@ def test_page_embeds_valid_presets_and_responsive_assets(client: TestClient) -> 
     assert client.get("/static/relevant_aircraft.css").status_code == 200
 
 
-def test_legacy_standalone_demo_still_matches_its_core_model() -> None:
-    scenario = TURN_DEMO_SCENARIOS[0]
-    b_lat, b_lon = scenario.b_latlon()
-    payload = build_turn_debug_payload(
-        a_lat=scenario.a_lat,
-        a_lon=scenario.a_lon,
-        a_heading0_deg=scenario.a_heading_deg,
-        a_target_heading_deg=scenario.a_target_heading_deg,
-        a_speed_kt=scenario.a_speed_kt,
-        a_turn_rate_deg_sec=scenario.a_turn_rate_deg_sec,
-        b_lat=b_lat,
-        b_lon=b_lon,
-        b_heading0_deg=scenario.b_heading_deg,
-        b_target_heading_deg=scenario.b_target_heading_deg,
-        b_speed_kt=scenario.b_speed_kt,
-        b_turn_rate_deg_sec=scenario.b_turn_rate_deg_sec,
-        separation_threshold_m=scenario.separation_threshold_nm * NMI_TO_M,
-        speed_diff_kt=scenario.speed_diff_kt,
-        projection_time_s=scenario.projection_time_min * 60.0,
-    )
-    direct = catch_up_projection_interval_with_turns(
-        scenario.a_lat,
-        scenario.a_lon,
-        scenario.a_heading_deg,
-        scenario.a_target_heading_deg,
-        scenario.a_speed_kt,
-        scenario.a_turn_rate_deg_sec,
-        b_lat,
-        b_lon,
-        scenario.b_heading_deg,
-        scenario.b_target_heading_deg,
-        scenario.b_speed_kt,
-        scenario.b_turn_rate_deg_sec,
-        scenario.separation_threshold_nm * NMI_TO_M,
-        scenario.speed_diff_kt,
-        scenario.projection_time_min * 60.0,
-    )
-    assert payload["summary"]["is_separated"] == direct[0]
+@pytest.mark.parametrize("endpoint", ["/api/time_sweep", "/api/grid"])
+@pytest.mark.parametrize(
+    "missing", ["a.current_fl", "a.selected_fl", "b.current_fl", "b.selected_fl", "minimum_vertical_rate_fpm"]
+)
+def test_vertical_requests_require_explicit_declarations(client: TestClient, endpoint: str, missing: str) -> None:
+    params = example().model_dump()
+    if "." in missing:
+        aircraft, field = missing.split(".")
+        del params[aircraft][field]
+    else:
+        del params[missing]
+    response = client.post(endpoint, json=params)
+    assert response.status_code == 422
+    assert missing in response.text
+
+
+def test_lateral_requests_do_not_require_inactive_vertical_declarations(client: TestClient) -> None:
+    params = example("lateral_only").model_dump()
+    for aircraft in ("a", "b"):
+        del params[aircraft]["current_fl"]
+        del params[aircraft]["selected_fl"]
+    del params["minimum_vertical_rate_fpm"]
+    response = client.post("/api/time_sweep", json=params)
+    assert response.status_code == 200
+    assert response.json()["certificate"]["status"] == "unresolved"
+
+
+def test_visualiser_requires_a_positive_vertical_gap(client: TestClient) -> None:
+    params = example().model_dump()
+    params["required_vertical_gap_fl"] = 0.0
+    response = client.post("/api/time_sweep", json=params)
+    assert response.status_code == 422
+    assert "required_vertical_gap_fl" in response.text
+
+
+@pytest.mark.parametrize("rate", [0.0, float("nan"), float("inf")])
+def test_demo_annotations_reject_invalid_turn_rates(rate: float) -> None:
+    with pytest.raises(ValueError, match="turn rate"):
+        turn_duration_s(0.0, 90.0, rate)
+    with pytest.raises(ValueError, match="turn rate"):
+        heading_summary(0.0, 90.0, rate, 300.0)
+
+
+def test_demo_annotations_share_the_shortest_turn_contract() -> None:
+    assert turn_duration_s(0.0, 360.0, 0.0) == 0.0
+    assert heading_summary(0.0, 360.0, 0.0, 300.0) == "0 deg straight @ 300 kt"
+    assert turn_duration_s(350.0, 10.0, -2.0) == 10.0
+    assert "2.0 deg/s" in heading_summary(350.0, 10.0, -2.0, 300.0)
