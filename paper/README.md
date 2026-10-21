@@ -306,8 +306,14 @@ scenario figures retained for reproducibility.
 | `fig_sampled_proxy_miss.pdf` | Supplementary sampled-heuristic figure |
 | `projection_min_error_vs_excursion.pdf` | Supplementary projection-sensitivity figure |
 
-The explanatory application figures are deterministic; the empirical
-figures come from the saved paper-run archive.
+The schematic application figures are deterministic. The clearance-grid figure
+is rendered from the archive's saved source grid, and the empirical PDFs are
+copied from that archive. Use `--recompute-clearance-grid` to generate a new grid
+with the current solver; `--grid-density` applies only in that mode.
+
+The near-threshold Lipschitz/stopping-width ablation explicitly disables the
+directional certificate in both its timed solver and evaluation counter. Other
+evaluations retain the production default.
 
 To export the generated figure files from another archive:
 

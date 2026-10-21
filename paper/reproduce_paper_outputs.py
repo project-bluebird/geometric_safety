@@ -2,7 +2,7 @@
 
 The expensive empirical source data are produced by this repository's
 ``paper`` pipeline. This wrapper regenerates the explanatory application
-figures from the public code and copies the rendered empirical PDFs from a
+schematics from the public code, renders the saved clearance grid, and copies empirical PDFs from a
 saved paper run into a local ``manuscript/figures/...`` output tree.
 """
 
@@ -102,13 +102,18 @@ def parse_args() -> argparse.Namespace:
         "--grid-density",
         type=int,
         default=600,
-        help="Grid density for the clearance-grid application figure; 600 evaluates 360,000 grid cells.",
+        help="Grid density when --recompute-clearance-grid is set; 600 evaluates 360,000 cells.",
     )
     parser.add_argument(
         "--manifest",
         type=Path,
         default=None,
         help="JSON manifest to write after successful reproduction.",
+    )
+    parser.add_argument(
+        "--recompute-clearance-grid",
+        action="store_true",
+        help="Recompute the clearance grid with the current solver instead of rendering the saved source grid.",
     )
     parser.add_argument("--skip-application", action="store_true", help="Do not regenerate application figures.")
     parser.add_argument("--skip-empirical", action="store_true", help="Do not import empirical figures.")
@@ -210,17 +215,32 @@ def run_application_figures(args: argparse.Namespace) -> list[dict[str, str]]:
         source_path = None
         if label == "clearance-grid":
             source_path = manuscript_root / str(source_rel)
-            command.extend(
-                [
-                    "--library-root",
-                    str(library_root),
-                    "--grid-density",
-                    str(args.grid_density),
-                    "--source-json",
-                    str(source_path),
-                    "--write-source-json",
-                ]
-            )
+            command.extend(["--source-json", str(source_path)])
+            if args.recompute_clearance_grid:
+                command.extend(
+                    [
+                        "--library-root",
+                        str(library_root),
+                        "--grid-density",
+                        str(args.grid_density),
+                        "--write-source-json",
+                    ]
+                )
+            else:
+                with resolved_run_root(
+                    run_root=args.run_root, archive=args.archive, library_root=library_root
+                ) as run_root:
+                    saved_source = run_root / "rendered_figures/application/fig_clearance_grid_source.json.gz"
+                    if not saved_source.is_file():
+                        raise FileNotFoundError(f"Missing saved clearance-grid source: {saved_source}")
+                    print(
+                        "IMPORT clearance-grid source: "
+                        "saved-paper-run/rendered_figures/application/fig_clearance_grid_source.json.gz"
+                    )
+                    if not args.dry_run:
+                        source_path.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(saved_source, source_path)
+                command.append("--read-source-json")
         print(f"RENDER {label}: {relative_to_root(output_path, manuscript_root)}")
         if not args.dry_run:
             subprocess.run(command, cwd=library_root, check=True)

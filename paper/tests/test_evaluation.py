@@ -27,6 +27,7 @@ from paper.evaluation import (
     generate_mixed_turn_suite,
     generate_near_threshold_suite,
     outcomes_equivalent,
+    run_near_threshold_suite,
 )
 from paper.run_evaluation import reconstruct_run_record_from_summary, render_existing_figures, write_csv
 
@@ -374,3 +375,27 @@ def test_write_csv_creates_valid_empty_gzip(tmp_path: Path) -> None:
 
     with gzip.open(path, "rt", encoding="utf-8") as handle:
         assert handle.read() == ""
+
+
+def test_lipschitz_ablation_isolates_the_scalar_certificate() -> None:
+    config = EvaluationConfig.quick_defaults()
+    encounters = generate_near_threshold_suite(12, config.seed, config)
+    rows = run_near_threshold_suite(encounters, config=config)["rows"]
+    group_size = 2 * len(config.dt_min_values_s)
+    assert len(rows) == len(encounters) * group_size
+    directional_difference = False
+    for index, referenced in enumerate(encounters):
+        for row in rows[index * group_size : (index + 1) * group_size]:
+            local = row["lipschitz_mode"] == "local"
+            width = float(row["dt_min_s"])
+            count, scalar = count_fixed_time_evals(
+                referenced.encounter, dt_min_s=width, use_interval_local_lipschitz=local, directional_mode=0
+            )
+            directional_count, directional = count_fixed_time_evals(
+                referenced.encounter, dt_min_s=width, use_interval_local_lipschitz=local, directional_mode=2
+            )
+            assert row["directional_mode"] == 0
+            assert row["fixed_time_evals"] == count
+            assert bool(row["proposed_is_safe"]) == scalar.is_safe
+            directional_difference |= count != directional_count or scalar.is_safe != directional.is_safe
+    assert directional_difference

@@ -406,6 +406,7 @@ def evaluate_proposed(
     *,
     dt_min_s: float = ra.TURN_TIME_CERT_MIN_INTERVAL_S,
     use_interval_local_lipschitz: bool = True,
+    directional_mode: int = 2,
     turn_speed_schedule_uncertainty_kt: float = 0.0,
     ref_lat: float = DEFAULT_REF_LAT,
     ref_lon: float = DEFAULT_REF_LON,
@@ -413,6 +414,8 @@ def evaluate_proposed(
 ) -> MethodOutcome:
     """Evaluate the proposed method either through the public API or the local core."""
     if use_public_api:
+        if directional_mode != 2:
+            raise ValueError("The public API uses the complete directional certificate")
         result = ra.catch_up_projection_interval_with_turns(
             **encounter_to_turn_kwargs(encounter, ref_lat, ref_lon),
             use_interval_local_lipschitz=use_interval_local_lipschitz,
@@ -435,6 +438,7 @@ def evaluate_proposed(
             use_interval_local_lipschitz=use_interval_local_lipschitz,
             turn_speed_schedule_uncertainty_kt=turn_speed_schedule_uncertainty_kt,
             min_cert_interval_s=dt_min_s,
+            directional_mode=directional_mode,
         )
     return MethodOutcome.from_tuple(result, encounter.separation_threshold_m)
 
@@ -608,6 +612,7 @@ def count_fixed_time_evals(
     *,
     dt_min_s: float,
     use_interval_local_lipschitz: bool,
+    directional_mode: int = 2,
 ) -> tuple[int, MethodOutcome]:
     """Count fixed-time hull evaluations using the Python shadow of the local core."""
     py_func = python_function(ra._catch_up_projection_interval_with_turns_local)
@@ -637,6 +642,7 @@ def count_fixed_time_evals(
             use_interval_local_lipschitz=use_interval_local_lipschitz,
             turn_speed_schedule_uncertainty_kt=0.0,
             min_cert_interval_s=dt_min_s,
+            directional_mode=directional_mode,
         )
     finally:
         globals_dict["_sample_relative_hull_at_time"] = original
@@ -829,6 +835,7 @@ def _evaluate_near_threshold_chunk(
                     encounter,
                     dt_min_s=dt_min_s,
                     use_interval_local_lipschitz=use_local,
+                    directional_mode=0,
                     use_public_api=False,
                 )
                 runtime_us = (time.perf_counter() - start) * 1e6
@@ -836,11 +843,13 @@ def _evaluate_near_threshold_chunk(
                     encounter,
                     dt_min_s=dt_min_s,
                     use_interval_local_lipschitz=use_local,
+                    directional_mode=0,
                 )
                 if not outcomes_equivalent(outcome, counted_outcome):
                     raise RuntimeError("Instrumented and compiled ablation outcomes diverged.")
                 row = dict(base_row)
                 row.update(outcome_to_row("proposed", outcome))
+                row["directional_mode"] = 0
                 row["lipschitz_mode"] = "local" if use_local else "global"
                 row["dt_min_s"] = float(dt_min_s)
                 row["fixed_time_evals"] = int(fixed_time_evals)
