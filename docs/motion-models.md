@@ -164,7 +164,15 @@ The enclosure and geometric arguments use exact real arithmetic. The
 implementation uses floating-point arithmetic with an empirical `1e-6 m`
 guard. It does not provide validated interval arithmetic or a proved bound
 on accumulated rounding error. A `certified_safe` status inherits this
-numerical limitation as well as the caller's motion assumptions.
+numerical limitation as well as the caller's motion assumptions. The margin
+applies to straight and turning checks, including zero-length horizons.
+
+Hull construction uses a shared monotone-chain algorithm with filtered
+orientation signs and an exact expansion fallback for ambiguous signs. If
+coordinate scaling or product exponents prevent that fallback, it returns an
+enclosing rectangle. This preserves containment at the cost of a looser
+distance bound. These predicates do not bound the errors in trajectory
+construction, distance calculations or time certification.
 
 The numerical domain limits the initial relative distance plus maximum
 total travel, and the inflated separation threshold, to about 8.8 million
@@ -359,3 +367,10 @@ The minimum rate must bound progress from the start of the interval until
 the selected level is reached. An eventual rate does not cover an initial
 delay or ramp-up. The lateral speed and turn assumptions must also hold
 throughout the lateral check, including during altitude changes.
+
+A zero required vertical gap retains the mathematical nonnegative-gap
+criterion in the library. It does not disable vertical checking and can make
+coincident, zero-width altitude bands satisfy that criterion. The visualiser
+requires a positive gap. When vertical checking is enabled, API requests
+must explicitly declare both aircraft's current and selected levels and the
+minimum climb/descent rate; omitted values cannot support a certificate.

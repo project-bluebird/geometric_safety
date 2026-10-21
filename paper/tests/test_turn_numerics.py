@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 
 from geometric_safety import relevant_aircraft as ra
-from paper.numerical_validation import TurnCase
+from paper.numerical_validation import TurnCase, boundary_thresholds
 from paper.run_turn_numerics import cases, traced_solver
 from paper.turn_numerical_reference import basis, certificate, distance
 
@@ -88,3 +88,36 @@ def test_trace_detects_guard_effect() -> None:
     )
     assert solver(**case, study_trace=trace, study_guard=0.0)[0]
     assert not solver(**case, study_trace=trace, study_guard=1e-6)[0]
+
+
+@pytest.mark.parametrize("guard", [1e-9, 1e-6, 1e-5])
+def test_guarded_boundary_probes_expose_an_understated_envelope(guard: float) -> None:
+    solver, _ = traced_solver()
+    trace = np.empty((2048, 6))
+    witnesses = 0
+    for _, declared in cases(48, 2026092002):
+        if declared["eta_const_m"] < 1.0:
+            continue
+        optimistic = declared.copy()
+        optimistic["eta_const_m"] -= 2.0 * guard
+        trace.fill(np.nan)
+        solver(**optimistic, study_trace=trace, study_guard=guard)
+        rows = trace[~np.isnan(trace[:, 0])]
+        if not len(rows):
+            continue
+        for _, threshold in boundary_thresholds(float(rows[0, 2]), float(rows[0, 3]), guard):
+            probe = optimistic.copy()
+            probe["separation_threshold_m"] = threshold
+            trace.fill(np.nan)
+            solver(**probe, study_trace=trace, study_guard=guard)
+            for left, right, _, _, _, accepted in trace[~np.isnan(trace[:, 0])]:
+                if accepted:
+                    reference_case = declared.copy()
+                    reference_case["separation_threshold_m"] = threshold
+                    residual = certificate(reference_case, float(left), float(right))["residual"]
+                    witnesses += residual < 0
+        if witnesses:
+            break
+    # The candidate's envelope is too small by twice its guard. Boundary
+    # probes must expose at least one accepted comparison invalid for the declaration.
+    assert witnesses > 0

@@ -1,6 +1,10 @@
 """Analytic checks for projected-motion interval certificates."""
 
 import math
+import os
+from pathlib import Path
+import subprocess
+import sys
 
 import numpy as np
 import pytest
@@ -58,3 +62,43 @@ def test_inflation_is_applied_to_directional_acceptance() -> None:
     case["eta_const_m"] = 1.0
     case["eta_rate_mps"] = 2.0
     assert not ra._catch_up_projection_interval_with_turns_local(**case)[0]
+
+
+def test_directional_bounds_do_not_depend_on_first_compilation_caller(tmp_path: Path) -> None:
+    script = """
+import json, math, sys
+import numpy as np
+from geometric_safety import relevant_aircraft as ra
+from paper.run_turn_numerics import cases
+from paper.validate_directional_production import interval_args
+inputs = list(cases(48, 2026092031))
+if sys.argv[1] == "helpers":
+    ra._projected_heading_range(45.0, 180.0, 3.0, np.array([1.0, 0.0]), 0.0, 80.0)
+    ra._projected_motion_lower_bound(10.0, 10.0, -2.0, 2.0, 4.0)
+    arguments = (np.array([-10.0, 5.0]), 90.0, 90.0, 0.0, 20.0, 20.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, math.inf)
+    for include_hull in (False, True):
+        ra._interval_directional_lower_bound(*arguments, include_hull)
+else:
+    ra._catch_up_projection_interval_with_turns_local(**inputs[0][1])
+records = []
+for _, case in inputs:
+    bound = float(ra._interval_directional_lower_bound(*interval_args(case, 0.0, case["projection_time_s"])))
+    records.append(bound.hex())
+    query = case.copy()
+    for threshold in (case["separation_threshold_m"], max(1.0, bound-ra.TURN_CERT_FP_GUARD_M)):
+        query["separation_threshold_m"] = threshold
+        result = ra._catch_up_projection_interval_with_turns_local(**query)
+        records.append([bool(result[0]), float(result[1]).hex(), float(result[2]).hex()])
+print(json.dumps(records))
+"""
+    outputs = []
+    for mode in ("helpers", "api"):
+        result = subprocess.run(
+            [sys.executable, "-c", script, mode],
+            env=dict(os.environ, NUMBA_CACHE_DIR=str(tmp_path / mode), PYTHONDONTWRITEBYTECODE="1"),
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        outputs.append(result.stdout)
+    assert outputs[0] == outputs[1]

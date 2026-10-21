@@ -115,10 +115,8 @@ def test_directional_trace_records_compiled_decision(case: TurnCase) -> None:
     solver = directional.traced_solver()
     trace = np.full((2048, 5), np.nan)
     branches: set[bool] = set()
-    saw_reconstruction_disagreement = False
 
     def check_threshold(threshold: float) -> bool:
-        nonlocal saw_reconstruction_disagreement
         query = case.copy()
         query["separation_threshold_m"] = threshold
         trace.fill(np.nan)
@@ -138,8 +136,6 @@ def test_directional_trace_records_compiled_decision(case: TurnCase) -> None:
         if not accepted:
             assert rows[1, 1] - rows[1, 0] < case["projection_time_s"]
         branches.add(accepted)
-        reconstructed = float(rows[0, 2]) >= threshold + float(rows[0, 3]) + ra.TURN_CERT_FP_GUARD_M
-        saw_reconstruction_disagreement |= reconstructed != recorded
         return accepted
 
     check_threshold(case["separation_threshold_m"])
@@ -164,7 +160,6 @@ def test_directional_trace_records_compiled_decision(case: TurnCase) -> None:
         else:
             high = midpoint
     assert branches == {False, True}
-    assert saw_reconstruction_disagreement
     with pytest.raises(RuntimeError, match="trace capacity exceeded"):
         solver(**case, study_trace=np.empty((0, 5)))
 
@@ -191,7 +186,6 @@ def test_directional_audit_keeps_compiled_acceptance(numerical_result: direction
     solver = directional.traced_solver()
     trace = np.empty((16384, 5))
     accepted_count = 0
-    saw_reconstruction_disagreement = False
     for record in numerical_result["records"]:
         query = encounters[tuple(record["case"]["rel_pos0"])].copy()
         query["separation_threshold_m"] = record["case"]["separation_threshold_m"]
@@ -208,12 +202,9 @@ def test_directional_audit_keeps_compiled_acceptance(numerical_result: direction
         accepted_count += int(accepted)
         if accepted:
             assert record["reference_residual_m"] >= 0.0
-        reconstructed = record["lower_m"] >= query["separation_threshold_m"] + record["eta_m"] + ra.TURN_CERT_FP_GUARD_M
-        saw_reconstruction_disagreement |= reconstructed != accepted
     assert 0 < accepted_count < len(numerical_result["records"])
     assert numerical_result["accepted"] == accepted_count
     assert numerical_result["comparisons"] == len(numerical_result["records"])
-    assert saw_reconstruction_disagreement
 
 
 def test_scalar_audit_uses_real_production_and_reference(tmp_path: Path) -> None:
@@ -222,7 +213,7 @@ def test_scalar_audit_uses_real_production_and_reference(tmp_path: Path) -> None
     assert result["comparisons"] > 0
     assert result["reference_intervals"] > 0
     assert result["precision_rechecks"] > 0
-    assert result["instrumentation_mismatches"] == 0
+    assert result["production_parity_checks"] > result["encounters"]
     assert result["candidates"][str(ra.TURN_CERT_FP_GUARD_M)]["accepted_negative_reference_comparisons"] == 0
 
 

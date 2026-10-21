@@ -385,6 +385,7 @@ import numba
 import numpy as np
 from numpy.typing import NDArray
 
+from geometric_safety._numeric import _difference_of_products
 from geometric_safety.util import (
     DEG_TO_RAD,
     KT_TO_MPS,
@@ -403,7 +404,7 @@ from geometric_safety.util import (
 # interval is usually a good speed/precision balance.
 TURN_TIME_CERT_MIN_INTERVAL_S = 3.0
 
-# Extra numerical margin on turn-certification comparisons. This is a precaution,
+# Extra numerical margin on lateral certification comparisons. This is a precaution,
 # not a proved bound on the complete floating-point evaluation chain. The mathematical
 # safety theorem assumes exact arithmetic; numerical regression checks do not extend
 # that theorem to every floating-point input.
@@ -514,47 +515,6 @@ def _speed_rectangle_corner_points(
     pts[3, 1] = anchor_y + delta_b_y
 
     return pts
-
-
-@numba.njit(cache=True, fastmath=False)
-def _product_roundoff(a: float, b: float, product: float) -> float:
-    """Recover a binary64 product's residual using Dekker splitting.
-
-    Hull coordinates are bounded by the numerical geometry domain, so multiplying
-    them by the binary64 splitter cannot overflow. Strict arithmetic preserves the
-    separate products and subtractions required by the error-free transform.
-    """
-    splitter = 134217729.0  # 2**27 + 1 for a binary64 significand.
-    split_a = splitter * a
-    high_a = split_a - (split_a - a)
-    low_a = a - high_a
-    split_b = splitter * b
-    high_b = split_b - (split_b - b)
-    low_b = b - high_b
-    return ((high_a * high_b - product) + high_a * low_b + low_a * high_b) + low_a * low_b
-
-
-@numba.njit(cache=True, fastmath=False)
-def _difference_of_products(a: float, b: float, c: float, d: float) -> float:
-    """Evaluate a*b-c*d without losing a thin hull's determinant to cancellation."""
-    left = a * b
-    right = c * d
-    # An exact product of two binary64 significands spans at most 106 bits.
-    # Leave that margin above the minimum normal exponent (-1022), so the
-    # low-product terms and cancellation residuals also avoid underflow.
-    # Common coordinate scaling handles uniformly small hulls; more extreme
-    # mixed scales remain unverified instead of appearing collinear.
-    minimum_product = 2.0 ** (-1022 + 106)
-    if (a != 0.0 and b != 0.0 and abs(left) < minimum_product) or (
-        c != 0.0 and d != 0.0 and abs(right) < minimum_product
-    ):
-        return math.nan
-    difference = left - right
-    # Knuth TwoDiff, as in heading_diff, also retains the subtraction residual.
-    right_virtual = left - difference
-    residual = (left - (difference + right_virtual)) + (right_virtual - right)
-    residual += _product_roundoff(a, b, left) - _product_roundoff(c, d, right)
-    return difference + residual
 
 
 @numba.njit(cache=True, fastmath=False)
@@ -817,7 +777,7 @@ def _straight_hull_projection_interval(
         closest_time_s = _closest_time_from_projection(closest_vec, displacement_hull, projection_time_s)
     if not math.isfinite(min_distance_m) or not math.isfinite(closest_time_s):
         return False, math.nan, math.nan
-    return min_distance_m >= separation_threshold_m, min_distance_m, closest_time_s
+    return min_distance_m >= separation_threshold_m + TURN_CERT_FP_GUARD_M, min_distance_m, closest_time_s
 
 
 @numba.njit(cache=True, fastmath=False)
@@ -876,6 +836,8 @@ def catch_up_projection_interval(
     speed-and-time envelope is reduced to one convex reachable-displacement hull, and
     the result follows from projecting `-rel_pos0` onto that hull.
     """
+    if not math.isfinite(a_heading) or not math.isfinite(b_heading):
+        return False, math.nan, math.nan
     if rel_pos_override is None:
         rel_pos0 = -latlon_to_local_xy(b_lat, b_lon, ref_lat=a_lat, ref_lon=a_lon)
     else:
@@ -1302,25 +1264,20 @@ def _min_distance_to_relative_hull_at_time(
     This is the distance from the origin to the fixed-time reachable relative-position
     hull produced by `_relative_position_hull_at_time`.
     """
-    # The exact worst-case distance at a fixed time is just the distance from the origin
-    # to the reachable relative-position hull at that time.
-    hull = _relative_position_hull_at_time(
-        rel_pos0=rel_pos0,
-        a_heading0_deg=a_heading0_deg,
-        a_target_heading_deg=a_target_heading_deg,
-        a_turn_rate_deg_sec=a_turn_rate_deg_sec,
-        a_min_speed_mps=a_min_speed_mps,
-        a_max_speed_mps=a_max_speed_mps,
-        b_heading0_deg=b_heading0_deg,
-        b_target_heading_deg=b_target_heading_deg,
-        b_turn_rate_deg_sec=b_turn_rate_deg_sec,
-        b_min_speed_mps=b_min_speed_mps,
-        b_max_speed_mps=b_max_speed_mps,
-        t_s=t_s,
-    )
-    origin = np.zeros(2, dtype=np.float64)
-    _closest_point, min_dist_m = closest_point_on_convex_polygon(origin, hull)
-    return min_dist_m
+    return _sample_relative_hull_at_time(
+        rel_pos0,
+        a_heading0_deg,
+        a_target_heading_deg,
+        a_turn_rate_deg_sec,
+        a_min_speed_mps,
+        a_max_speed_mps,
+        b_heading0_deg,
+        b_target_heading_deg,
+        b_turn_rate_deg_sec,
+        b_min_speed_mps,
+        b_max_speed_mps,
+        t_s,
+    )[0]
 
 
 @numba.njit(cache=True, fastmath=True)
@@ -1338,7 +1295,7 @@ def _interval_distance_lower_bound(start_dist_m: float, end_dist_m: float, lipsc
     return max(0.0, 0.5 * (start_dist_m + end_dist_m - lipschitz_mps * dt_s))
 
 
-@numba.njit(cache=True)
+@numba.njit(cache=True, fastmath=False)
 def _projected_heading_range(
     heading0_deg: float,
     target_heading_deg: float,
@@ -1375,7 +1332,7 @@ def _projected_heading_range(
     return lower, upper
 
 
-@numba.njit(cache=True)
+@numba.njit(cache=True, fastmath=False)
 def _projected_motion_lower_bound(qa: float, qb: float, lower: float, upper: float, duration: float) -> float:
     """Minimise the two affine lower bounds obtained from the interval ends."""
     best = min(max(qa, qb - upper * duration), max(qa + lower * duration, qb))
@@ -1386,7 +1343,7 @@ def _projected_motion_lower_bound(qa: float, qb: float, lower: float, upper: flo
     return best
 
 
-@numba.njit(cache=True)
+@numba.njit(cache=True, fastmath=False)
 def _interval_directional_lower_bound(
     rel_pos0: np.ndarray,
     a_heading0_deg: float,
@@ -1417,21 +1374,22 @@ def _interval_directional_lower_bound(
     The caller applies the deviation envelope and numerical comparison margin.
     """
     points = np.empty((2, 4, 2))
+    closest_points = np.empty((2, 2))
     for index, t_s in enumerate((left_s, right_s)):
-        a_basis = _turn_displacement_basis(a_heading0_deg, a_target_heading_deg, a_turn_rate_deg_sec, t_s)
-        b_basis = _turn_displacement_basis(b_heading0_deg, b_target_heading_deg, b_turn_rate_deg_sec, t_s)
-        points[index] = _speed_rectangle_corner_points(
+        _, points[index], closest_points[index] = _sample_relative_hull_at_time(
             rel_pos0,
-            a_basis,
+            a_heading0_deg,
+            a_target_heading_deg,
+            a_turn_rate_deg_sec,
             a_min_speed_mps,
             a_max_speed_mps,
-            b_basis,
+            b_heading0_deg,
+            b_target_heading_deg,
+            b_turn_rate_deg_sec,
             b_min_speed_mps,
             b_max_speed_mps,
+            t_s,
         )
-    closest_points = np.empty((2, 2))
-    for index in range(2):
-        closest_points[index], _ = closest_point_on_convex_polygon(np.zeros(2), small_convex_hull(points[index]))
     return _directional_lower_bound_from_samples(
         points,
         closest_points,
@@ -1452,7 +1410,7 @@ def _interval_directional_lower_bound(
     )
 
 
-@numba.njit(cache=True)
+@numba.njit(cache=True, fastmath=False)
 def _directional_lower_bound_from_samples(
     points: np.ndarray,
     closest_points: np.ndarray,
@@ -1700,6 +1658,22 @@ def _deviation_envelope_m(
     return eta_m
 
 
+@numba.njit(cache=True, fastmath=False)
+def _validate_deviation_envelope(
+    eta_const_m: float,
+    eta_rate_mps: float,
+    turn_speed_schedule_uncertainty_kt: float,
+    turn_delay_max_s: float,
+    turn_rate_error_max: float,
+) -> None:
+    """Reject undeclared or impossible deviation bounds before fast arithmetic."""
+    for value in (eta_const_m, eta_rate_mps, turn_speed_schedule_uncertainty_kt, turn_delay_max_s, turn_rate_error_max):
+        if not math.isfinite(value) or value < 0.0:
+            raise ValueError("Deviation envelope bounds must be finite and nonnegative")
+    if turn_rate_error_max >= 1.0:
+        raise ValueError("The turn-rate envelope fraction must be less than one")
+
+
 @numba.njit(cache=True, fastmath=True)
 def _catch_up_projection_interval_with_turns_local(
     rel_pos0: np.ndarray,
@@ -1735,6 +1709,9 @@ def _catch_up_projection_interval_with_turns_local(
     if diagnostic_out is not None and diagnostic_out.size < 3:
         raise ValueError("diagnostic_out must contain at least three elements")
     _record_solver_diagnostic(diagnostic_out, DIAGNOSTIC_UNAVAILABLE, math.nan, math.nan)
+    _validate_deviation_envelope(
+        eta_const_m, eta_rate_mps, turn_speed_schedule_uncertainty_kt, turn_delay_max_s, turn_rate_error_max
+    )
     a_turn_angle_deg, _, _ = shortest_turn_parameters(a_heading0_deg, a_target_heading_deg, a_turn_rate_deg_sec)
     b_turn_angle_deg, _, _ = shortest_turn_parameters(b_heading0_deg, b_target_heading_deg, b_turn_rate_deg_sec)
     a_is_turning = a_turn_angle_deg != 0.0
@@ -1786,7 +1763,7 @@ def _catch_up_projection_interval_with_turns_local(
     if projection_time_s <= 0.0:
         min_dist_now = float(np.linalg.norm(rel_pos0))
         _record_solver_diagnostic(diagnostic_out, DIAGNOSTIC_SAMPLED_MINIMUM, 0.0, 0.0)
-        return min_dist_now >= separation_threshold_m + eta_const_m, min_dist_now, 0.0
+        return min_dist_now >= separation_threshold_m + eta_const_m + TURN_CERT_FP_GUARD_M, min_dist_now, 0.0
 
     if min_cert_interval_s <= 0.0:
         min_cert_interval_s = TURN_TIME_CERT_MIN_INTERVAL_S
@@ -1873,6 +1850,11 @@ def _catch_up_projection_interval_with_turns_local(
         rel_pos0, global_lipschitz_mps * projection_time_s, separation_threshold_m + eta_horizon_m
     ):
         return False, math.nan, math.nan
+    if not _scalar_within_numerical_range(end_dist_m):
+        return False, math.nan, math.nan
+    if end_dist_m < separation_threshold_m + eta_horizon_m + TURN_CERT_FP_GUARD_M:
+        _record_solver_diagnostic(diagnostic_out, DIAGNOSTIC_SAMPLED_MINIMUM, projection_time_s, projection_time_s)
+        return False, end_dist_m, projection_time_s
     if initial_lower_bound_m >= separation_threshold_m + eta_horizon_m + TURN_CERT_FP_GUARD_M:
         _record_solver_diagnostic(diagnostic_out, DIAGNOSTIC_SAMPLED_MINIMUM, best_sample_time_s, best_sample_time_s)
         return True, best_sample_dist_m, best_sample_time_s
@@ -2151,7 +2133,10 @@ def catch_up_projection_interval_with_turns(
 
     When both target headings equal their initial headings, it delegates to the
     exact straight-line `catch_up_projection_interval`. A changed target heading
-    requires a nonzero turn rate, however small the instructed turn.
+    requires a nonzero turn rate, however small the instructed turn. Headings and
+    rates must be finite even for unchanged headings; invalid values raise
+    ValueError. Deviation bounds must be finite and nonnegative, and the
+    relative turn-rate error must be strictly less than one.
 
     Parameters
     ----------

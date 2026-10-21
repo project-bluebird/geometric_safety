@@ -31,12 +31,12 @@ CAPTURED_CORNERS = np.array(
 )
 
 
-@numba.njit(cache=True, fastmath=True)
+@numba.njit(fastmath=True)
 def _compiled_distance(point: FloatArray, corners: FloatArray) -> float:
     return closest_point_on_convex_polygon(point, small_convex_hull(corners))[1]
 
 
-@numba.njit(cache=True, fastmath=True)
+@numba.njit(fastmath=True)
 def _compiled_contains(point: FloatArray, hull: FloatArray) -> bool:
     return _point_in_convex_polygon(point, hull)
 
@@ -232,3 +232,29 @@ def test_singleton_speed_circular_clearance_is_certified(horizon_s: float) -> No
     )
     assert result.status == "certified_safe"
     assert result.base_min_distance_m == pytest.approx(radius, abs=1e-7)
+
+
+def test_hull_preserves_input_points_in_exact_binary64_geometry() -> None:
+    rng = np.random.default_rng(202610201)
+    for i in range(300):
+        direction = rng.uniform(-1.0, 1.0, size=2) * rng.uniform(1.0, 1e6)
+        offset = rng.uniform(-1e6, 1e6, size=2) if i % 2 else np.zeros(2)
+        points = np.array([offset + factor * direction for factor in (-1.0, 0.0, 0.25, 1.0)])
+        if i % 3:
+            points[2, i % 2] = math.nextafter(points[2, i % 2], math.inf)
+        rng.shuffle(points)
+        hull = small_convex_hull(points)
+        # Every input must belong to the returned enclosure, including tiny
+        # extremal corners. This reference uses exact rational coordinates.
+        for point in points:
+            assert _exact_distance(point, hull) == 0.0, (points, hull, point)
+
+
+@pytest.mark.parametrize("heading", range(0, 360, 5))
+def test_collinear_hull_distance_retains_both_extreme_points(heading: int) -> None:
+    direction = np.array([math.sin(math.radians(heading)), math.cos(math.radians(heading))])
+    points = np.array([factor * direction for factor in (-200_000.0, 0.0, 80_000.0, 300_000.0)])
+    for query in (0.5 * points[0], 0.5 * points[-1], 1.5 * points[-1]):
+        expected = _exact_distance(query, points)
+        distance = _compiled_distance(query, points)
+        assert distance == pytest.approx(expected, abs=1e-8)

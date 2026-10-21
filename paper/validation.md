@@ -2,7 +2,9 @@
 
 These tools check the lateral geometry and compare complete package versions.
 Run them from the repository root. The tests and numerical audit need the
-development dependencies installed by `uv sync --locked`.
+development dependencies installed by `uv sync --locked`. Each pytest run uses
+a fresh Numba cache, because persistent compiled callers can retain an older
+version of an imported helper.
 
 ## Independent numerical reference
 
@@ -29,7 +31,9 @@ bound for every supported input.
 
 `paper.run_turn_numerics` separately audits the scalar certificate with the
 directional calculation disabled. It has independent calibration and
-validation seeds. Neither audit changes the production numerical guard.
+validation seeds. Its threshold probes include each candidate guard, and its
+report counts completed production-parity checks. Neither audit changes the
+production numerical guard.
 
 To run that separate scalar calibration and held-out validation:
 
@@ -126,11 +130,15 @@ uv run --locked python -m paper.validate_directional_production \
   --output /path/to/directional.json
 ```
 
-The baseline uses the same isolated Linux worker as the package benchmark.
-The report's `baseline` object records every module hash, runtime versions and
-checked decisions, replacing the single-file `baseline_sha256` field. Baseline
-timings are measured inside that worker; compilation, preparation and IPC are
-excluded. The candidate modes are measured in the calling process.
+The candidate modes run in a separate process with an empty Numba cache. The
+baseline uses the same isolated Linux worker as the package benchmark. Both
+record hashes for the complete selected package. The report's `baseline`
+object also records runtime versions and checked decisions. Timings exclude
+compilation, input preparation and interprocess communication.
+
+The packed and baseline calls use the base constant-speed contract. Nondefault
+deviation envelopes, stopping widths or Lipschitz settings are rejected rather
+than omitted from those calls.
 
 This comparison requires the baseline's decisions to match the current scalar
 mode. A difference stops the comparison. Use `paper.benchmark_library_versions`
@@ -159,14 +167,17 @@ uv run --locked python -m paper.validate_performance_parity \
 
 Both packages in the parity comparison must expose the heading API. This
 check adds 20,000 seeded encounters and 33 numerical-guard boundary cases.
-It checks decisions and distance diagnostics, and reports changes in time
-diagnostics separately. A changed decision, missing records or mismatched
+It checks decisions, diagnostic kinds and distance diagnostics, and reports
+changes in time or bound-interval diagnostics separately. Matching unavailable
+diagnostics are preserved; a change in distance availability fails comparison.
+A changed decision, missing records or mismatched
 case identifiers prevents a successful summary.
 
 Each source path must contain a `geometric_safety/` package. Package-only
 exports and full archived checkouts are supported. Workers import the selected
 package before loading the current validation tools, and verify its location
-and source hashes. They do not use an archived checkout's `paper/` tools.
+and source hashes. A missing submodule is an error; installed editable packages
+cannot fill it in. Workers use the current `paper/` tools.
 
 For a focused regression comparison, `--saved-only` evaluates only the supplied
 cases. Its reports record that the seeded and boundary cases were omitted.

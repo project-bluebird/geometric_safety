@@ -43,7 +43,6 @@ from geometric_safety.util import (
     heading_diff,
     heading_to_unit_vector,
     latlon_to_local_xy,
-    small_convex_hull,
 )
 
 # ---------------------------------------------------------------------------
@@ -398,24 +397,6 @@ class TestHelpers:
         )
 
         assert np.allclose(corners, expected, atol=1e-12)
-
-    def test_small_convex_hull_matches_generic_reference(self) -> None:
-        """The tiny-point hull builder should match the generic convex-hull reference."""
-        pts = np.array(
-            [
-                [0.0, 0.0],
-                [4200.0, -1800.0],
-                [5600.0, 900.0],
-                [1400.0, 2700.0],
-                [2800.0, -450.0],
-            ],
-            dtype=np.float64,
-        )
-
-        small_hull = small_convex_hull(pts)
-        generic_hull = convex_hull(pts)
-
-        assert_hulls_equivalent(small_hull, generic_hull)
 
     def test_compute_relative_velocity_hull_matches_generic_reference(self) -> None:
         """The optimized straight-line hull should match the retained generic reference."""

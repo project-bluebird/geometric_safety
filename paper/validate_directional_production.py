@@ -17,7 +17,9 @@ import inspect
 import itertools
 import json
 import math
+import os
 from pathlib import Path
+import subprocess
 from tempfile import TemporaryDirectory
 import time
 from typing import TypedDict, cast
@@ -28,8 +30,24 @@ import numpy as np
 
 from geometric_safety import relevant_aircraft as ra
 from geometric_safety.util import closest_point_on_convex_polygon, convex_hull
-from paper.benchmark_contracts import WorkerHeader, list_value, number, object_json, object_value
+from paper.benchmark_contracts import (
+    Json,
+    WorkerHeader,
+    boolean,
+    finite_number,
+    integer,
+    list_value,
+    module_hashes,
+    number,
+    object_json,
+    object_value,
+    parse_list,
+    parse_mapping,
+    parse_worker_header,
+    string,
+)
 from paper.benchmark_library_versions import Case, Worker, start_worker
+from paper.isolated_worker import worker_command
 from paper.numerical_validation import (
     FloatArray,
     ProductionSolver,
@@ -37,6 +55,7 @@ from paper.numerical_validation import (
     SolverInputs,
     StudySolver,
     TurnCase,
+    boundary_thresholds,
     compile_solver,
     python_function,
     require_coverage,
@@ -106,6 +125,7 @@ class BenchmarkResult(TypedDict):
     packed_mean_us: list[float]
     groups: dict[str, BenchmarkGroup]
     inputs_sha256: str
+    source_sha256: dict[str, str]
 
 
 def interval_args(case: TurnCase, left: float, right: float) -> IntervalArguments:
@@ -132,14 +152,28 @@ def directional_reference(case: TurnCase, left: float, right: float, dps: int = 
     args = interval_args(case, left, right)
     # Selection is allowed to use approximate geometry. All subsequent bounds
     # are recomputed from the original inputs, with independent integration.
-    float_points = []
+    float_points: list[FloatArray] = []
+    closest_points: list[FloatArray] = []
     for t in (left, right):
-        aa = ra._turn_displacement_basis(args[1], args[2], args[3], t)
-        bb = ra._turn_displacement_basis(args[6], args[7], args[8], t)
-        float_points.append(ra._speed_rectangle_corner_points(args[0], aa, args[4], args[5], bb, args[9], args[10]))
+        _, points, closest = ra._sample_relative_hull_at_time(
+            args[0],
+            args[1],
+            args[2],
+            args[3],
+            args[4],
+            args[5],
+            args[6],
+            args[7],
+            args[8],
+            args[9],
+            args[10],
+            t,
+        )
+        float_points.append(points)
+        closest_points.append(closest)
+    combined_closest, _ = closest_point_on_convex_polygon(np.zeros(2), convex_hull(np.concatenate(float_points)))
     normals = []
-    for points in (*float_points, np.concatenate(float_points)):
-        closest, _ = closest_point_on_convex_polygon(np.zeros(2), convex_hull(points))
+    for closest in (*closest_points, combined_closest):
         length = math.hypot(*closest)
         if length:
             normals.append(closest / length)
@@ -272,12 +306,10 @@ def numerical_checks(n: int, seed: int) -> NumericalResult:
         horizon = case["projection_time_s"]
         full = directional_bound(*interval_args(case, 0.0, horizon))
         eta = float(certificate(case, 0.0, horizon)["eta"])
-        cutoff = full - eta - ra.TURN_CERT_FP_GUARD_M
-        if cutoff > 100:
-            for threshold in (np.nextafter(cutoff, -np.inf), cutoff, np.nextafter(cutoff, np.inf)):
-                probe = case.copy()
-                probe["separation_threshold_m"] = float(threshold)
-                probes.append(probe)
+        for _, threshold in boundary_thresholds(full, eta, ra.TURN_CERT_FP_GUARD_M):
+            probe = case.copy()
+            probe["separation_threshold_m"] = threshold
+            probes.append(probe)
         cache: dict[tuple[float, float], tuple[mp.mpf, mp.mpf]] = {}
         for probe in probes:
             trace.fill(np.nan)
@@ -333,7 +365,7 @@ def validate_numerical_result(result: NumericalResult) -> None:
         raise RuntimeError("Directional optimistic error exceeded the empirical guard allowance")
 
 
-@numba.njit(cache=True)
+@numba.njit
 def packed_call(p: FloatArray, mode: int) -> bool:
     return ra._catch_up_projection_interval_with_turns_local(
         p[:2],
@@ -373,13 +405,101 @@ def _baseline_worker(baseline: Path | None, cases: list[Case]) -> Iterator[Worke
             raise
 
 
-def benchmark(inputs: Path, baseline: Path | None = None) -> BenchmarkResult:
-    """Compare directional modes, optionally against an isolated baseline package."""
-    # Keep the native dispatcher: only its ParamSpec type boundary needs narrowing.
-    production_solver = cast("ProductionSolver", ra._catch_up_projection_interval_with_turns_local)
+def _benchmark_rows(inputs: Path) -> list[dict[str, Json]]:
     rows = [object_value(row) for row in list_value(object_json(inputs.read_text())["cases"])]
     if not rows:
         raise ValueError("Directional benchmark requires at least one case")
+    # Packed and legacy calls share the base constant-speed contract. Refuse
+    # extra declarations instead of timing different models under one label.
+    defaults: dict[str, float | bool] = {
+        "eta_const_m": 0.0,
+        "eta_rate_mps": 0.0,
+        "turn_speed_schedule_uncertainty_kt": 0.0,
+        "turn_delay_max_s": 0.0,
+        "turn_rate_error_max": 0.0,
+        "use_interval_local_lipschitz": ra.TURN_USE_INTERVAL_LOCAL_LIPSCHITZ_DEFAULT,
+        "min_cert_interval_s": ra.TURN_TIME_CERT_MIN_INTERVAL_S,
+    }
+    for row in rows:
+        encounter = object_value(row["encounter"])
+        for key, default in defaults.items():
+            if key in encounter:
+                value = boolean(encounter[key]) if isinstance(default, bool) else number(encounter[key])
+                if value != default:
+                    raise ValueError(f"Directional timing requires the default {key}={default}")
+    return rows
+
+
+def _parse_benchmark_result(value: Json) -> BenchmarkResult:
+    row = object_value(value)
+
+    def case_record(value: Json) -> BenchmarkRow:
+        record = object_value(value)
+        return BenchmarkRow(
+            suite=string(record["suite"]),
+            reference=string(record["reference"]),
+            safe=parse_list(record["safe"], boolean),
+        )
+
+    def group_record(value: Json) -> BenchmarkGroup:
+        record = object_value(value)
+        return BenchmarkGroup(
+            mean_us=parse_list(record["mean_us"], finite_number),
+            packed_mean_us=parse_list(record["packed_mean_us"], finite_number),
+            safe_counts=parse_list(record["safe_counts"], integer),
+        )
+
+    def timings(value: Json) -> list[list[list[float]]]:
+        return parse_list(value, lambda modes: parse_list(modes, lambda rounds: parse_list(rounds, finite_number)))
+
+    baseline = row["baseline"]
+    return BenchmarkResult(
+        modes=parse_list(row["modes"], string),
+        cases=parse_list(row["cases"], case_record),
+        packed_modes=parse_list(row["packed_modes"], string),
+        baseline=None if baseline is None else parse_worker_header(baseline),
+        raw_us=timings(row["raw_us"]),
+        packed_raw_us=timings(row["packed_raw_us"]),
+        mean_us=parse_list(row["mean_us"], finite_number),
+        packed_mean_us=parse_list(row["packed_mean_us"], finite_number),
+        groups=parse_mapping(row["groups"], group_record),
+        inputs_sha256=string(row["inputs_sha256"]),
+        source_sha256=parse_mapping(row["source_sha256"], string),
+    )
+
+
+def benchmark(inputs: Path, baseline: Path | None = None) -> BenchmarkResult:
+    """Time a complete candidate package with a fresh process and compiler cache."""
+    _benchmark_rows(inputs)
+    if baseline is not None and not (baseline / "geometric_safety" / "__init__.py").is_file():
+        raise ValueError("Baseline must be a directory containing a complete geometric_safety package")
+    package = Path(ra.__file__).resolve().parent
+    with TemporaryDirectory(prefix="directional-candidate-") as directory:
+        output = Path(directory) / "benchmark.json"
+        arguments = ["--benchmark-worker", "--inputs", str(inputs.resolve()), "--output", str(output)]
+        if baseline is not None:
+            arguments.extend(("--baseline", str(baseline.resolve())))
+        completed = subprocess.run(
+            worker_command("paper.validate_directional_production", arguments, package.parent),
+            env=dict(os.environ, NUMBA_CACHE_DIR=str(Path(directory) / "cache"), PYTHONDONTWRITEBYTECODE="1"),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if completed.returncode:
+            raise RuntimeError(f"Directional benchmark worker failed:\n{completed.stderr}")
+        result = _parse_benchmark_result(object_json(output.read_text()))
+    if result["source_sha256"] != module_hashes(package):
+        raise RuntimeError("Directional candidate package changed during measurement")
+    if result["inputs_sha256"] != hashlib.sha256(inputs.read_bytes()).hexdigest():
+        raise RuntimeError("Directional benchmark inputs changed during measurement")
+    return result
+
+
+def _benchmark_current_process(inputs: Path, baseline: Path | None = None) -> BenchmarkResult:
+    """Measure after the worker has selected its package and empty compiler cache."""
+    production_solver = cast("ProductionSolver", ra._catch_up_projection_interval_with_turns_local)
+    rows = _benchmark_rows(inputs)
     calls: list[SolverInputs] = []
     results: list[BenchmarkRow] = []
     packed: list[FloatArray] = []
@@ -494,22 +614,28 @@ def benchmark(inputs: Path, baseline: Path | None = None) -> BenchmarkResult:
                 "packed_mean_us": packed_per_case[[r["suite"] == suite for r in rows]].mean(axis=0).tolist(),
                 "safe_counts": np.array([r["safe"] for r in results if r["suite"] == suite]).sum(axis=0).tolist(),
             }
-            for suite in ("broad", "targeted")
+            for suite in sorted({r["suite"] for r in results})
         },
         "inputs_sha256": hashlib.sha256(inputs.read_bytes()).hexdigest(),
+        "source_sha256": module_hashes(Path(ra.__file__).parent),
     }
 
 
-if __name__ == "__main__":
+def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--inputs", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument(
         "--baseline", type=Path, help="Directory containing the complete baseline geometric_safety package"
     )
+    parser.add_argument("--benchmark-worker", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
-    output: dict[str, str | NumericalResult | BenchmarkResult] = {
-        "source_sha256": hashlib.sha256(Path(ra.__file__).read_bytes()).hexdigest(),
+    if args.benchmark_worker:
+        result = _benchmark_current_process(args.inputs, args.baseline)
+        args.output.write_text(json.dumps(result) + "\n")
+        return
+    output: dict[str, str | dict[str, str] | NumericalResult | BenchmarkResult] = {
+        "source_sha256": module_hashes(Path(ra.__file__).parent),
         "validation_source_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         "instrumentation_source_sha256": hashlib.sha256(
             Path(__file__).with_name("numerical_validation.py").read_bytes()
@@ -525,3 +651,7 @@ if __name__ == "__main__":
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(output, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(benchmark_result["groups"]), flush=True)
+
+
+if __name__ == "__main__":
+    main()

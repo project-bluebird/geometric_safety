@@ -21,6 +21,7 @@ from paper.benchmark_contracts import (
     integer,
     list_value,
     module_hashes,
+    number,
     object_json,
     object_value,
     parse_list,
@@ -38,6 +39,8 @@ class ParityInterface(TypedDict):
     inflation_m: float
     base_min_distance_m: float | None
     base_closest_time_s: float | None
+    diagnostic_kind: Literal["straight_minimum", "sampled_minimum", "interval_bound"] | None
+    base_bound_interval_s: tuple[float, float] | None
 
 
 class ParityRecord(TypedDict):
@@ -200,6 +203,8 @@ def evaluate_cases(cases: list[Case]) -> list[ParityRecord]:
                     "inflation_m": interface.inflation_m,
                     "base_min_distance_m": interface.base_min_distance_m,
                     "base_closest_time_s": interface.base_closest_time_s,
+                    "diagnostic_kind": interface.diagnostic_kind,
+                    "base_bound_interval_s": interface.base_bound_interval_s,
                 },
             }
         )
@@ -224,6 +229,17 @@ def worker(cases_path: Path, output: Path, *, saved_only: bool = False) -> None:
     output.write_text(json.dumps(report, indent=2) + "\n")
 
 
+def _diagnostic_number(value: Json) -> float:
+    result = number(value)
+    if math.isinf(result):
+        raise ValueError("A distance or time diagnostic cannot be infinite")
+    return result
+
+
+def _unavailable(value: float | None) -> bool:
+    return value is None or math.isnan(value)
+
+
 def parse_record(value: Json) -> ParityRecord:
     row = object_value(value)
     core, interface = list_value(row["core"]), object_value(row["interface"])
@@ -239,16 +255,42 @@ def parse_record(value: Json) -> ParityRecord:
     else:
         raise ValueError("Unknown parity interface status")
     distance, time_s = interface["base_min_distance_m"], interface["base_closest_time_s"]
+    kind: Literal["straight_minimum", "sampled_minimum", "interval_bound"] | None
+    if interface["diagnostic_kind"] == "straight_minimum":
+        kind = "straight_minimum"
+    elif interface["diagnostic_kind"] == "sampled_minimum":
+        kind = "sampled_minimum"
+    elif interface["diagnostic_kind"] == "interval_bound":
+        kind = "interval_bound"
+    elif interface["diagnostic_kind"] is None:
+        kind = None
+    else:
+        raise ValueError("Unknown parity diagnostic kind")
+    interval_value = interface["base_bound_interval_s"]
+    interval = None
+    if interval_value is not None:
+        bounds = list_value(interval_value)
+        if len(bounds) != 2:
+            raise ValueError("A bound interval must have two endpoints")
+        interval = (finite_number(bounds[0]), finite_number(bounds[1]))
+        if interval[0] > interval[1]:
+            raise ValueError("A bound interval must be ordered")
+    parsed_core = (boolean(core[0]), _diagnostic_number(core[1]), _diagnostic_number(core[2]))
+    if parsed_core[0] and any(math.isnan(value) for value in parsed_core[1:]):
+        raise ValueError("An accepted core result requires finite diagnostics")
+
     return ParityRecord(
         id=string(row["id"]),
         suite=string(row["suite"]),
-        core=(boolean(core[0]), finite_number(core[1]), finite_number(core[2])),
+        core=parsed_core,
         interface=ParityInterface(
             status=status,
             reason=string(interface["reason"]),
             inflation_m=finite_number(interface["inflation_m"]),
             base_min_distance_m=None if distance is None else finite_number(distance),
             base_closest_time_s=None if time_s is None else finite_number(time_s),
+            diagnostic_kind=kind,
+            base_bound_interval_s=interval,
         ),
     )
 
@@ -319,7 +361,7 @@ def compare_reports(baseline: ParityReport, candidate: ParityReport) -> ParityCo
         ai, bi = a["interface"], b["interface"]
         if ac[0] != bc[0]:
             raise ValueError(f"Core decisions differ for {a['id']}: {ac} / {bc}")
-        for field in ("status", "reason", "inflation_m"):
+        for field in ("status", "reason", "inflation_m", "diagnostic_kind"):
             if ai[field] != bi[field]:
                 raise ValueError(f"Interface {field} differs for {a['id']}: {ai[field]} / {bi[field]}")
         for method, d0, d1, t0, t1 in (
@@ -332,12 +374,16 @@ def compare_reports(baseline: ParityReport, candidate: ParityReport) -> ParityCo
                 bi["base_closest_time_s"],
             ),
         ):
-            if d0 is None or d1 is None:
-                raise ValueError(f"Missing {method} distance for {a['id']}")
-            if not math.isclose(d0, d1, rel_tol=2e-13, abs_tol=1e-7):
-                raise ValueError(f"{method} distances differ for {a['id']}: {d0} / {d1}")
-            distance_delta[method] = max(distance_delta[method], abs(d1 - d0))
-            time_changes[method] += t0 != t1
+            if _unavailable(d0) != _unavailable(d1):
+                raise ValueError(f"{method} distance availability differs for {a['id']}")
+            if d0 is not None and d1 is not None and not math.isnan(d0):
+                if not math.isclose(d0, d1, rel_tol=2e-13, abs_tol=1e-7):
+                    raise ValueError(f"{method} distances differ for {a['id']}: {d0} / {d1}")
+                distance_delta[method] = max(distance_delta[method], abs(d1 - d0))
+            time_changed = _unavailable(t0) != _unavailable(t1) or (not _unavailable(t0) and t0 != t1)
+            if method == "interface":
+                time_changed |= ai["base_bound_interval_s"] != bi["base_bound_interval_s"]
+            time_changes[method] += time_changed
     return {
         "cases": len(before),
         "maximum_distance_change_m": distance_delta,

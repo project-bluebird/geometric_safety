@@ -2,9 +2,11 @@
 
 from dataclasses import dataclass
 import math
+from numbers import Integral
 from typing import Literal
 
 import numba
+import numpy as np
 
 from geometric_safety.heading import (
     HeadingAssuranceResult,
@@ -19,6 +21,7 @@ from geometric_safety.relevant_aircraft import (
     catch_up_projection_interval,
     catch_up_projection_interval_with_turns,
 )
+from geometric_safety.util import latlon_to_local_xy
 from geometric_safety.vertical import (
     DEFAULT_VERTICAL_RATE_FPM,
     DEFAULT_VERTICAL_ROUNDING_FL,
@@ -65,7 +68,7 @@ def certify_heading_separation_with_vertical(
     separation_threshold_m: float,
     horizon_s: float,
     required_vertical_gap_fl: float = DEFAULT_VERTICAL_SEPARATION_FL,
-    vertical_rounding_fl: int = DEFAULT_VERTICAL_ROUNDING_FL,
+    vertical_rounding_fl: int | np.integer = DEFAULT_VERTICAL_ROUNDING_FL,
     relative_position_error_m: float = 0.0,
     relative_velocity_error_mps: float = 0.0,
 ) -> CombinedHeadingAssuranceResult:
@@ -113,7 +116,11 @@ def certify_heading_separation_with_vertical(
             raise ValueError(f"{name} must be finite")
     _require_nonnegative_finite("minimum_vertical_rate_fpm", minimum_vertical_rate_fpm)
     _require_nonnegative_finite("required_vertical_gap_fl", required_vertical_gap_fl)
-    if not isinstance(vertical_rounding_fl, int) or vertical_rounding_fl < 0:
+    if (
+        isinstance(vertical_rounding_fl, bool)
+        or not isinstance(vertical_rounding_fl, Integral)
+        or vertical_rounding_fl < 0
+    ):
         raise ValueError("vertical_rounding_fl must be a nonnegative integer")
 
     resolution_s = _conservative_vertical_resolution_time_s(
@@ -123,7 +130,7 @@ def certify_heading_separation_with_vertical(
         b_selected_fl,
         minimum_vertical_rate_fpm,
         required_vertical_gap_fl,
-        vertical_rounding_fl,
+        int(vertical_rounding_fl),
     )
     if resolution_s == 0.0:
         return CombinedHeadingAssuranceResult(
@@ -277,23 +284,10 @@ def catch_up_projection_interval_with_vertical(
     )
 
     # If the bands are already distinct by the required gap, the pair is vertically
-    # safe from the start. Still run the lateral solver over a zero-length horizon so
-    # the returned distance/time diagnostics describe the actual current geometry.
+    # safe from the start. Only the current positions are needed for diagnostics.
     if vertical_resolution_time_s == 0.0:
-        _is_laterally_separated, min_distance_m, closest_time_s = catch_up_projection_interval(
-            a_lat=a_lat,
-            a_lon=a_lon,
-            a_heading=a_heading,
-            a_speed_kt=a_speed_kt,
-            b_lat=b_lat,
-            b_lon=b_lon,
-            b_heading=b_heading,
-            b_speed_kt=b_speed_kt,
-            separation_threshold_m=separation_threshold_m,
-            speed_diff_kt=speed_diff_kt,
-            projection_time_s=0.0,
-        )
-        return True, min_distance_m, closest_time_s, vertical_resolution_time_s
+        position = latlon_to_local_xy(b_lat, b_lon, a_lat, a_lon)
+        return True, math.hypot(position[0], position[1]), 0.0, vertical_resolution_time_s
 
     # Otherwise ask the existing straight-line lateral solver only about the period
     # before vertical resolution. If vertical never resolves, this becomes the full
@@ -433,28 +427,10 @@ def catch_up_projection_interval_with_turns_and_vertical(
     )
 
     # Already-resolved vertical bands are a complete shortcut for the combined result,
-    # including turn-aware lateral cases. Evaluate t=0 lateral geometry for diagnostics.
+    # including turn-aware lateral cases. Future turn validity is immaterial here.
     if vertical_resolution_time_s == 0.0:
-        _is_laterally_separated, min_distance_m, closest_time_s = catch_up_projection_interval_with_turns(
-            a_lat=a_lat,
-            a_lon=a_lon,
-            a_heading0_deg=a_heading0_deg,
-            a_target_heading_deg=a_target_heading_deg,
-            a_speed_kt=a_speed_kt,
-            a_turn_rate_deg_sec=a_turn_rate_deg_sec,
-            b_lat=b_lat,
-            b_lon=b_lon,
-            b_heading0_deg=b_heading0_deg,
-            b_target_heading_deg=b_target_heading_deg,
-            b_speed_kt=b_speed_kt,
-            b_turn_rate_deg_sec=b_turn_rate_deg_sec,
-            separation_threshold_m=separation_threshold_m,
-            speed_diff_kt=speed_diff_kt,
-            projection_time_s=0.0,
-            use_interval_local_lipschitz=use_interval_local_lipschitz,
-            turn_speed_schedule_uncertainty_kt=turn_speed_schedule_uncertainty_kt,
-        )
-        return True, min_distance_m, closest_time_s, vertical_resolution_time_s
+        position = latlon_to_local_xy(b_lat, b_lon, a_lat, a_lon)
+        return True, math.hypot(position[0], position[1]), 0.0, vertical_resolution_time_s
 
     # Certify turn-aware lateral separation only until vertical resolution. The turn
     # solver remains conservative in time, so this preserves its existing safety meaning.

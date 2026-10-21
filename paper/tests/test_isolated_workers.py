@@ -16,7 +16,7 @@ from typing import TextIO
 import pytest
 
 from geometric_safety import relevant_aircraft as ra
-from paper.benchmark_contracts import TimingRequest, WorkerRole, module_hashes
+from paper.benchmark_contracts import TimingRequest, WorkerRole, list_value, module_hashes, object_json, object_value
 from paper.benchmark_library_versions import (
     Case,
     Worker,
@@ -397,3 +397,67 @@ def test_failed_startup_cleans_up_before_worker_ownership_transfers(tmp_path: Pa
         except FileNotFoundError:
             continue
         assert target != tmp_path / "old_worker.log"
+
+
+def test_parity_does_not_fill_a_missing_submodule_from_editable_install(tmp_path: Path) -> None:
+    source = _snapshot(tmp_path / "missing_heading", without_heading=True)
+    cases = _case_file(tmp_path / "cases.json")
+    output = tmp_path / "result.json"
+    with pytest.raises(subprocess.CalledProcessError):
+        run_worker(source, cases, output, tmp_path / "cache", saved_only=True)
+    assert not output.exists()
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("eta_const_m", 1.0),
+        ("eta_rate_mps", 1.0),
+        ("turn_speed_schedule_uncertainty_kt", 1.0),
+        ("turn_delay_max_s", 1.0),
+        ("turn_rate_error_max", 0.1),
+        ("use_interval_local_lipschitz", False),
+        ("min_cert_interval_s", 0.1),
+    ],
+)
+def test_directional_timing_rejects_models_not_representable_by_packed_cases(
+    tmp_path: Path, field: str, value: float | bool
+) -> None:
+    inputs = _directional_inputs(tmp_path / "inputs.json")
+    document = object_json(inputs.read_text())
+    for row in list_value(document["cases"]):
+        object_value(object_value(row)["encounter"])[field] = value
+    inputs.write_text(json.dumps(document))
+    with pytest.raises(ValueError, match=field):
+        benchmark(inputs)
+
+
+def test_directional_candidate_recompiles_after_a_helper_edit(tmp_path: Path) -> None:
+    source = _snapshot(tmp_path / "candidate")
+    inputs = _directional_inputs(tmp_path / "inputs.json")
+    harness = Path(__file__).resolve().parents[2]
+    code = """
+import sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+import geometric_safety
+sys.path.insert(0, sys.argv[2])
+from paper.validate_directional_production import benchmark
+benchmark(Path(sys.argv[3]))
+"""
+    environment = dict(os.environ, NUMBA_CACHE_DIR=str(tmp_path / "shared_cache"), PYTHONDONTWRITEBYTECODE="1")
+    command = [sys.executable, "-I", "-c", code, str(source), str(harness), str(inputs)]
+    control = subprocess.run(command, env=environment, capture_output=True, text=True, check=False)
+    assert control.returncode == 0, control.stderr
+    utility = source / "geometric_safety/util.py"
+    tree = ast.parse(utility.read_text())
+    heading_difference = next(
+        node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "heading_diff"
+    )
+    heading_difference.body = ast.parse(
+        "diff = (h2 - h1 + 180.0) % 360.0 - 180.0\nif abs_diff:\n    return abs(diff)\nreturn diff\n"
+    ).body
+    utility.write_text(ast.unparse(tree) + "\n")
+    changed = subprocess.run(command, env=environment, capture_output=True, text=True, check=False)
+    assert changed.returncode != 0, changed.stdout
+    assert "accepted a reference-unsafe case" in changed.stderr

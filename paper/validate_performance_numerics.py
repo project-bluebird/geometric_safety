@@ -27,8 +27,7 @@ def main() -> None:
         source_sha256={
             str(path.relative_to(path.parent.parent)): digest(path)
             for path in (
-                Path(ra.__file__),
-                Path(ra.__file__).with_name("util.py"),
+                *sorted(Path(ra.__file__).parent.glob("*.py")),
                 Path(turn_numerical_reference.__file__),
                 Path(validate_directional_production.__file__),
                 Path(numerical_validation.__file__),

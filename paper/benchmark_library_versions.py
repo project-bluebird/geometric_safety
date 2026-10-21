@@ -828,9 +828,12 @@ def run(args: BenchmarkOptions) -> None:
         slow_indices = sorted(slow)
         tail, tail_cpu = measure(workers, cases, slow_indices, args.tail_rounds, 1, 2026101203, "slow inputs")
         cpu_model = next(
-            line.split(":", 1)[1].strip()
-            for line in Path("/proc/cpuinfo").read_text().splitlines()
-            if line.startswith("model name")
+            (
+                line.split(":", 1)[1].strip()
+                for line in Path("/proc/cpuinfo").read_text().splitlines()
+                if line.startswith("model name")
+            ),
+            platform.machine(),
         )
         report: BenchmarkReport = {
             "protocol": {

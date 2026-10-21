@@ -2,6 +2,8 @@
 
 import math
 
+import numpy as np
+
 from geometric_safety.combined import CombinedHeadingAssuranceResult, certify_heading_separation_with_vertical
 from geometric_safety.heading import HeadingAssuranceResult, HeadingMotion, certify_heading_separation
 from geometric_safety.util import latlon_to_local_xy
@@ -17,17 +19,10 @@ def _relative_position_from_latlon(a_lat: float, a_lon: float, b_lat: float, b_l
         if not math.isfinite(longitude) or not -180.0 <= longitude <= 180.0:
             raise ValueError(f"{name} must be finite and between -180 and 180 degrees")
 
-    longitude_difference = b_lon - a_lon
-    if longitude_difference > 180.0:
-        longitude_difference = (b_lon - 180.0) - (a_lon + 180.0)
-    elif longitude_difference < -180.0:
-        longitude_difference = (b_lon + 180.0) - (a_lon - 180.0)
-    if abs(longitude_difference) == 180.0:
+    if abs(b_lon - a_lon) == 180.0:
         raise ValueError("positions 180 degrees apart in longitude have no unique local longitude difference")
 
-    # Longitude has no absolute scale in this projection. Passing the wrapped
-    # difference directly avoids adding and subtracting the reference again.
-    b_from_a = latlon_to_local_xy(lat=b_lat, lon=longitude_difference, ref_lat=a_lat, ref_lon=0.0)
+    b_from_a = latlon_to_local_xy(lat=b_lat, lon=b_lon, ref_lat=a_lat, ref_lon=a_lon)
     return -float(b_from_a[0]), -float(b_from_a[1])
 
 
@@ -90,7 +85,7 @@ def certify_heading_separation_with_vertical_from_latlon(
     separation_threshold_m: float,
     horizon_s: float,
     required_vertical_gap_fl: float = DEFAULT_VERTICAL_SEPARATION_FL,
-    vertical_rounding_fl: int = DEFAULT_VERTICAL_ROUNDING_FL,
+    vertical_rounding_fl: int | np.integer = DEFAULT_VERTICAL_ROUNDING_FL,
     relative_position_error_m: float = 0.0,
     relative_velocity_error_mps: float = 0.0,
 ) -> CombinedHeadingAssuranceResult:

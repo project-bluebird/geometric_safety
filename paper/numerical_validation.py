@@ -9,6 +9,7 @@ from __future__ import annotations
 import ast
 from collections.abc import Mapping
 import inspect
+import math
 from types import FunctionType
 from typing import Protocol, TypedDict, Unpack, cast
 
@@ -155,5 +156,16 @@ def require_coverage(comparisons: int, study: str) -> None:
 
 
 def require_solver_parity(actual: SolverResult, expected: SolverResult, context: str) -> None:
-    if actual != expected:
+    same_diagnostics = all(
+        a == b or (math.isnan(a) and math.isnan(b)) for a, b in zip(actual[1:], expected[1:], strict=True)
+    )
+    if actual[0] != expected[0] or not same_diagnostics:
         raise RuntimeError(f"Instrumented solver differs from production: {context}; {actual} != {expected}")
+
+
+def boundary_thresholds(lower: float, envelope: float, guard: float) -> tuple[tuple[str, float], ...]:
+    """Thresholds immediately around this guarded certificate's acceptance boundary."""
+    cutoff = math.fsum((lower, -envelope, -guard))
+    if cutoff <= 100.0:
+        return ()
+    return (("below", math.nextafter(cutoff, -math.inf)), ("at", cutoff), ("above", math.nextafter(cutoff, math.inf)))

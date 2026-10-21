@@ -22,7 +22,7 @@ _ROUNDING_GRID_EPSILON_FL = 1.0e-9
 VERTICAL_OVERLAP_NEVER_RESOLVES_S = -1.0
 
 
-@numba.njit(cache=True, fastmath=True)
+@numba.njit(cache=True, fastmath=False)
 def _rate_fl_per_second(vertical_rate_fpm: float) -> float:
     """Convert a climb/descent rate magnitude in feet per minute to flight levels per second."""
     rate_fpm = abs(vertical_rate_fpm)
@@ -31,7 +31,7 @@ def _rate_fl_per_second(vertical_rate_fpm: float) -> float:
     return rate_fpm / FT_PER_FL / SECONDS_PER_MINUTE
 
 
-@numba.njit(cache=True, fastmath=True)
+@numba.njit(cache=True, fastmath=False)
 def level_at_time_fl(current_fl: float, selected_fl: float, vertical_rate_fpm: float, t_s: float) -> float:
     """
     Return the aircraft level after flying toward its selected level for `t_s`.
@@ -65,6 +65,8 @@ def level_at_time_fl(current_fl: float, selected_fl: float, vertical_rate_fpm: f
         return current_fl
 
     delta_fl = selected_fl - current_fl
+    if t_s >= _time_to_selected_s(current_fl, selected_fl, vertical_rate_fpm):
+        return selected_fl
     max_step_fl = rate_flps * t_s
     if abs(delta_fl) <= max_step_fl:
         return selected_fl
@@ -280,7 +282,7 @@ def vertical_bands_are_resolved(
     return gap_fl >= required_gap_fl
 
 
-@numba.njit(cache=True, fastmath=True)
+@numba.njit(cache=True, fastmath=False)
 def _time_to_selected_s(current_fl: float, selected_fl: float, vertical_rate_fpm: float) -> float:
     """Return how long the aircraft takes to reach selected level."""
     # A zero rate is only valid if there is no level change to make. Otherwise the
@@ -293,7 +295,7 @@ def _time_to_selected_s(current_fl: float, selected_fl: float, vertical_rate_fpm
     return abs(selected_fl - current_fl) / rate_flps
 
 
-@numba.njit(cache=True, fastmath=True)
+@numba.njit(cache=True, fastmath=False)
 def _first_directional_gap_crossing_in_interval_s(
     a_current_fl: float,
     a_selected_fl: float,
@@ -369,9 +371,24 @@ def _first_directional_gap_crossing_in_interval_s(
     # Both moving streams have the same period because the model uses one shared rate.
     required_gap_steps = math.ceil(required_gap_fl / rounded)
     needed_gap_steps = required_gap_steps - (start_higher_index - start_lower_index)
-    interval_s = end_s - start_s
-    higher_slope_flps = (end_higher_level_fl - start_higher_level_fl) / interval_s
-    lower_slope_flps = (end_lower_level_fl - start_lower_level_fl) / interval_s
+    # The phase endpoints are level-off events. Determine motion from that
+    # phase, not from a rounded difference that can turn a fixed edge into a
+    # spurious second event stream.
+    if b_above_a:
+        lower_current, lower_selected = a_current_fl, a_selected_fl
+        higher_current, higher_selected = b_current_fl, b_selected_fl
+    else:
+        lower_current, lower_selected = b_current_fl, b_selected_fl
+        higher_current, higher_selected = a_current_fl, a_selected_fl
+    rate_flps = _rate_fl_per_second(vertical_rate_fpm)
+    higher_moves = higher_current < higher_selected and start_s < _time_to_selected_s(
+        higher_current, higher_selected, vertical_rate_fpm
+    )
+    lower_moves = lower_current > lower_selected and start_s < _time_to_selected_s(
+        lower_current, lower_selected, vertical_rate_fpm
+    )
+    higher_slope_flps = rate_flps if higher_moves else 0.0
+    lower_slope_flps = -rate_flps if lower_moves else 0.0
 
     # Find the first helpful grid crossing made by each compared edge. A higher edge
     # moving upward or a lower edge moving downward each opens the rounded gap by one
@@ -640,7 +657,7 @@ def _conservative_vertical_resolution_time_s(
         )
         if not math.isfinite(resolution_s) or resolution_s < 0.0:
             return None
-        if not vertical_bands_are_resolved(
+        if vertical_rounding_fl > 0 and not vertical_bands_are_resolved(
             a_current_fl,
             a_selected_fl,
             b_current_fl,
@@ -704,7 +721,7 @@ def _conservative_vertical_resolution_time_s(
         > 0
     ):
         return None
-    if not vertical_bands_are_resolved(
+    if vertical_rounding_fl > 0 and not vertical_bands_are_resolved(
         a_current_fl,
         a_selected_fl,
         b_current_fl,

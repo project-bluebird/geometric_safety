@@ -185,34 +185,37 @@ def test_core_domain_refusal_has_unavailable_diagnostics(envelope: bool) -> None
 
 @pytest.mark.parametrize("minimum_interval_s", [0.0, 3.0, math.ulp(0.0)])
 def test_nonprogressing_timestamp_split_fails_closed(minimum_interval_s: float) -> None:
-    # The stationary pair is separated throughout. Only the numerical guard
-    # prevents acceptance near the horizon, where timestamp spacing is 128 s.
-    # Refinement must stop even when the requested stopping width is smaller.
+    # Both horizon endpoints clear the guarded threshold. The interior pass
+    # stays inside the numerical margin, forcing subdivision where representable
+    # timestamps are farther apart than the requested stopping width.
+    horizon_s = 2.0**60
+    speed_mps = 1e-18
     diagnostic = np.empty(3)
     query = {
-        "rel_pos0": np.array([1.0, 0.0]),
-        "a_heading0_deg": 0.0,
-        "a_target_heading_deg": 0.0,
-        "a_speed_kt": 0.0,
-        "a_turn_rate_deg_sec": 0.0,
+        "rel_pos0": np.array([-0.75 * horizon_s * speed_mps, 1.0]),
+        "a_heading0_deg": 89.0,
+        "a_target_heading_deg": 90.0,
+        "a_speed_kt": speed_mps / ra.KT_TO_MPS,
+        "a_turn_rate_deg_sec": 1.0,
         "b_heading0_deg": 0.0,
         "b_target_heading_deg": 0.0,
         "b_speed_kt": 0.0,
         "b_turn_rate_deg_sec": 0.0,
-        "separation_threshold_m": 0.5,
+        "separation_threshold_m": 1.0 - 5e-7,
         "speed_diff_kt": 0.0,
-        "eta_rate_mps": 2.0**-61,
         "min_cert_interval_s": minimum_interval_s,
     }
     assert ra._catch_up_projection_interval_with_turns_local(**query, projection_time_s=1.0)[0]
     separated, lower_bound, time_s = ra._catch_up_projection_interval_with_turns_local(
-        **query, projection_time_s=2.0**60, diagnostic_out=diagnostic
+        **query, projection_time_s=horizon_s, diagnostic_out=diagnostic
     )
     assert not separated
-    assert lower_bound == 1.0
+    assert math.isfinite(lower_bound)
     assert math.isnan(time_s)
     assert diagnostic[0] == ra.DIAGNOSTIC_INTERVAL_BOUND
-    assert 0.0 <= diagnostic[1] < diagnostic[2] <= 2.0**60
+    left, right = diagnostic[1:]
+    assert 0.0 <= left < right <= horizon_s
+    # NaN time distinguishes the nonprogressing split from a finite-width stop.
 
 
 def test_heading_preserves_interval_bound_when_timestamp_split_stops() -> None:

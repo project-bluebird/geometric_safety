@@ -363,11 +363,11 @@ def test_shortest_half_turn_uses_negative_180_tie() -> None:
 @pytest.mark.parametrize("horizon_s", [0.0, 600.0])
 def test_zero_speed_motion_is_stationary_even_with_a_heading_turn(horizon_s: float) -> None:
     a = _motion(speed_min_mps=0.0, speed_max_mps=0.0)
-    result = certify_heading_separation((3.0, 4.0), a, _stationary(), separation_threshold_m=5.0, horizon_s=horizon_s)
+    result = certify_heading_separation((3.0, 4.0), a, _stationary(), separation_threshold_m=4.999, horizon_s=horizon_s)
     assert result.status == "certified_safe"
     assert result.inflation_m == 0.0
     assert result.base_min_distance_m == pytest.approx(5.0)
-    rejected = certify_heading_separation((3.0, 4.0), a, _stationary(), separation_threshold_m=5.1, horizon_s=horizon_s)
+    rejected = certify_heading_separation((3.0, 4.0), a, _stationary(), separation_threshold_m=5.0, horizon_s=horizon_s)
     assert rejected.status == "unresolved"
 
 

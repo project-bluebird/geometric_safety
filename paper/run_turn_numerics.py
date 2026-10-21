@@ -35,6 +35,7 @@ from paper.numerical_validation import (
     SerialisedTurnCase,
     StudySolver,
     TurnCase,
+    boundary_thresholds,
     compile_solver,
     python_function,
     require_coverage,
@@ -86,7 +87,7 @@ class SplitStats(TypedDict):
     precision_rechecks: int
     precision_recheck_families: dict[str, int]
     precision_change_max_m: float
-    instrumentation_mismatches: int
+    production_parity_checks: int
     accepted_negative_reference_comparisons: int
     families: dict[str, FamilyStats]
     candidates: dict[str, CandidateStats]
@@ -115,6 +116,15 @@ def instrument_solver(source: str) -> tuple[ast.Module, ast.FunctionDef]:
             self.generic_visit(node)
             names = {part.id for part in ast.walk(node.test) if isinstance(part, ast.Name)}
             if "study_guard" not in names:
+                return node
+            # Endpoint refusal is not a lower-bound acceptance certificate.
+            if (
+                isinstance(node.test, ast.Compare)
+                and isinstance(node.test.left, ast.Name)
+                and node.test.left.id == "end_dist_m"
+                and len(node.test.ops) == 1
+                and isinstance(node.test.ops[0], ast.Lt)
+            ):
                 return node
             if not isinstance(node.test, ast.Compare) or len(node.test.comparators) != 1:
                 raise RuntimeError("Production scalar comparison hook changed; expected one comparison")
@@ -229,7 +239,7 @@ def run_split(solver: StudySolver, n: int, seed: int, output: Path, split: str, 
         "precision_rechecks": 0,
         "precision_recheck_families": {},
         "precision_change_max_m": 0.0,
-        "instrumentation_mismatches": 0,
+        "production_parity_checks": 0,
         "accepted_negative_reference_comparisons": 0,
         "families": {},
         "candidates": {},
@@ -307,22 +317,17 @@ def run_split(solver: StudySolver, n: int, seed: int, output: Path, split: str, 
             base = solver(**original, study_trace=trace)
             production = production_solver(**original, directional_mode=0)
             require_solver_parity(base, production, f"{split}/{index}/{family}")
+            stats["production_parity_checks"] += 1
             base_rows = trace[~np.isnan(trace[:, 0])].copy()
-            probes = [("original", original)]
-            # Put the first whole-horizon certificate at its numerical boundary.
-            # D changes; motion and reference intervals are unchanged.
-            cutoff = float(base_rows[0, 2] - base_rows[0, 3]) if len(base_rows) else 0.0
-            if cutoff > 100.0:
-                for label, threshold in (
-                    ("below", np.nextafter(cutoff, -np.inf)),
-                    ("at", cutoff),
-                    ("above", np.nextafter(cutoff, np.inf)),
-                ):
-                    threshold_case = original.copy()
-                    threshold_case["separation_threshold_m"] = float(threshold)
-                    probes.append((label, threshold_case))
-            for probe, case in probes:
-                for guard in guards:
+            for guard in guards:
+                probes = [("original", original)]
+                # The reference geometry is unchanged when only D changes.
+                if len(base_rows):
+                    for label, threshold in boundary_thresholds(float(base_rows[0, 2]), float(base_rows[0, 3]), guard):
+                        threshold_case = original.copy()
+                        threshold_case["separation_threshold_m"] = threshold
+                        probes.append((label, threshold_case))
+                for probe, case in probes:
                     trace.fill(np.nan)
                     answer = solver(**case, study_trace=trace, study_guard=guard)
                     stats["solver_runs"] += 1
@@ -332,6 +337,7 @@ def run_split(solver: StudySolver, n: int, seed: int, output: Path, split: str, 
                     if guard == ra.TURN_CERT_FP_GUARD_M:
                         actual = production_solver(**case, directional_mode=0)
                         require_solver_parity(answer, actual, f"{split}/{index}/{probe}")
+                        stats["production_parity_checks"] += 1
                     for t0, t1, lower, eta, rhs, accepted in trace[~np.isnan(trace[:, 0])]:
                         residual = reference(case, float(t0), float(t1))
                         error = mp.mpf(float(lower)) - mp.mpf(float(rhs)) - (residual - mp.mpf(guard))
@@ -417,8 +423,7 @@ def main() -> None:
         Path(__file__),
         Path(inspect.getfile(certificate)),
         Path(__file__).with_name("numerical_validation.py"),
-        Path(ra.__file__),
-        Path(ra.__file__).with_name("util.py"),
+        *sorted(Path(ra.__file__).parent.glob("*.py")),
     ]
     report = {
         "calibration": calibration,

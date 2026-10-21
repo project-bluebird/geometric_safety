@@ -49,7 +49,7 @@ def _boundary_cases() -> list[tuple[float, float]]:
     return list(dict.fromkeys(cases))
 
 
-@numba.njit(cache=True, fastmath=True)
+@numba.njit(fastmath=True)
 def _fastmath_caller(h1: float, h2: float, abs_diff: bool = False) -> float:
     return heading_diff(h1, h2, abs_diff)
 

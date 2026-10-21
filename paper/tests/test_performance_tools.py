@@ -1,8 +1,9 @@
 """Failure controls for reusable benchmark validation and reporting."""
 
 import copy
-from dataclasses import asdict
+from dataclasses import asdict, replace
 import json
+import math
 from pathlib import Path
 import platform
 import subprocess
@@ -23,7 +24,7 @@ from paper.benchmark_contracts import (
 )
 from paper.benchmark_library_versions import Case, statistics_us, summary
 from paper.summarise_performance import summarise
-from paper.validate_performance_parity import ParityReport, compare_reports, corpus, evaluate_cases
+from paper.validate_performance_parity import ParityReport, compare_reports, corpus, evaluate_cases, read_parity_report
 
 
 @pytest.fixture(scope="module")
@@ -228,7 +229,7 @@ def test_report_uses_recorded_host_and_actual_decisions(tmp_path: Path) -> None:
     summarise(results, cases, tmp_path / "report")
     prose = (tmp_path / "report/report.md").read_text()
     assert "review-test-host" in prose
-    assert "retained their core and interface decisions" not in prose
+    assert "Interface decisions changed on 1 of 4 inputs" in prose
     assert "Core decisions changed on 1 of 4 inputs" in prose
     assert "known_collision_repairs_verified: failed" in prose
 
@@ -272,6 +273,7 @@ def test_report_rejects_missing_timing_samples(tmp_path: Path) -> None:
 def test_optimised_benchmark_validates_controls(failed_method: str | None, case_index: int) -> None:
     probe = """
 import json
+import math
 import sys
 from paper.benchmark_library_versions import Case, checks
 names = ('small-turn-collision', 'half-turn-collision', 'small-turn-safe', 'half-turn-exact-control')
@@ -311,3 +313,67 @@ print(json.dumps(checks(cases, outcomes)))
             negation = "not " if case_index < 2 and failed_method != "old_python" else ""
             failure = f"{negation}outcomes['{failed_method}'][index]"
         assert f"Benchmark validation failed: {failure}" in result.stderr
+
+
+@pytest.mark.parametrize("kind", ["unavailable", "interval"])
+def test_parity_roundtrip_preserves_unavailable_diagnostics(
+    tmp_path: Path, parity_report: ParityReport, kind: str
+) -> None:
+    case = Case(
+        "diagnostic",
+        "regression",
+        2.0 * ra.NUMERICAL_SCALAR_LIMIT,
+        0.0,
+        0.0,
+        90.0,
+        300.0,
+        3.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        600.0,
+        9260.0,
+    )
+    if kind == "interval":
+        case = replace(
+            case,
+            x=-0.75 * 2.0**60 * 1e-18,
+            y=1.0,
+            ah=89.0,
+            ar=1.0,
+            av=1e-18 / ra.KT_TO_MPS,
+            horizon=2.0**60,
+            threshold=1.0 - 5e-7,
+        )
+    report = copy.deepcopy(parity_report)
+    report["records"] = evaluate_cases([case])
+    record = report["records"][0]
+    assert not record["core"][0]
+    assert math.isnan(record["core"][2])
+    assert record["interface"]["base_closest_time_s"] is None
+    if kind == "interval":
+        assert record["interface"]["diagnostic_kind"] == "interval_bound"
+        assert record["interface"]["base_bound_interval_s"] is not None
+    else:
+        assert math.isnan(record["core"][1])
+        assert record["interface"]["base_min_distance_m"] is None
+    path = tmp_path / "report.json"
+    path.write_text(json.dumps(report))
+    restored = read_parity_report(path)
+    comparison = compare_reports(report, restored)
+    assert comparison["maximum_distance_change_m"] == {"core": 0.0, "interface": 0.0}
+    assert comparison["diagnostic_time_changes"] == {"core": 0, "interface": 0}
+    changed = copy.deepcopy(restored)
+    changed["records"][0]["core"] = (False, 0.0, 0.0)
+    with pytest.raises(ValueError, match="distance"):
+        compare_reports(restored, changed)
+    changed = copy.deepcopy(restored)
+    changed["records"][0]["interface"]["diagnostic_kind"] = "straight_minimum"
+    with pytest.raises(ValueError, match="diagnostic_kind"):
+        compare_reports(restored, changed)
+    if kind == "interval":
+        changed = copy.deepcopy(restored)
+        changed["records"][0]["interface"]["base_bound_interval_s"] = (0.0, 1.0)
+        assert compare_reports(restored, changed)["diagnostic_time_changes"]["interface"] == 1

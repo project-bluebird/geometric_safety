@@ -12,6 +12,8 @@ import numba
 import numpy as np
 from numpy.typing import NDArray
 
+from geometric_safety._numeric import _orientation_sign
+
 # ---------------------------------------------------------------------------
 # Unit-conversion and physical constants
 # ---------------------------------------------------------------------------
@@ -76,7 +78,7 @@ def heading_to_unit_vector(heading_deg: float) -> np.ndarray:
     return out
 
 
-@numba.njit(cache=True, fastmath=True)
+@numba.njit(cache=True, fastmath=False)
 def latlon_to_local_xy(lat: float, lon: float, ref_lat: float, ref_lon: float) -> np.ndarray:
     """
     Project latitude/longitude into a local east/north tangent-plane frame.
@@ -101,11 +103,17 @@ def latlon_to_local_xy(lat: float, lon: float, ref_lat: float, ref_lon: float) -
         east  ≈ R cos(ref_lat) Δlon,
         north ≈ R Δlat.
 
+    Longitude differences use the shorter date-line crossing.
     That is appropriate for local conflict checks, but not intended for long-range
     geodesic fidelity.
     """
     d_lat = (lat - ref_lat) * DEG_TO_RAD
-    d_lon = (lon - ref_lon) * DEG_TO_RAD
+    longitude_difference = lon - ref_lon
+    if longitude_difference > 180.0:
+        longitude_difference = (lon - 180.0) - (ref_lon + 180.0)
+    elif longitude_difference < -180.0:
+        longitude_difference = (lon + 180.0) - (ref_lon - 180.0)
+    d_lon = longitude_difference * DEG_TO_RAD
     ref_lat_rad = ref_lat * DEG_TO_RAD
     east = EARTH_RADIUS_IN_METERS * d_lon * np.cos(ref_lat_rad)
     north = EARTH_RADIUS_IN_METERS * d_lat
@@ -163,7 +171,7 @@ def shortest_turn_parameters(
 
     The angle and rate are degrees and degrees per second; duration is seconds.
     Exact half-turn ties turn left. Equal headings have zero rate and duration.
-    A changed heading requires a finite, nonzero supplied rate magnitude.
+    All headings and rates must be finite. A changed heading requires a nonzero rate magnitude.
     """
     angle_deg = heading_diff(heading0_deg, target_heading_deg)
     if not math.isfinite(angle_deg) or not math.isfinite(turn_rate_deg_sec):
@@ -181,7 +189,7 @@ def shortest_turn_parameters(
 # ---------------------------------------------------------------------------
 
 
-@numba.njit(cache=True, fastmath=True)
+@numba.njit(cache=True, fastmath=False)
 def cross_2d(o: np.ndarray, a: np.ndarray, b: np.ndarray) -> float:
     """
     Compute the signed 2-D cross product of the vectors `OA` and `OB`.
@@ -202,109 +210,24 @@ def cross_2d(o: np.ndarray, a: np.ndarray, b: np.ndarray) -> float:
     return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
 
 
-@numba.njit(cache=True, fastmath=True)
-def small_convex_hull(pts: np.ndarray) -> np.ndarray:
-    """
-    Compute a convex hull for tiny point sets without the generic monotone-chain path.
-
-    This helper is used only for the structured 4- and 5-point hulls that arise from
-    the speed-rectangle geometry in this module. The full `convex_hull` implementation
-    is retained below as the generic reference path and sanity oracle.
-    """
-    n = pts.shape[0]
-
-    if n == 0:
-        return np.empty((0, 2), dtype=np.float64)
-
-    # Deduplicate in-place; these structured point sets are tiny enough that an O(n^2)
-    # pass is quicker than setting up a more general sorting pipeline.
-    unique_pts = np.empty((n, 2), dtype=np.float64)
-    unique_len = 0
-    for i in range(n):
-        x = pts[i, 0]
-        y = pts[i, 1]
-        duplicate = False
-        for j in range(unique_len):
-            if unique_pts[j, 0] == x and unique_pts[j, 1] == y:
-                duplicate = True
-                break
-        if not duplicate:
-            unique_pts[unique_len, 0] = x
-            unique_pts[unique_len, 1] = y
-            unique_len += 1
-
-    if unique_len == 0:
-        return np.empty((0, 2), dtype=np.float64)
-
-    if unique_len == 1:
-        out = np.empty((1, 2), dtype=np.float64)
-        out[0, :] = unique_pts[0]
-        return out
-
-    if unique_len == 2:
-        out = np.empty((2, 2), dtype=np.float64)
-        if unique_pts[1, 0] < unique_pts[0, 0] or (
-            unique_pts[1, 0] == unique_pts[0, 0] and unique_pts[1, 1] < unique_pts[0, 1]
-        ):
-            out[0, :] = unique_pts[1]
-            out[1, :] = unique_pts[0]
-        else:
-            out[0, :] = unique_pts[0]
-            out[1, :] = unique_pts[1]
-        return out
-
-    # Gift-wrap the hull. For <= 5 points this is simpler and faster than invoking the
-    # fully generic hull builder.
-    start = 0
-    for i in range(1, unique_len):
-        if unique_pts[i, 0] < unique_pts[start, 0] or (
-            unique_pts[i, 0] == unique_pts[start, 0] and unique_pts[i, 1] < unique_pts[start, 1]
-        ):
-            start = i
-
-    hull_idx = np.empty(unique_len, dtype=np.int64)
-    hull_len = 0
-    p = start
-
-    while True:
-        hull_idx[hull_len] = p
-        hull_len += 1
-
-        q = -1
-        for r in range(unique_len):
-            if r == p:
-                continue
-            if q == -1:
-                q = r
-                continue
-
-            turn = cross_2d(unique_pts[p], unique_pts[q], unique_pts[r])
-            if turn > 0.0:
-                q = r
-            elif turn == 0.0:
-                dx_q = unique_pts[q, 0] - unique_pts[p, 0]
-                dy_q = unique_pts[q, 1] - unique_pts[p, 1]
-                dx_r = unique_pts[r, 0] - unique_pts[p, 0]
-                dy_r = unique_pts[r, 1] - unique_pts[p, 1]
-                if dx_r * dx_r + dy_r * dy_r > dx_q * dx_q + dy_q * dy_q:
-                    q = r
-
-        if q == start:
-            break
-
-        p = q
-
-        if hull_len >= unique_len:
-            break
-
-    hull = np.empty((hull_len, 2), dtype=np.float64)
-    for i in range(hull_len):
-        hull[i, :] = unique_pts[hull_idx[i]]
-
-    return hull
+@numba.njit(cache=True, fastmath=False)
+def _bounding_rectangle(pts: NDArray[np.float64]) -> NDArray[np.float64]:
+    """Enclose points whose orientation arithmetic exceeds the verified exponent range."""
+    lower_x = upper_x = pts[0, 0]
+    lower_y = upper_y = pts[0, 1]
+    for i in range(1, pts.shape[0]):
+        lower_x = min(lower_x, pts[i, 0])
+        upper_x = max(upper_x, pts[i, 0])
+        lower_y = min(lower_y, pts[i, 1])
+        upper_y = max(upper_y, pts[i, 1])
+    if lower_x == upper_x and lower_y == upper_y:
+        return np.array([[lower_x, lower_y]])
+    if lower_x == upper_x or lower_y == upper_y:
+        return np.array([[lower_x, lower_y], [upper_x, upper_y]])
+    return np.array([[lower_x, lower_y], [upper_x, lower_y], [upper_x, upper_y], [lower_x, upper_y]])
 
 
-@numba.njit(cache=True, fastmath=True)
+@numba.njit(cache=True, fastmath=False)
 def convex_hull(pts: np.ndarray) -> np.ndarray:
     """
     Compute the convex hull of a set of 2-D points using Andrew's monotone chain.
@@ -318,7 +241,8 @@ def convex_hull(pts: np.ndarray) -> np.ndarray:
     -------
     np.ndarray
         Hull vertices ordered counter-clockwise, with duplicate and collinear interior
-        points removed.
+        points removed. If the coordinate exponent range prevents a verified
+        orientation, return the enclosing axis-aligned rectangle instead.
     """
     n = pts.shape[0]
 
@@ -377,7 +301,10 @@ def convex_hull(pts: np.ndarray) -> np.ndarray:
             p1 = pts_unique[lower[lower_len - 2]]
             p2 = pts_unique[lower[lower_len - 1]]
             p3 = pts_unique[i]
-            if cross_2d(p1, p2, p3) <= 0.0:
+            orientation = _orientation_sign(p1, p2, p3)
+            if not math.isfinite(orientation):
+                return _bounding_rectangle(pts)
+            if orientation <= 0.0:
                 lower_len -= 1
             else:
                 break
@@ -392,7 +319,10 @@ def convex_hull(pts: np.ndarray) -> np.ndarray:
             p1 = pts_unique[upper[upper_len - 2]]
             p2 = pts_unique[upper[upper_len - 1]]
             p3 = pts_unique[i]
-            if cross_2d(p1, p2, p3) <= 0.0:
+            orientation = _orientation_sign(p1, p2, p3)
+            if not math.isfinite(orientation):
+                return _bounding_rectangle(pts)
+            if orientation <= 0.0:
                 upper_len -= 1
             else:
                 break
@@ -411,6 +341,10 @@ def convex_hull(pts: np.ndarray) -> np.ndarray:
         h += 1
 
     return hull
+
+
+# Small reachable sets use the same hull construction and orientation arithmetic.
+small_convex_hull = convex_hull
 
 
 @numba.njit(cache=True, fastmath=False)
@@ -487,12 +421,14 @@ def _segment_projection_coordinates(
     t = 0.0
     if denom != 0.0:
         t = ((px - ax) * ab_x + (py - ay) * ab_y) / denom
-        if t < 0.0:
+        if t <= 0.0:
             t = 0.0
-        elif t > 1.0:
+        elif t >= 1.0:
             t = 1.0
-        x = ax + t * ab_x
-        y = ay + t * ab_y
+            x, y = bx, by
+        else:
+            x = ax + t * ab_x
+            y = ay + t * ab_y
     return x, y, math.hypot(px - x, py - y), t
 
 
@@ -546,6 +482,10 @@ def _project_point_on_convex_polygon(
         )
         projection = np.empty(2, dtype=np.float64)
         projection[0], projection[1] = x, y
+        if fraction == 0.0:
+            return projection, distance, 0, 0, 0.0
+        if fraction == 1.0:
+            return projection, distance, 1, 1, 0.0
         return projection, distance, 0, 1, fraction
 
     # Interior points project to themselves.

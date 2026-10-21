@@ -328,8 +328,7 @@ certified_safe
 
 The matching decisions in this example do not imply equivalence of the two
 motion classes. Both use the same local planar approximation for these
-positions; the new geographic entry points also wrap longitude differences
-across the date line.
+positions, and both wrap longitude differences across the date line.
 
 | Existing input or return value | Heading interface |
 | --- | --- |
@@ -409,7 +408,11 @@ with straight flight. A changed heading with zero turn rate raises
 `ValueError` in the legacy turn solver and returns `unsupported` from the
 heading interface. An exact 180-degree difference selects a left turn;
 differences on either side retain their direction, including near a heading
-wrap.
+wrap. Legacy turn queries require finite headings and rates, including for
+unchanged headings. Deviation bounds must be finite and nonnegative, with
+relative turn-rate error below one; invalid declarations raise `ValueError`.
+An already vertically separated pair needs only its current position for
+lateral diagnostics, so an unused future turn does not prevent that shortcut.
 
 Legacy lateral queries outside the numerical domain return `False` with
 unavailable distance/time diagnostics. Always inspect the decision before
@@ -520,3 +523,9 @@ between package versions, and [paper reproduction](paper/README.md) for the
 figure and numerical-check scripts. An interactive geometry walkthrough is
 also available in
 [`relative_aircraft_projection_walkthrough.ipynb`](relative_aircraft_projection_walkthrough.ipynb).
+
+
+The standalone visualisation helpers share the solver's finite-heading and
+nonzero-rate requirements for a changed target. The unused flat web-payload
+adapters and debug-payload builder in `demo_utils` have been removed; the web
+application uses `app.visualisation` and its nested aircraft inputs.

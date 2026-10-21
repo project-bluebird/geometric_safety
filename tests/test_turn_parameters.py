@@ -8,7 +8,7 @@ import pytest
 from geometric_safety.util import shortest_turn_parameters
 
 
-@numba.njit(cache=True, fastmath=True)
+@numba.njit(fastmath=True)
 def _fastmath_parameters(initial: float, target: float, rate: float) -> tuple[float, float, float]:
     return shortest_turn_parameters(initial, target, rate)
 

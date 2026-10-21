@@ -24,7 +24,7 @@ class _Query(TypedDict):
     separation_threshold_m: float
     horizon_s: float
     required_vertical_gap_fl: float
-    vertical_rounding_fl: int
+    vertical_rounding_fl: int | np.integer
 
 
 def _query() -> _Query:
@@ -264,3 +264,21 @@ def test_negative_gap_and_rounding_are_rejected() -> None:
     query.update(required_vertical_gap_fl=10.0, vertical_rounding_fl=-1)
     with pytest.raises(ValueError, match="vertical_rounding_fl"):
         certify_heading_separation_with_vertical((0.0, 0.0), _straight(270.0), _straight(90.0), **query)
+
+
+@pytest.mark.parametrize("value", [True, False])
+def test_boolean_vertical_rounding_is_rejected(value: bool) -> None:
+    query = _query()
+    query["vertical_rounding_fl"] = value
+    with pytest.raises(ValueError, match="vertical_rounding_fl"):
+        certify_heading_separation_with_vertical((60_000.0, 0.0), _straight(270.0), _straight(90.0), **query)
+
+
+@pytest.mark.parametrize("value", [np.int32(0), np.int64(10), np.uint64(10)])
+def test_numpy_integer_rounding_matches_python_integer(value: np.integer) -> None:
+    query = _query()
+    query["vertical_rounding_fl"] = int(value)
+    expected = certify_heading_separation_with_vertical((60_000.0, 0.0), _straight(270.0), _straight(90.0), **query)
+    query["vertical_rounding_fl"] = value
+    actual = certify_heading_separation_with_vertical((60_000.0, 0.0), _straight(270.0), _straight(90.0), **query)
+    assert actual == expected

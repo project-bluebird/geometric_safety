@@ -40,6 +40,9 @@ from geometric_safety.relevant_aircraft import (
     DIAGNOSTIC_STRAIGHT_MINIMUM,
     DIAGNOSTIC_UNAVAILABLE,
     NUMERICAL_SCALAR_LIMIT,
+    TURN_SPEED_SCHEDULE_UNCERTAINTY_KT_DEFAULT,
+    TURN_TIME_CERT_MIN_INTERVAL_S,
+    TURN_USE_INTERVAL_LOCAL_LIPSCHITZ_DEFAULT,
     _catch_up_projection_interval_with_turns_local,
     _geometry_within_numerical_domain,
     _speed_rectangle_corner_points,
@@ -332,6 +335,7 @@ def certify_heading_separation(
         ):
             return HeadingAssuranceResult("unresolved", "enlarged speed hull exceeds numerical range", inflation)
         diagnostic_out = np.array((DIAGNOSTIC_UNAVAILABLE, math.nan, math.nan), dtype=np.float64)
+        # Explicit defaults keep Numba on its normal dispatch path for repeated queries.
         safe, distance, closest_time = _catch_up_projection_interval_with_turns_local(
             rel_pos0=relative_position,
             a_heading0_deg=math.fmod(a.heading0_deg, 360.0),
@@ -345,6 +349,14 @@ def certify_heading_separation(
             separation_threshold_m=threshold,
             speed_diff_kt=half_width_kt,
             projection_time_s=horizon_s,
+            use_interval_local_lipschitz=TURN_USE_INTERVAL_LOCAL_LIPSCHITZ_DEFAULT,
+            turn_speed_schedule_uncertainty_kt=TURN_SPEED_SCHEDULE_UNCERTAINTY_KT_DEFAULT,
+            min_cert_interval_s=TURN_TIME_CERT_MIN_INTERVAL_S,
+            eta_const_m=0.0,
+            eta_rate_mps=0.0,
+            turn_delay_max_s=0.0,
+            turn_rate_error_max=0.0,
+            directional_mode=2,
             diagnostic_out=diagnostic_out,
         )
         if diagnostic_out[0] == DIAGNOSTIC_INTERVAL_BOUND:
