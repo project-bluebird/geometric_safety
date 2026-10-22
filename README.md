@@ -451,6 +451,12 @@ uv run --locked pyright
 uv run --locked pytest tests/ paper/tests/
 ```
 
+CI runs most Python tests in four worker processes and reports the slowest
+tests. The two modules that exercise multiprocessing pools run in a separate
+serial job because forking from pytest-xdist's threaded workers can deadlock.
+Both jobs run on every pull request. Each pytest worker has a fresh Numba cache;
+audit subprocesses also start with fresh Python and Numba caches.
+
 The `apps` group includes the web application and its integration tests, and
 the `browser` group supplies the browser test tools. The library itself does
 not require either group. Test functions are subject to the same

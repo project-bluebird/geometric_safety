@@ -54,9 +54,22 @@ jobs:
         run: npm run check:frontend
 
   python-tests:
-    name: Python tests
+    name: Python tests (${{ matrix.suite }})
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - suite: parallel
+            paths: tests/ paper/tests/
+            options: >-
+              -n 4 --dist worksteal --max-worker-restart=0
+              --ignore=paper/tests/test_evaluation.py
+              --ignore=paper/tests/test_projection_sanity.py
+          - suite: process pools
+            paths: paper/tests/test_evaluation.py paper/tests/test_projection_sanity.py
+            options: ""
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -69,7 +82,9 @@ jobs:
       - name: Install locked Python dependencies
         run: uv sync --locked --group apps --group browser
       - name: Run library and validation tests
-        run: uv run --locked --no-sync pytest -q tests/ paper/tests/
+        run: >-
+          uv run --locked --no-sync pytest -q
+          ${{ matrix.paths }} ${{ matrix.options }} --durations=25
 
   browser-tests:
     name: Chromium tests
