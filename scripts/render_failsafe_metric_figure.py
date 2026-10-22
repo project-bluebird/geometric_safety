@@ -73,10 +73,11 @@ def draw_heading_arrow(
     """Draw a compact heading arrow in aviation heading convention."""
     theta = np.deg2rad(90.0 - heading_deg)
     direction = np.array([np.cos(theta), np.sin(theta)])
+    tip = xy + length_nm * direction
     ax.annotate(
         "",
-        xy=xy + length_nm * direction,
-        xytext=xy,
+        xy=(float(tip[0]), float(tip[1])),
+        xytext=(float(xy[0]), float(xy[1])),
         arrowprops={
             "arrowstyle": "-|>",
             "color": color,

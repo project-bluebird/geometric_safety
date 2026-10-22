@@ -1,7 +1,7 @@
 """Matplotlib drawing functions and standalone demo entrypoint.
 
-Run with ``python -m geometric_safety.plotting heatmap`` or
-``python -m geometric_safety.plotting turns``.
+Run with ``uv run --locked python scripts/visualise.py heatmap`` or
+``uv run --locked python scripts/visualise.py turns``.
 """
 
 from __future__ import annotations

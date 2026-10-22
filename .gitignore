@@ -40,6 +40,9 @@ venv/
 .ruff_cache/
 .mypy_cache/
 
+# Frontend development tools
+node_modules/
+
 # uv
 .uv-cache/
 

@@ -13,6 +13,7 @@ import numba
 import numpy as np
 
 from geometric_safety import relevant_aircraft as ra
+from geometric_safety._instrumentation import counted_python_function
 from geometric_safety.util import DEG_TO_RAD, EARTH_RADIUS_IN_METERS, KT_TO_MPS, NMI_TO_M, RAD_TO_DEG
 
 DEFAULT_REF_LAT = 51.0
@@ -155,7 +156,7 @@ def local_xy_to_latlon(east_m: float, north_m: float, ref_lat: float, ref_lon: f
     return lat, lon
 
 
-def encounter_to_turn_kwargs(encounter: Encounter, ref_lat: float, ref_lon: float) -> dict[str, float]:
+def encounter_to_turn_kwargs(encounter: Encounter, ref_lat: float, ref_lon: float) -> ra.TurnInputs:
     """Convert an encounter to the public turn-aware API inputs."""
     b_lat, b_lon = local_xy_to_latlon(-encounter.rel_east_m, -encounter.rel_north_m, ref_lat, ref_lon)
     return {
@@ -405,6 +406,7 @@ def evaluate_proposed(
     *,
     dt_min_s: float = ra.TURN_TIME_CERT_MIN_INTERVAL_S,
     use_interval_local_lipschitz: bool = True,
+    directional_mode: int = 2,
     turn_speed_schedule_uncertainty_kt: float = 0.0,
     ref_lat: float = DEFAULT_REF_LAT,
     ref_lon: float = DEFAULT_REF_LON,
@@ -412,6 +414,8 @@ def evaluate_proposed(
 ) -> MethodOutcome:
     """Evaluate the proposed method either through the public API or the local core."""
     if use_public_api:
+        if directional_mode != 2:
+            raise ValueError("The public API uses the complete directional certificate")
         result = ra.catch_up_projection_interval_with_turns(
             **encounter_to_turn_kwargs(encounter, ref_lat, ref_lon),
             use_interval_local_lipschitz=use_interval_local_lipschitz,
@@ -434,6 +438,7 @@ def evaluate_proposed(
             use_interval_local_lipschitz=use_interval_local_lipschitz,
             turn_speed_schedule_uncertainty_kt=turn_speed_schedule_uncertainty_kt,
             min_cert_interval_s=dt_min_s,
+            directional_mode=directional_mode,
         )
     return MethodOutcome.from_tuple(result, encounter.separation_threshold_m)
 
@@ -607,39 +612,31 @@ def count_fixed_time_evals(
     *,
     dt_min_s: float,
     use_interval_local_lipschitz: bool,
+    directional_mode: int = 2,
 ) -> tuple[int, MethodOutcome]:
-    """Count fixed-time hull evaluations using the Python shadow of the local core."""
-    py_func = ra._catch_up_projection_interval_with_turns_local.py_func
-    globals_dict = py_func.__globals__
-    original = globals_dict["_min_distance_to_relative_hull_at_time"]
-    counter = {"n": 0}
-
-    def wrapped(*args: object, **kwargs: object) -> object:
-        counter["n"] += 1
-        return original(*args, **kwargs)
-
-    globals_dict["_min_distance_to_relative_hull_at_time"] = wrapped
-    try:
-        result = py_func(
-            rel_pos0=encounter.rel_pos0(),
-            a_heading0_deg=encounter.a_heading0_deg,
-            a_target_heading_deg=encounter.a_target_heading_deg,
-            a_speed_kt=encounter.a_speed_kt,
-            a_turn_rate_deg_sec=encounter.a_turn_rate_deg_sec,
-            b_heading0_deg=encounter.b_heading0_deg,
-            b_target_heading_deg=encounter.b_target_heading_deg,
-            b_speed_kt=encounter.b_speed_kt,
-            b_turn_rate_deg_sec=encounter.b_turn_rate_deg_sec,
-            separation_threshold_m=encounter.separation_threshold_m,
-            speed_diff_kt=encounter.speed_diff_kt,
-            projection_time_s=encounter.projection_time_s,
-            use_interval_local_lipschitz=use_interval_local_lipschitz,
-            turn_speed_schedule_uncertainty_kt=0.0,
-            min_cert_interval_s=dt_min_s,
-        )
-    finally:
-        globals_dict["_min_distance_to_relative_hull_at_time"] = original
-    return counter["n"], MethodOutcome.from_tuple(result, encounter.separation_threshold_m)
+    """Count samples in the local core's Python control flow, retaining compiled geometry helpers."""
+    py_func, counter = counted_python_function(
+        ra._catch_up_projection_interval_with_turns_local, "_sample_relative_hull_at_time"
+    )
+    result = py_func(
+        rel_pos0=encounter.rel_pos0(),
+        a_heading0_deg=encounter.a_heading0_deg,
+        a_target_heading_deg=encounter.a_target_heading_deg,
+        a_speed_kt=encounter.a_speed_kt,
+        a_turn_rate_deg_sec=encounter.a_turn_rate_deg_sec,
+        b_heading0_deg=encounter.b_heading0_deg,
+        b_target_heading_deg=encounter.b_target_heading_deg,
+        b_speed_kt=encounter.b_speed_kt,
+        b_turn_rate_deg_sec=encounter.b_turn_rate_deg_sec,
+        separation_threshold_m=encounter.separation_threshold_m,
+        speed_diff_kt=encounter.speed_diff_kt,
+        projection_time_s=encounter.projection_time_s,
+        use_interval_local_lipschitz=use_interval_local_lipschitz,
+        turn_speed_schedule_uncertainty_kt=0.0,
+        min_cert_interval_s=dt_min_s,
+        directional_mode=directional_mode,
+    )
+    return counter.calls, MethodOutcome.from_tuple(result, encounter.separation_threshold_m)
 
 
 def warm_up_numba(config: EvaluationConfig) -> None:
@@ -821,6 +818,15 @@ def _evaluate_near_threshold_chunk(
         base_row = encounter_to_row(encounter)
         base_row.update(outcome_to_row("reference", reference))
         margin_nmi = reference.margin_m / NMI_TO_M
+        production_row = dict(base_row)
+        production_row.update(outcome_to_row("proposed", evaluate_proposed(encounter)))
+        production_row.update(
+            directional_mode=2,
+            lipschitz_mode="local",
+            dt_min_s=3.0,
+            margin_bin_nmi=margin_bin_label(margin_nmi, MARGIN_BINS_NMI),
+        )
+        rows.append(production_row)
         for use_local in (True, False):
             for dt_min_s in config.dt_min_values_s:
                 start = time.perf_counter()
@@ -828,6 +834,7 @@ def _evaluate_near_threshold_chunk(
                     encounter,
                     dt_min_s=dt_min_s,
                     use_interval_local_lipschitz=use_local,
+                    directional_mode=0,
                     use_public_api=False,
                 )
                 runtime_us = (time.perf_counter() - start) * 1e6
@@ -835,11 +842,13 @@ def _evaluate_near_threshold_chunk(
                     encounter,
                     dt_min_s=dt_min_s,
                     use_interval_local_lipschitz=use_local,
+                    directional_mode=0,
                 )
                 if not outcomes_equivalent(outcome, counted_outcome):
                     raise RuntimeError("Instrumented and compiled ablation outcomes diverged.")
                 row = dict(base_row)
                 row.update(outcome_to_row("proposed", outcome))
+                row["directional_mode"] = 0
                 row["lipschitz_mode"] = "local" if use_local else "global"
                 row["dt_min_s"] = float(dt_min_s)
                 row["fixed_time_evals"] = int(fixed_time_evals)
@@ -865,6 +874,8 @@ def run_near_threshold_suite(
                 row for chunk_rows in executor.map(_evaluate_near_threshold_chunk, chunk_args) for row in chunk_rows
             ]
 
+    default_rows = [row for row in rows if row["directional_mode"] == 2]
+    rows = [row for row in rows if row["directional_mode"] == 0]
     grouped: dict[tuple[str, float], list[dict[str, Any]]] = {}
     for row in rows:
         grouped.setdefault((row["lipschitz_mode"], float(row["dt_min_s"])), []).append(row)
@@ -884,11 +895,18 @@ def run_near_threshold_suite(
                 "median_runtime_us": float(statistics.median(runtimes_us)),
             }
         )
-    default_rows = filter_default_near_threshold_rows(rows)
     margin_summary = summarize_by_margin_bin(rows)
     default_margin_summary = summarize_by_margin_bin(default_rows)
     return {
         "rows": rows,
+        "default_rows": default_rows,
+        "default_summary": {
+            "directional_mode": 2,
+            "lipschitz_mode": "local",
+            "dt_min_s": 3.0,
+            "n": len(default_rows),
+            "certified_n": sum(int(row["proposed_is_safe"]) for row in default_rows),
+        },
         "summary_rows": summary_rows,
         "margin_summary": margin_summary,
         "default_margin_summary": default_margin_summary,
@@ -1006,11 +1024,6 @@ def summarize_by_margin_bin(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             }
         )
     return sorted(summary, key=lambda row: row["margin_bin_nmi"])
-
-
-def filter_default_near_threshold_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Return rows for the default near-threshold certification setting."""
-    return [row for row in rows if row["lipschitz_mode"] == "local" and abs(float(row["dt_min_s"]) - 3.0) <= 1e-12]
 
 
 def build_uniform_times(projection_time_s: float, dt_s: float) -> np.ndarray:

@@ -12,12 +12,12 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 import math
-from typing import Any
+from typing import Any, TypedDict
 
 import numpy as np
 
 from geometric_safety import relevant_aircraft as ra
-from geometric_safety.util import DEG_TO_RAD, KT_TO_MPS, heading_diff
+from geometric_safety.util import DEG_TO_RAD, KT_TO_MPS, shortest_turn_parameters
 from paper.evaluation import Encounter
 
 SIM_COARSE_DT_S = 0.25
@@ -44,7 +44,8 @@ class ExecutionModelConfig:
     ``ou_speed_sigma_kt`` enables mean-reverting speed drift over the whole horizon,
     clipped to the admissible interval. This violates the constant-speed assumption
     everywhere, not only during turns. ``roll_time_s`` replaces the instant-rate turn
-    with a trapezoidal rate profile that ramps in and out over the given time.
+    with a rate that ramps up linearly over the given time and stops abruptly when
+    the target heading is reached.
     ``heading_jitter_deg`` adds piecewise-constant track-keeping error, redrawn every
     ``heading_jitter_period_s`` seconds.
     """
@@ -89,7 +90,17 @@ class PerturbationBounds:
         return [name for name, value in asdict(self).items() if value > 0.0]
 
 
-def solver_envelope_kwargs(encounter: Encounter, bounds: PerturbationBounds) -> dict[str, float]:
+class EnvelopeInputs(TypedDict):
+    """Bounded perturbation parameters passed to the turn-aware solver."""
+
+    eta_const_m: float
+    eta_rate_mps: float
+    turn_delay_max_s: float
+    turn_rate_error_max: float
+    turn_speed_schedule_uncertainty_kt: float
+
+
+def solver_envelope_kwargs(encounter: Encounter, bounds: PerturbationBounds) -> EnvelopeInputs:
     """Convert perturbation bounds into the solver's deviation-envelope parameters.
 
     The wind bound contributes its magnitude to the linear rate term directly. A
@@ -99,9 +110,7 @@ def solver_envelope_kwargs(encounter: Encounter, bounds: PerturbationBounds) -> 
     a_max_speed_mps = (encounter.a_speed_kt + encounter.speed_diff_kt) * KT_TO_MPS
     b_max_speed_mps = (encounter.b_speed_kt + encounter.speed_diff_kt) * KT_TO_MPS
     heading_error_rad = bounds.heading_error_deg * DEG_TO_RAD
-    eta_rate_mps = bounds.differential_wind_kt * KT_TO_MPS + heading_error_rad * (
-        a_max_speed_mps + b_max_speed_mps
-    )
+    eta_rate_mps = bounds.differential_wind_kt * KT_TO_MPS + heading_error_rad * (a_max_speed_mps + b_max_speed_mps)
     return {
         "eta_const_m": bounds.position_error_m,
         "eta_rate_mps": eta_rate_mps,
@@ -224,8 +233,9 @@ def _sample_aircraft_draw(
         else:
             turn_rate_scale = float(1.0 + rng.uniform(-bound, bound))
 
-    turn_angle_deg = abs(heading_diff(heading0_deg, target_heading_deg))
-    is_turning = turn_angle_deg >= ra.TURN_HEADING_EPS_DEG and abs(turn_rate_deg_sec) > ra.TURN_RATE_EPS_DEG_PER_S
+    turn_angle_deg, _, _ = shortest_turn_parameters(heading0_deg, target_heading_deg, turn_rate_deg_sec)
+    turn_angle_deg = abs(turn_angle_deg)
+    is_turning = turn_angle_deg != 0.0
 
     if execution.ou_speed_sigma_kt > 0.0:
         schedule_times_s, schedule_speeds_mps = _ou_speed_path_mps(
@@ -298,18 +308,15 @@ def _perturbed_displacement(
     dts_s = np.diff(times_s)
     mid_times = times_s[:-1] + 0.5 * dts_s
 
-    turn_angle_deg = heading_diff(heading0_deg, target_heading_deg)
-    is_turning = abs(turn_angle_deg) >= ra.TURN_HEADING_EPS_DEG and abs(turn_rate_deg_sec) > ra.TURN_RATE_EPS_DEG_PER_S
+    turn_angle_deg, _, _ = shortest_turn_parameters(heading0_deg, target_heading_deg, turn_rate_deg_sec)
+    is_turning = turn_angle_deg != 0.0
     if is_turning:
         executed_rate_deg_s = abs(turn_rate_deg_sec) * draw.turn_rate_scale
         if draw.roll_time_s > 0.0:
-            # Trapezoidal rate transient: the rate ramps in over roll_time_s and the
-            # cumulative angle is clamped at the commanded turn angle. The ramp-in lag
-            # is the out-of-class element; the clamp approximates the roll-out.
+            # Ramp-in delays the accumulated turn angle; clamping stops the turn
+            # at the target without a roll-out ramp.
             ramp = np.clip((mid_times - draw.turn_delay_s) / draw.roll_time_s, 0.0, 1.0)
-            cumulative_angle_deg = np.minimum(
-                np.cumsum(executed_rate_deg_s * ramp * dts_s), abs(turn_angle_deg)
-            )
+            cumulative_angle_deg = np.minimum(np.cumsum(executed_rate_deg_s * ramp * dts_s), abs(turn_angle_deg))
             headings_deg = heading0_deg + math.copysign(1.0, turn_angle_deg) * cumulative_angle_deg
         else:
             turn_duration_s = abs(turn_angle_deg) / executed_rate_deg_s

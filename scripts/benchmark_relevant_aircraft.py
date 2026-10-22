@@ -6,8 +6,8 @@ Measures warm-path latency of `catch_up_projection_interval_with_turns` across a
 representative scenarios and a random mixed-turn sweep.
 
 Run with:
-    uv run python scripts/benchmark_relevant_aircraft.py
-    uv run python scripts/benchmark_relevant_aircraft.py --random-cases 5000
+    uv run --locked python scripts/benchmark_relevant_aircraft.py
+    uv run --locked python scripts/benchmark_relevant_aircraft.py --random-cases 5000
 """
 
 from __future__ import annotations
@@ -22,6 +22,7 @@ import typing
 import numpy as np
 
 from geometric_safety import relevant_aircraft as ra
+from geometric_safety._instrumentation import copy_python_function, counted_python_function
 from geometric_safety.util import DEG_TO_RAD, EARTH_RADIUS_IN_METERS, NMI_TO_M, RAD_TO_DEG
 
 
@@ -67,12 +68,6 @@ def run_turn_aware(kwargs: TurnAwareKwargs) -> tuple[bool, float, float]:
     return ra.catch_up_projection_interval_with_turns(**kwargs)
 
 
-def run_turn_aware_python(kwargs: TurnAwareKwargs) -> tuple[bool, float, float]:
-    """Call the Python shadow of the turn-aware lateral solver with typed kwargs."""
-    py_func = typing.cast(typing.Any, ra.catch_up_projection_interval_with_turns).py_func
-    return typing.cast(tuple[bool, float, float], py_func(**kwargs))
-
-
 def benchmark_microseconds(
     fn: typing.Callable[..., object],
     kwargs: typing.Mapping[str, object],
@@ -91,26 +86,22 @@ def benchmark_microseconds(
 
 
 def count_fixed_time_evals(kwargs: TurnAwareKwargs) -> tuple[int, tuple[bool, float, float]]:
+    """Count fixed-time samples in the local solver's Python control flow.
+
+    Geometry helpers remain compiled. Counts may differ from the fully compiled
+    path near floating-point decision boundaries; benchmark decisions, diagnostics
+    and timings are obtained separately from the compiled public solver.
     """
-    Count how many exact fixed-time hull evaluations the Python shadow executes.
-
-    This exposes how much work the adaptive certifier is doing, independent of Numba.
-    """
-    py_func = typing.cast(typing.Any, ra.catch_up_projection_interval_with_turns).py_func
-    globals_dict = py_func.__globals__
-    original = globals_dict["_min_distance_to_relative_hull_at_time"]
-    counter: dict[str, int] = {"n": 0}
-
-    def wrapped(*args: object, _counter: dict[str, int] = counter, **inner_kwargs: object) -> object:
-        _counter["n"] += 1
-        return original(*args, **inner_kwargs)
-
-    globals_dict["_min_distance_to_relative_hull_at_time"] = wrapped
-    try:
-        result = run_turn_aware_python(kwargs)
-    finally:
-        globals_dict["_min_distance_to_relative_hull_at_time"] = original
-    return counter["n"], result
+    local_core, counter = counted_python_function(
+        ra._catch_up_projection_interval_with_turns_local, "_sample_relative_hull_at_time"
+    )
+    public = copy_python_function(
+        ra.catch_up_projection_interval_with_turns, {"_catch_up_projection_interval_with_turns_local": local_core}
+    )
+    # FunctionType preserves the production code and defaults but has a dynamic
+    # return type. This copy has the same result contract as the public solver.
+    result = typing.cast(tuple[bool, float, float], public(**kwargs))
+    return counter.calls, result
 
 
 def build_isolated_scenarios() -> list[Scenario]:
@@ -240,10 +231,12 @@ def run_isolated_benchmarks(random_cases: int) -> None:
     print("Isolated Lateral-Solver Benchmarks")
     print("=" * 88)
     print("Representative warm-path timings")
+    print("fixed_time_evals_py counts Python-control-flow samples; timings and results use the compiled solver.")
     print("name, safe, min_dist_nmi, closest_time_s, fixed_time_evals_py, mean_us, median_us, max_us")
 
     for scenario in scenarios:
-        fixed_time_evals, result = count_fixed_time_evals(scenario.kwargs)
+        fixed_time_evals, _ = count_fixed_time_evals(scenario.kwargs)
+        result = run_turn_aware(scenario.kwargs)
         mean_us, median_us, max_us = benchmark_microseconds(
             typing.cast(typing.Callable[..., object], ra.catch_up_projection_interval_with_turns),
             scenario.kwargs,

@@ -12,17 +12,21 @@ description = "Geometric reachability-based safety filtering for air traffic con
 license = "MIT"
 name = "geometric_safety"
 requires-python = ">=3.13,<3.14"
-version = "0.3.2"
+version = "0.3.4"
 
 [project.urls]
 Repository = "https://github.com/project-bluebird/geometric_safety"
 
 [dependency-groups]
 apps = ["fastapi[all]>=0.136.1"]
+browser = ["playwright>=1.64.0"]
 dev = [
   "httpx>=0.28.1",
   "jupyter>=1.1.1",
+  "mpmath>=1.4.1",
+  "pyright>=1.1.414",
   "pytest>=9.0.3",
+  "pytest-xdist>=3.8.0",
   "ruff>=0.15.12",
   "ty>=0.0.32",
 ]
@@ -36,8 +40,15 @@ include = ["geometric_safety*"]
 namespaces = false
 where = ["."]
 
+[tool.setuptools.package-data]
+geometric_safety = ["py.typed"]
+
 [tool.pytest.ini_options]
 pythonpath = ["."]
+
+[tool.pyright]
+typeCheckingMode = "standard"
+pythonVersion = "3.13"
 
 [tool.ruff]
 exclude = [".venv/", ".git/"]
@@ -78,8 +89,8 @@ select = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"paper/tests/**" = ["ANN", "ARG", "RUF059"]
-"tests/**" = ["ANN", "ARG", "RUF059"]
+"paper/tests/**" = ["ARG", "RUF059"]
+"tests/**" = ["ARG", "RUF059"]
 
 [tool.ruff.lint.isort]
 case-sensitive = false
