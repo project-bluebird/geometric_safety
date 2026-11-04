@@ -1,0 +1,2 @@
+# Keep fixed benchmark data collapsed when reviewing source changes.
+paper/fixtures/heading_encounters.json linguist-generated=true

@@ -17,6 +17,8 @@ import sys
 from typing import Any
 
 from matplotlib import ticker
+from matplotlib.axes import Axes
+from matplotlib.figure import Figure
 import matplotlib.pyplot as plt
 import numba
 import numpy as np
@@ -274,6 +276,7 @@ def run_single_evaluation(
             "summary_rows": near_threshold_results["summary_rows"],
             "margin_summary": near_threshold_results["margin_summary"],
             "default_margin_summary": near_threshold_results["default_margin_summary"],
+            "default_summary": near_threshold_results["default_summary"],
         },
         "narrative_scenarios": narrative,
         "kernel_runtime": kernel_runtime,
@@ -294,6 +297,9 @@ def run_single_evaluation(
         near_threshold_rows=near_threshold_results["rows"],
         sampled_proxy_miss=narrative["sampled_proxy_miss"],
     )
+    if row_output_mode == "all":
+        suffix = ".csv.gz" if compress_rows else ".csv"
+        write_csv(output_dir / f"near_threshold_production_rows{suffix}", near_threshold_results["default_rows"])
 
     write_csv(output_dir / "table_1_experiment_design.csv", build_table_1(config))
     write_csv(output_dir / "table_2_straight_exactness.csv", build_table_2(straight_results["summary"]))
@@ -339,7 +345,6 @@ def build_run_record(
 ) -> dict[str, Any]:
     straight_rows = straight_results["rows"]
     mixed_rows = mixed_results["rows"]
-    near_threshold_rows = near_threshold_results["rows"]
 
     straight_oracle_safe_n = sum(int(row["oracle_is_safe"]) for row in straight_rows)
     straight_oracle_unsafe_n = len(straight_rows) - straight_oracle_safe_n
@@ -353,9 +358,7 @@ def build_run_record(
     mixed_nominal = confusion_counts(eligible_mixed_rows, "reference_is_safe", "nominal_proxy_is_safe")
     mixed_coarse = confusion_counts(eligible_mixed_rows, "reference_is_safe", "coarse_proxy_is_safe")
 
-    near_default_rows = [
-        row for row in near_threshold_rows if row["lipschitz_mode"] == "local" and float(row["dt_min_s"]) == 3.0
-    ]
+    near_default_rows = near_threshold_results["default_rows"]
     near_default_certified_n = sum(int(row["proposed_is_safe"]) for row in near_default_rows)
     near_default_total_n = len(near_default_rows)
 
@@ -391,6 +394,7 @@ def build_run_record(
         },
         "near_threshold": {
             "accepted_n": config.near_threshold_n,
+            "default_directional_mode": 2,
             "default_local_dt3_certified_n": near_default_certified_n,
             "default_local_dt3_total_n": near_default_total_n,
         },
@@ -483,9 +487,7 @@ def render_existing_figures(
     mixed_rows = read_csv_rows(mixed_rows_path) if mixed_rows_path is not None else []
     stress_map_rows = read_csv_rows(stress_map_source_path) if stress_map_source_path is not None else []
     if not mixed_rows and not stress_map_rows:
-        raise FileNotFoundError(
-            f"Expected mixed_turn_rows.csv(.gz) or stress_map_source.csv(.gz) in {run_dir}"
-        )
+        raise FileNotFoundError(f"Expected mixed_turn_rows.csv(.gz) or stress_map_source.csv(.gz) in {run_dir}")
     if straight_rows_path is not None and near_threshold_rows_path is not None:
         narrative = select_narrative_scenarios(
             read_csv_rows(straight_rows_path),
@@ -530,9 +532,11 @@ def render_figure_set(
         ),
         (
             "fig_stress_maps" if manuscript_names else "figure_3_stress_maps",
-            lambda path: plot_stress_maps_from_source(path, stress_map_rows)
-            if stress_map_rows
-            else plot_stress_maps(path, mixed_rows),
+            lambda path: (
+                plot_stress_maps_from_source(path, stress_map_rows)
+                if stress_map_rows
+                else plot_stress_maps(path, mixed_rows)
+            ),
         ),
         (
             "fig_ablation" if manuscript_names else "figure_4_ablation",
@@ -701,18 +705,27 @@ def reconstruct_near_threshold_record(
     near_threshold_summary: dict[str, Any],
     config: dict[str, Any],
 ) -> dict[str, Any]:
-    default_row = next(
-        row
-        for row in near_threshold_summary["summary_rows"]
-        if row["lipschitz_mode"] == "local" and float(row["dt_min_s"]) == 3.0
-    )
-    total_n = int(default_row["n"])
-    certified_n = recover_count_from_rate(float(default_row["certification_rate"]), total_n)
+    if "default_summary" in near_threshold_summary:
+        default_row = near_threshold_summary["default_summary"]
+        total_n = int(default_row["n"])
+        certified_n = int(default_row["certified_n"])
+        directional_mode = int(default_row["directional_mode"])
+    else:
+        # Archived scalar evaluations store the default among their ablation rows.
+        default_row = next(
+            row
+            for row in near_threshold_summary["summary_rows"]
+            if row["lipschitz_mode"] == "local" and float(row["dt_min_s"]) == 3.0
+        )
+        total_n = int(default_row["n"])
+        certified_n = recover_count_from_rate(float(default_row["certification_rate"]), total_n)
+        directional_mode = 0
     expected_total_n = int(config["near_threshold_n"])
     if total_n != expected_total_n:
         raise ValueError("Near-threshold summary row does not match config near_threshold_n.")
     return {
         "accepted_n": expected_total_n,
+        "default_directional_mode": directional_mode,
         "default_local_dt3_certified_n": certified_n,
         "default_local_dt3_total_n": total_n,
     }
@@ -842,6 +855,9 @@ def build_campaign_summary(
     row_output_mode: str,
     write_plots: bool,
 ) -> dict[str, Any]:
+    default_modes = {int(record["near_threshold"].get("default_directional_mode", 0)) for record in run_records}
+    if len(default_modes) != 1:
+        raise ValueError("Campaign records must use the same near-threshold default certificate")
     straight_total_n = sum(int(record["straight"]["n"]) for record in run_records)
     straight_nominal_false_safe_n = sum(int(record["straight"]["nominal_proxy_false_safe_n"]) for record in run_records)
     straight_nominal_false_unsafe_n = sum(
@@ -924,6 +940,7 @@ def build_campaign_summary(
                 "coarse_proxy_disagreement_rate": safe_divide(coarse_disagreement_n, mixed_total_eligible_n),
             },
             "near_threshold": {
+                "default_directional_mode": next(iter(default_modes)),
                 "default_local_dt3_total_n": near_default_total_n,
                 "default_local_dt3_certified_n": near_default_certified_n,
                 "default_local_dt3_certification_rate": safe_divide(near_default_certified_n, near_default_total_n),
@@ -1190,7 +1207,7 @@ def plot_sampled_proxy_miss(path: Path, row: dict[str, Any], *, sample_dt_s: flo
     style_axes(ax)
     margin_nmi = (dense_distances - encounter.separation_threshold_m) / NMI_TO_M
     ax.axhline(0.0, color="#444444", linestyle=":", linewidth=1.2, label="Threshold")
-    ax.fill_between(dense_times, margin_nmi, 0.0, where=margin_nmi < 0.0, color="#d95f5f", alpha=0.5)
+    ax.fill_between(dense_times, margin_nmi, 0.0, where=(margin_nmi < 0.0).tolist(), color="#d95f5f", alpha=0.5)
     ax.plot(
         dense_times,
         margin_nmi,
@@ -1431,7 +1448,7 @@ def plot_ablation(path: Path, summary_rows: list[dict[str, Any]]) -> None:
     plt.close(fig)
 
 
-def draw_nominal_trajectories(ax: plt.Axes, encounter: Encounter) -> None:
+def draw_nominal_trajectories(ax: Axes, encounter: Encounter) -> None:
     times_s = np.linspace(0.0, encounter.projection_time_s, 200)
     a_path = nominal_path(encounter, aircraft="a", times_s=times_s)
     b_path = nominal_path(encounter, aircraft="b", times_s=times_s)
@@ -1492,7 +1509,7 @@ def nominal_path(encounter: Encounter, *, aircraft: str, times_s: np.ndarray) ->
 
 def plot_heatmap_source_panel(
     *,
-    ax: plt.Axes,
+    ax: Axes,
     rows: list[dict[str, Any]],
     cmap: str,
 ) -> None:
@@ -1524,7 +1541,7 @@ def plot_heatmap_source_panel(
 
 def draw_heatmap_grid(
     *,
-    ax: plt.Axes,
+    ax: Axes,
     grid: np.ndarray,
     x_labels: list[str],
     y_labels: list[str],
@@ -1578,7 +1595,7 @@ def draw_heatmap_grid(
 
 def plot_heatmap(
     *,
-    ax: plt.Axes,
+    ax: Axes,
     rows: list[dict[str, Any]],
     x_edges: tuple[float, ...],
     y_edges: tuple[float, ...],
@@ -1641,7 +1658,7 @@ def encounter_from_row(row: dict[str, Any]) -> Encounter:
     )
 
 
-def save_figure(fig: plt.Figure, path: Path) -> None:
+def save_figure(fig: Figure, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.suffix.lower() == ".pdf":
         fig.savefig(path)
@@ -1649,7 +1666,7 @@ def save_figure(fig: plt.Figure, path: Path) -> None:
     fig.savefig(path, dpi=200)
 
 
-def style_axes(ax: plt.Axes, *, grid: bool = True) -> None:
+def style_axes(ax: Axes, *, grid: bool = True) -> None:
     ax.set_facecolor("#fbfbfb")
     if grid:
         ax.grid(True, color="#d9d9d9", linewidth=0.8, alpha=0.8)
@@ -1659,7 +1676,7 @@ def style_axes(ax: plt.Axes, *, grid: bool = True) -> None:
     ax.spines["bottom"].set_color("#b7b7b7")
 
 
-def add_annotation_box(ax: plt.Axes, lines: list[str], *, anchor: str = "upper_left") -> None:
+def add_annotation_box(ax: Axes, lines: list[str], *, anchor: str = "upper_left") -> None:
     if anchor == "lower_left":
         x_pos, y_pos = 0.02, 0.02
         vertical_alignment = "bottom"
@@ -1678,7 +1695,7 @@ def add_annotation_box(ax: plt.Axes, lines: list[str], *, anchor: str = "upper_l
     )
 
 
-def add_path_arrow(ax: plt.Axes, x_values: np.ndarray, y_values: np.ndarray, *, color: str) -> None:
+def add_path_arrow(ax: Axes, x_values: np.ndarray, y_values: np.ndarray, *, color: str) -> None:
     if x_values.size < 3:
         return
     end_index = x_values.size - 1

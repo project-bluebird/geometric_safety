@@ -76,8 +76,7 @@ def render_exceedance(aggregate: dict, output_pdf: Path) -> None:
     fig, ax = plt.subplots(figsize=(5.4, 3.6))
     for key, label, colour in EXCEEDANCE_CLASSES:
         rates = [
-            rate_per_1k(aggregate[("exceedance", f"{key}_x{factor:g}", "boundary")])
-            for factor in EXCEEDANCE_FACTORS
+            rate_per_1k(aggregate[("exceedance", f"{key}_x{factor:g}", "boundary")]) for factor in EXCEEDANCE_FACTORS
         ]
         plotted = [max(rate, FLOOR_PER_1K) for rate in rates]
         ax.plot(EXCEEDANCE_FACTORS, plotted, marker="o", ms=4.5, lw=1.6, color=colour, label=label)

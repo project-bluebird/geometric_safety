@@ -20,6 +20,8 @@ mpl.rcParams.update(
     }
 )
 
+from matplotlib.axes import Axes
+from matplotlib.figure import Figure
 from matplotlib.patches import Circle, PathPatch
 from matplotlib.path import Path as MplPath
 import matplotlib.patheffects as path_effects
@@ -81,9 +83,7 @@ def displacement_basis(
 
     omega = np.sign(delta_deg) * np.deg2rad(abs(turn_rate_deg_s))
     tau = abs(np.deg2rad(delta_deg)) / abs(omega)
-    basis_tau = (1.0 / omega) * np.array(
-        [np.cos(h0) - np.cos(h0 + omega * tau), np.sin(h0 + omega * tau) - np.sin(h0)]
-    )
+    basis_tau = (1.0 / omega) * np.array([np.cos(h0) - np.cos(h0 + omega * tau), np.sin(h0 + omega * tau) - np.sin(h0)])
     target_unit = unit_heading_rad(htar)
 
     basis = np.empty((times_s.size, 2), dtype=float)
@@ -213,7 +213,7 @@ def capsule_patch(start_xy: np.ndarray, end_xy: np.ndarray, radius: float, **kwa
 
 
 def annotate(
-    ax: plt.Axes,
+    ax: Axes,
     text: str,
     xy: tuple[float, float],
     xytext: tuple[float, float],
@@ -235,7 +235,7 @@ def annotate(
     )
 
 
-def render_figure() -> plt.Figure:
+def render_figure() -> Figure:
     horizon_s = 6.0 * 60.0
     times_s = np.linspace(0.0, horizon_s, 260)
     sample_times_s = np.array([0.0, 3.0 * 60.0, horizon_s])

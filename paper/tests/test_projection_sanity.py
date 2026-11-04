@@ -164,7 +164,7 @@ def test_run_projection_deterministic_sweep_includes_excursion_breakdowns() -> N
     assert any(row["subset_name"] == "turn_count_0" for row in result["mixed_turn_by_excursion_and_turn_count"])
 
 
-def test_render_projection_diagnostic_plots_smoke(tmp_path) -> None:
+def test_render_projection_diagnostic_plots_smoke(tmp_path: Path) -> None:
     result = run_projection_deterministic_sweep(ProjectionDeterministicSweepConfig.quick_defaults())
 
     output_paths = render_projection_diagnostic_plots(

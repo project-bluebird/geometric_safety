@@ -27,11 +27,18 @@ from paper.evaluation import (
     generate_mixed_turn_suite,
     generate_near_threshold_suite,
     outcomes_equivalent,
+    run_near_threshold_suite,
 )
-from paper.run_evaluation import reconstruct_run_record_from_summary, render_existing_figures, write_csv
+from paper.run_evaluation import (
+    build_campaign_summary,
+    reconstruct_near_threshold_record,
+    reconstruct_run_record_from_summary,
+    render_existing_figures,
+    write_csv,
+)
 
 
-def test_turn_local_core_matches_public_api_default_interval():
+def test_turn_local_core_matches_public_api_default_interval() -> None:
     encounter = Encounter(
         rel_east_m=-18000.0,
         rel_north_m=9000.0,
@@ -69,7 +76,7 @@ def test_turn_local_core_matches_public_api_default_interval():
     assert public_result[2] == pytest.approx(local_result[2], abs=1e-9)
 
 
-def test_count_fixed_time_evals_matches_compiled_outcome():
+def test_count_fixed_time_evals_matches_compiled_outcome() -> None:
     encounter = generate_mixed_turn_suite(1, seed=20260325)[0]
     counted_evals, counted_outcome = count_fixed_time_evals(
         encounter,
@@ -86,7 +93,7 @@ def test_count_fixed_time_evals_matches_compiled_outcome():
     assert outcomes_equivalent(counted_outcome, compiled_outcome)
 
 
-def test_outcomes_equivalent_tolerates_roundoff_only():
+def test_outcomes_equivalent_tolerates_roundoff_only() -> None:
     baseline = evaluate_proposed(
         generate_mixed_turn_suite(1, seed=20260325)[0],
         dt_min_s=1.0,
@@ -102,7 +109,7 @@ def test_outcomes_equivalent_tolerates_roundoff_only():
     assert outcomes_equivalent(baseline, perturbed)
 
 
-def test_nominal_proxy_matches_exact_nominal_straight_case():
+def test_nominal_proxy_matches_exact_nominal_straight_case() -> None:
     encounter = Encounter(
         rel_east_m=-22000.0,
         rel_north_m=-8000.0,
@@ -142,7 +149,7 @@ def test_nominal_proxy_matches_exact_nominal_straight_case():
     assert nominal.closest_time_s == pytest.approx(oracle.closest_time_s, abs=1e-9)
 
 
-def test_uniform_and_refined_times_include_projection_endpoint():
+def test_uniform_and_refined_times_include_projection_endpoint() -> None:
     coarse_times = build_uniform_times(12.0, 5.0)
     coarse_distances = np.asarray([8.0, 3.0, 8.5, 9.0], dtype=np.float64)
     refined_times = build_refinement_times(
@@ -160,7 +167,7 @@ def test_uniform_and_refined_times_include_projection_endpoint():
     assert np.any(np.isclose(refined_times, 6.0))
 
 
-def test_sampled_proxy_counterexample_shows_sampling_is_heuristic():
+def test_sampled_proxy_counterexample_shows_sampling_is_heuristic() -> None:
     row = build_sampled_proxy_counterexample_row(EvaluationConfig())
 
     assert row["coarse_proxy_dt_s"] == pytest.approx(6.0)
@@ -170,12 +177,12 @@ def test_sampled_proxy_counterexample_shows_sampling_is_heuristic():
     assert row["nominal_proxy_is_safe"] == 1
 
 
-def test_split_counts_balances_targets():
+def test_split_counts_balances_targets() -> None:
     assert _split_counts(10, 3) == [4, 3, 3]
     assert _split_counts(5, 5) == [1, 1, 1, 1, 1]
 
 
-def test_generate_near_threshold_suite_parallel_smoke():
+def test_generate_near_threshold_suite_parallel_smoke() -> None:
     config = EvaluationConfig(n_jobs=2, quick=True)
     suite = generate_near_threshold_suite(4, seed=20260325, config=config)
 
@@ -186,7 +193,7 @@ def test_generate_near_threshold_suite_parallel_smoke():
         assert config.near_threshold_margin_min_m <= referenced.reference.margin_m <= config.near_threshold_margin_max_m
 
 
-def test_reconstruct_run_record_from_summary_shape():
+def test_reconstruct_run_record_from_summary_shape() -> None:
     summary = {
         "config": {
             "straight_n": 100,
@@ -273,7 +280,7 @@ def test_reconstruct_run_record_from_summary_shape():
     assert record["near_threshold"]["default_local_dt3_certified_n"] == 47
 
 
-def test_render_existing_figures_writes_pdf_only(tmp_path: Path):
+def test_render_existing_figures_writes_pdf_only(tmp_path: Path) -> None:
     source_dir = tmp_path / "source"
     output_dir = tmp_path / "rendered"
     source_dir.mkdir()
@@ -374,3 +381,58 @@ def test_write_csv_creates_valid_empty_gzip(tmp_path: Path) -> None:
 
     with gzip.open(path, "rt", encoding="utf-8") as handle:
         assert handle.read() == ""
+
+
+def test_lipschitz_ablation_isolates_the_scalar_certificate() -> None:
+    config = EvaluationConfig.quick_defaults()
+    encounters = generate_near_threshold_suite(12, config.seed, config)
+    rows = run_near_threshold_suite(encounters, config=config)["rows"]
+    group_size = 2 * len(config.dt_min_values_s)
+    assert len(rows) == len(encounters) * group_size
+    directional_difference = False
+    for index, referenced in enumerate(encounters):
+        for row in rows[index * group_size : (index + 1) * group_size]:
+            local = row["lipschitz_mode"] == "local"
+            width = float(row["dt_min_s"])
+            count, scalar = count_fixed_time_evals(
+                referenced.encounter, dt_min_s=width, use_interval_local_lipschitz=local, directional_mode=0
+            )
+            directional_count, directional = count_fixed_time_evals(
+                referenced.encounter, dt_min_s=width, use_interval_local_lipschitz=local, directional_mode=2
+            )
+            assert row["directional_mode"] == 0
+            assert row["fixed_time_evals"] == count
+            assert bool(row["proposed_is_safe"]) == scalar.is_safe
+            directional_difference |= count != directional_count or scalar.is_safe != directional.is_safe
+    assert directional_difference
+
+
+def test_near_threshold_default_uses_production_decisions() -> None:
+    config = EvaluationConfig.quick_defaults()
+    encounters = generate_near_threshold_suite(12, config.seed, config)
+    results = run_near_threshold_suite(encounters, config=config)
+    defaults = results["default_rows"]
+    assert len(defaults) == len(encounters)
+    expected_safe = 0
+    for referenced, row in zip(encounters, defaults, strict=True):
+        production = evaluate_proposed(referenced.encounter)
+        assert row["directional_mode"] == 2
+        assert row["lipschitz_mode"] == "local"
+        assert row["dt_min_s"] == 3.0
+        assert row["proposed_is_safe"] == production.is_safe
+        expected_safe += int(production.is_safe)
+    record = reconstruct_near_threshold_record(results, {"near_threshold_n": len(encounters)})
+    assert record["default_local_dt3_certified_n"] == expected_safe
+    assert sum(row["n"] for row in results["default_margin_summary"]) == len(encounters)
+
+
+def test_campaign_cannot_mix_scalar_and_directional_defaults() -> None:
+    with pytest.raises(ValueError, match="same near-threshold default certificate"):
+        build_campaign_summary(
+            [{"near_threshold": {}}, {"near_threshold": {"default_directional_mode": 2}}],
+            profile="quick",
+            repeat_seeds=2,
+            seed_step=1,
+            row_output_mode="none",
+            write_plots=False,
+        )

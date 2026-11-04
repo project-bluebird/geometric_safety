@@ -14,17 +14,7 @@ rerunning the expensive full data stage.
 
 ## Full Data Stage
 
-Run:
-
-```bash
-N_JOBS=128 ./paper/run_full_results.sh paper_eval_outputs/<run>
-```
-
-Smoke-test the same entrypoint with:
-
-```bash
-QUICK=1 N_JOBS=4 ./paper/run_full_results.sh paper_eval_outputs/<quick-run>
-```
+See the [full pipeline and smoke-test commands](README.md#full-pipeline).
 
 Primary outputs:
 
@@ -48,11 +38,8 @@ not needed to reproduce the manuscript figures or headline claims. Use
 
 ## Rendering Stage
 
-Run:
-
-```bash
-./paper/render_paper_figures.sh paper_eval_outputs/<run>
-```
+See the [rendering stage](README.md#rendering-stage) and
+[individual rendering commands](README.md#render-figures-from-saved-data).
 
 Rendered outputs:
 
@@ -81,14 +68,6 @@ Rendered outputs:
 
 ## Figure Export
 
-The rendered figure set can be exported into any local output tree with:
-
-```bash
-mkdir -p paper_figure_repro
-uv run python -m paper.reproduce_paper_outputs \
-  --output-root paper_figure_repro \
-  --archive paper/results/<run>.tar.gz
-```
-
-The command writes figure PDFs and the figure manifest under
-`paper_figure_repro/manuscript/figures/`.
+Use the [archive reproduction command](README.md#reproducing-from-the-included-archive),
+setting `--archive` to the saved run to export. It writes figure PDFs and the figure
+manifest under `<output-root>/manuscript/figures/`.
