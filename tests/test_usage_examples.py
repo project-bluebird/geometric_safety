@@ -142,9 +142,8 @@ def test_relative_error_budget_changes_the_real_separation_decision() -> None:
     assert bounded.inflation_m == pytest.approx(323.4666666666667)
     assert wider.inflation_m == pytest.approx(923.4666666666667)
     assert bounded.base_min_distance_m == pytest.approx(10000.0)
-    # Both aircraft can travel at 200 kt. The larger initial-position allowance
-    # admits a 9,200 m north/south gap, already inside the 5 NM threshold.
-    assert 10000.0 - 800.0 < 5.0 * 1852.0 < 10000.0 - bounded.inflation_m
+    # Both aircraft can hold 200 kt, keeping the 10 km gap, so only the error allowance decides.
+    assert 10000.0 - wider.inflation_m < 5.0 * 1852.0 < 10000.0 - bounded.inflation_m
 
 
 def test_vertical_shortening_and_lateral_fallback_have_different_requirements() -> None:
@@ -160,9 +159,10 @@ def test_vertical_shortening_and_lateral_fallback_have_different_requirements() 
     lateral = vertical_progress.assess_encounter(None)
     assert isinstance(lateral, HeadingAssuranceResult)
     assert lateral.status == "unresolved"
-    # A valid pair of constant 200 kt profiles meets inside the full horizon.
-    nominal_speed_mps = 200.0 * 1852.0 / 3600.0
-    assert 0.0 < 60000.0 / (2.0 * nominal_speed_mps) < 600.0
+    # Some constant-speed pair within the bounds meets inside the full horizon.
+    assert lateral.base_min_distance_m == pytest.approx(0.0, abs=1e-6)
+    assert lateral.base_closest_time_s is not None
+    assert 0.0 < lateral.base_closest_time_s < vertical_progress.HORIZON_S
     zero_rate = vertical_progress.assess_encounter(0.0)
     assert isinstance(zero_rate, CombinedHeadingAssuranceResult)
     assert zero_rate.vertical_resolution_time_s is None
