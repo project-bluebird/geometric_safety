@@ -7,17 +7,17 @@ Use a separation check to decide whether a pair needs further conflict checking,
 With Python 3.13, open a terminal in this repository's top-level folder—the one containing `pyproject.toml`—and run:
 
 ```bash
-uv sync
-uv run python -m examples.heading_filter
-uv run python -m examples.uncertainty_bounds
-uv run python -m examples.vertical_progress
+uv sync --locked
+uv run --locked python -m examples.heading_filter
+uv run --locked python -m examples.uncertainty_bounds
+uv run --locked python -m examples.vertical_progress
 ```
 
 To use the library in your own project, follow the [installation instructions](../README.md#installation). Each example below is self-contained; run its code blocks in order.
 
 ## 1. Check candidate headings against traffic
 
-A is heading east towards opposing traffic B, with another aircraft C farther north. We will test target headings from 000° to 090° in 10° steps over the next 180 seconds. These are compass headings: 000° points north and 090° keeps A heading east. Each pair must remain at least 5 NM apart.
+A is heading east towards opposing traffic B, with another aircraft C farther north. The code and its output name them `opposing` and `parallel`. We will test target headings from 000° to 090° in 10° steps over the next 180 seconds. These are compass headings: 000° points north and 090° keeps A heading east. Each pair must remain at least 5 NM apart.
 
 ![Starting radar snapshot: A and C head east; B heads west. All three have speed bounds of 190–210 knots. A's candidate target headings are 000°, 010°, through 090°.](figures/heading-setup.svg)
 
