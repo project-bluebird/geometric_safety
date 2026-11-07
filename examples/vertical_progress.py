@@ -11,6 +11,12 @@ from geometric_safety.util import KT_TO_MPS
 
 SPEED_MIN_KT = 190.0
 SPEED_MAX_KT = 210.0
+HORIZON_S = 600.0
+A_LEVEL_FL = 100.0
+B_CURRENT_FL = 100.0
+B_SELECTED_FL = 120.0
+GUARANTEED_RATE_FPM = 1000.0
+REQUIRED_VERTICAL_GAP_FL = 10.0
 
 
 def assess_encounter(
@@ -37,27 +43,27 @@ def assess_encounter(
             a=a,
             b=b,
             separation_threshold_m=5.0 * 1852.0,
-            horizon_s=600.0,
+            horizon_s=HORIZON_S,
         )
     return certify_heading_separation_with_vertical(
         relative_position_m=(60000.0, 0.0),
         a=a,
         b=b,
-        a_current_fl=100.0,
-        a_selected_fl=100.0,
-        b_current_fl=100.0,
-        b_selected_fl=120.0,
+        a_current_fl=A_LEVEL_FL,
+        a_selected_fl=A_LEVEL_FL,
+        b_current_fl=B_CURRENT_FL,
+        b_selected_fl=B_SELECTED_FL,
         minimum_vertical_rate_fpm=minimum_vertical_rate_fpm,
         separation_threshold_m=5.0 * 1852.0,
-        horizon_s=600.0,
-        required_vertical_gap_fl=10.0,
+        horizon_s=HORIZON_S,
+        required_vertical_gap_fl=REQUIRED_VERTICAL_GAP_FL,
     )
 
 
 def main() -> None:
-    for label, minimum_rate in (("guaranteed_progress", 1000.0), ("no_progress_guarantee", None)):
+    for label, minimum_rate in (("guaranteed_progress", GUARANTEED_RATE_FPM), ("no_progress_guarantee", None)):
         result = assess_encounter(minimum_rate)
-        horizon_s = result.lateral_horizon_s if isinstance(result, CombinedHeadingAssuranceResult) else 600.0
+        horizon_s = result.lateral_horizon_s if isinstance(result, CombinedHeadingAssuranceResult) else HORIZON_S
         print(f"{label}: {result.status}, lateral horizon={horizon_s:.0f} s")
 
 

@@ -162,14 +162,25 @@ def heading_setup_figure() -> Figure:
 
 
 def uncertainty_setup_figure() -> Figure:
+    a_position_m, b_position_m = uncertainty_bounds.POSITION_ERROR_BOUNDS_M["bounded_errors"]
+    wider_a_m, wider_b_m = uncertainty_bounds.POSITION_ERROR_BOUNDS_M["wider_position_bounds"]
+    a_velocity_kt, b_velocity_kt = uncertainty_bounds.VELOCITY_ERROR_BOUNDS_KT
     fig, radar = radar_canvas(
         "Example 2  /  Declare the position and velocity errors",
         (-6, 12, -4, 12),
         "B",
         (
-            ("QUERY", "5 NM separation over 120 s\nA - B = (0, 10,000) m"),
-            ("FIRST ERROR BUDGET", "Position: 80 + 120 = 200 m\nResidual velocity: 1 + 1 = 2 kt"),
-            ("SECOND ERROR BUDGET", "Position: 400 + 400 = 800 m\nSame velocity errors and motions"),
+            ("QUERY", f"5 NM separation over {uncertainty_bounds.HORIZON_S:g} s\nA - B = (0, 10,000) m"),
+            (
+                "FIRST ERROR BUDGET",
+                f"Position: {a_position_m:g} + {b_position_m:g} = {a_position_m + b_position_m:g} m\n"
+                f"Residual velocity: {a_velocity_kt:g} + {b_velocity_kt:g} = {a_velocity_kt + b_velocity_kt:g} kt",
+            ),
+            (
+                "SECOND ERROR BUDGET",
+                f"Position: {wider_a_m:g} + {wider_b_m:g} = {wider_a_m + wider_b_m:g} m\n"
+                "Same velocity errors and motions",
+            ),
             (
                 "DECLARATIONS",
                 "Error entries are norm bounds.\nSpeeds are absolute intervals.\nAltitude is not used here.",
@@ -177,10 +188,10 @@ def uncertainty_setup_figure() -> Figure:
         ),
     )
     north_nm = 10000.0 / NMI_TO_M
-    radar_track(
-        radar, (0, north_nm), 90.0, "A\nHDG 090°  SPD 190-210 kt\nPOS ERR ≤80 m\nVEL ERR ≤1 kt", (2, 9.5), RADAR_A
-    )
-    radar_track(radar, (0, 0), 90.0, "B\nHDG 090°  SPD 195-215 kt\nPOS ERR ≤120 m\nVEL ERR ≤1 kt", (2, 3.5), RADAR_B)
+    a_block = f"A\nHDG 090°  SPD 190-210 kt\nPOS ERR ≤{a_position_m:g} m\nVEL ERR ≤{a_velocity_kt:g} kt"
+    b_block = f"B\nHDG 090°  SPD 195-215 kt\nPOS ERR ≤{b_position_m:g} m\nVEL ERR ≤{b_velocity_kt:g} kt"
+    radar_track(radar, (0, north_nm), 90.0, a_block, (2, 9.5), RADAR_A)
+    radar_track(radar, (0, 0), 90.0, b_block, (2, 3.5), RADAR_B)
     radar.annotate("", (-2, 0), (-2, north_nm), arrowprops={"arrowstyle": "<->", "color": RADAR_MUTED})
     radar.text(
         -2.6, north_nm / 2, "10 km / 5.40 NM", rotation=90, ha="center", va="center", color=RADAR_MUTED, fontsize=10
@@ -189,24 +200,32 @@ def uncertainty_setup_figure() -> Figure:
 
 
 def vertical_setup_figure() -> Figure:
-    speed_label = f"{vertical_progress.SPEED_MIN_KT:g}-{vertical_progress.SPEED_MAX_KT:g} kt"
+    vp = vertical_progress
+    speed_label = f"{vp.SPEED_MIN_KT:g}-{vp.SPEED_MAX_KT:g} kt"
     fig, radar = radar_canvas(
         "Example 3  /  A holds level while B climbs",
         (-8, 48, -15, 21),
         "B",
         (
-            ("QUERY", "5 NM lateral / 10 FL vertical\nFull decision horizon: 600 s"),
+            (
+                "QUERY",
+                f"5 NM lateral / {vp.REQUIRED_VERTICAL_GAP_FL:g} FL vertical\n"
+                f"Full decision horizon: {vp.HORIZON_S:g} s",
+            ),
             (
                 "B'S CLIMB GUARANTEE",
-                "Start now; ≥1,000 ft/min\nNo overshoot of FL120\nRemain at FL120 once reached",
+                f"Start now; ≥{vp.GUARANTEED_RATE_FPM:,.0f} ft/min\nNo overshoot of FL{vp.B_SELECTED_FL:g}\n"
+                f"Remain at FL{vp.B_SELECTED_FL:g} once reached",
             ),
             ("SPEED BOUNDS", f"{speed_label} for each aircraft"),
-            ("WITHOUT THAT GUARANTEE", "Use the lateral-only query\nfor the full 600 seconds."),
+            ("WITHOUT THAT GUARANTEE", f"Use the lateral-only query\nfor the full {vp.HORIZON_S:g} seconds."),
         ),
     )
     east_nm = 60000.0 / NMI_TO_M
-    radar_track(radar, (0, 0), 90.0, f"B\nHDG 090°\nFL100 → FL120\nSPD {speed_label}", (0, 14), RADAR_B)
-    radar_track(radar, (east_nm, 0), 270.0, f"A\nHDG 270°\nFL100 → FL100\nSPD {speed_label}", (29, 14), RADAR_A)
+    b_levels = f"FL{vp.B_CURRENT_FL:g} → FL{vp.B_SELECTED_FL:g}"
+    a_levels = f"FL{vp.A_LEVEL_FL:g} → FL{vp.A_LEVEL_FL:g}"
+    radar_track(radar, (0, 0), 90.0, f"B\nHDG 090°\n{b_levels}\nSPD {speed_label}", (0, 14), RADAR_B)
+    radar_track(radar, (east_nm, 0), 270.0, f"A\nHDG 270°\n{a_levels}\nSPD {speed_label}", (29, 14), RADAR_A)
     radar.annotate("", (0, -5), (east_nm, -5), arrowprops={"arrowstyle": "<->", "color": RADAR_MUTED})
     radar.text(east_nm / 2, -8, f"60 km / {east_nm:.2f} NM", ha="center", color=RADAR_MUTED, fontsize=11)
     return fig
@@ -333,7 +352,8 @@ def uncertainty_figure() -> Figure:
     fig.suptitle("The same gap can pass or remain unresolved", x=0.08, ha="left", fontweight="bold", fontsize=19)
     east_km = np.linspace(-1.2, 1.2, 401)
     boundary_km = np.sqrt((5 * NMI_TO_M / 1000) ** 2 - east_km**2)
-    for ax, result, position_m in zip(axes, results.values(), (200, 800), strict=True):
+    position_budgets_m = [sum(bounds) for bounds in uncertainty_bounds.POSITION_ERROR_BOUNDS_M.values()]
+    for ax, result, position_m in zip(axes, results.values(), position_budgets_m, strict=True):
         radius_km = result.inflation_m / 1000
         ax.fill_between(east_km, 8.75, boundary_km, color=RED, alpha=0.10)
         ax.plot(east_km, boundary_km, color=RED, linewidth=1.5)
@@ -343,7 +363,7 @@ def uncertainty_figure() -> Figure:
         ax.annotate("Nominal A - B", (0, 10), xytext=(10, 8), textcoords="offset points", fontsize=10.5)
         ax.text(0, 8.88, "Inside 5 NM of B", ha="center", color=RED, fontsize=11)
         ax.text(0, 11.08, f"{result.inflation_m:.2f} m total allowance", ha="center", color=BLUE, fontsize=11)
-        style_axes(ax, f"{position_m} m initial relative-position error")
+        style_axes(ax, f"{position_m:g} m initial relative-position error")
         ax.set(
             xlim=(-1.2, 1.2),
             ylim=(8.75, 11.25),
@@ -363,10 +383,13 @@ def uncertainty_figure() -> Figure:
             fontsize=13,
             fontweight="bold",
         )
+    horizon_s = uncertainty_bounds.HORIZON_S
+    velocity_allowance_m = uncertainty_bounds.RESIDUAL_VELOCITY_BOUND_MPS * horizon_s
     fig.text(
         0.08,
         0.065,
-        "At 120 s: position error + residual velocity error over 120 s = position error + 123.47 m.",
+        f"At {horizon_s:g} s: position error + residual velocity error over {horizon_s:g} s"
+        f" = position error + {velocity_allowance_m:.2f} m.",
         fontsize=11,
         color=INK,
     )
@@ -383,23 +406,27 @@ def uncertainty_figure() -> Figure:
 
 def vertical_figure() -> Figure:
     """Show the remaining altitude band and the corresponding lateral horizon."""
-    result = vertical_progress.assess_encounter(1000.0)
+    vp = vertical_progress
+    result = vp.assess_encounter(vp.GUARANTEED_RATE_FPM)
     if not isinstance(result, CombinedHeadingAssuranceResult):
         raise TypeError("The guaranteed-progress example must return a combined result")
-    fallback = vertical_progress.assess_encounter(None)
+    fallback = vp.assess_encounter(None)
     resolution_s = result.lateral_horizon_s
-    times = np.linspace(0.0, 600.0, 601)
-    lower_fl = np.array([level_at_time_fl(100.0, 120.0, 1000.0, float(t)) for t in times])
+    times = np.linspace(0.0, vp.HORIZON_S, round(vp.HORIZON_S) + 1)
+    lower_fl = np.array(
+        [level_at_time_fl(vp.B_CURRENT_FL, vp.B_SELECTED_FL, vp.GUARANTEED_RATE_FPM, float(t)) for t in times]
+    )
+    gap_top_fl = vp.A_LEVEL_FL + vp.REQUIRED_VERTICAL_GAP_FL
     fig, (altitude, lateral) = plt.subplots(2, 1, figsize=(11, 7.4), sharex=True, facecolor="white")
     fig.suptitle(
         "Guaranteed vertical progress can shorten the lateral check", x=0.08, ha="left", fontweight="bold", fontsize=18
     )
-    altitude.fill_between(times, lower_fl, 120.0, color=AMBER, alpha=0.23)
+    altitude.fill_between(times, lower_fl, vp.B_SELECTED_FL, color=AMBER, alpha=0.23)
     altitude.plot(times, lower_fl, color=AMBER, linewidth=2.5)
-    altitude.axhline(120, color=AMBER, linewidth=1.5, linestyle="--")
-    altitude.axhline(100, color=BLUE, linewidth=2.5)
-    altitude.text(210, 118, "B: FL120 selected; no overshoot", color=AMBER, fontsize=11)
-    altitude.text(210, 101.5, "A: level at FL100", color=BLUE, fontsize=11)
+    altitude.axhline(vp.B_SELECTED_FL, color=AMBER, linewidth=1.5, linestyle="--")
+    altitude.axhline(vp.A_LEVEL_FL, color=BLUE, linewidth=2.5)
+    altitude.text(210, 118, f"B: FL{vp.B_SELECTED_FL:g} selected; no overshoot", color=AMBER, fontsize=11)
+    altitude.text(210, 101.5, f"A: level at FL{vp.A_LEVEL_FL:g}", color=BLUE, fontsize=11)
     altitude.annotate(
         "B's remaining band",
         (35, 116),
@@ -409,12 +436,15 @@ def vertical_figure() -> Figure:
         fontsize=11,
     )
     altitude.annotate(
-        "", (resolution_s, 110), (resolution_s, 100), arrowprops={"arrowstyle": "<->", "color": INK, "lw": 1.5}
+        "",
+        (resolution_s, gap_top_fl),
+        (resolution_s, vp.A_LEVEL_FL),
+        arrowprops={"arrowstyle": "<->", "color": INK, "lw": 1.5},
     )
-    altitude.text(77, 104, "10 FL gap\nat 60 s", fontsize=11)
-    style_axes(altitude, "B progresses at ≥1,000 ft/min until reaching its selected level")
+    altitude.text(77, 104, f"{vp.REQUIRED_VERTICAL_GAP_FL:g} FL gap\nat {resolution_s:g} s", fontsize=11)
+    style_axes(altitude, f"B progresses at ≥{vp.GUARANTEED_RATE_FPM:,.0f} ft/min until reaching its selected level")
     altitude.set(ylim=(97, 124), ylabel="Flight level")
-    altitude.set_yticks([100, 110, 120])
+    altitude.set_yticks([vp.A_LEVEL_FL, gap_top_fl, vp.B_SELECTED_FL])
 
     # Head-on closing speeds add; after crossing, distance is the absolute relative position.
     initial_distance_m = 60000.0
@@ -470,7 +500,7 @@ def vertical_figure() -> Figure:
     )
     style_axes(lateral, f"Combined check: {result.status}   ·   Full-horizon lateral fallback: {fallback.status}")
     lateral.set(
-        xlim=(0, 600),
+        xlim=(0, vp.HORIZON_S),
         ylim=(-3, float(maximum_km.max()) + 3),
         ylabel="Lateral distance (km)",
         xlabel="Seconds from the common starting time",
@@ -483,7 +513,8 @@ def vertical_figure() -> Figure:
     fig.text(
         0.08,
         0.025,
-        "Blue shading: check lateral separation through 60 s. The declared climb then provides the vertical gap.",
+        f"Blue shading: check lateral separation through {resolution_s:g} s."
+        " The declared climb then provides the vertical gap.",
         fontsize=10,
         color=MUTED,
     )
