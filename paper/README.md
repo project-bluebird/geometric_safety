@@ -1,4 +1,46 @@
-# Paper evaluation
+# Numerical studies and paper reproduction
+
+Core solvers live in `geometric_safety`; these tools evaluate their decisions,
+numerical bounds and runtime. Run the commands below from the repository root
+after `uv sync --locked`. See [Numerical validation and timing](validation.md)
+for the numerical audits and comparisons between package versions.
+
+## Bounded-speed heading study
+
+The fixed protocol compares constant speeds and arbitrary bounded speed
+profiles across 912 pairwise heading queries. Independent high-precision
+calculations distinguish separated encounters, admissible losses of separation
+and unresolved reference results. The study also combines pairwise decisions
+into sets of available headings.
+
+Choose a new output directory; the reference calculations can be expensive.
+The timing command requires Linux and records CPU affinity and host load.
+
+```bash
+uv run --locked python -m paper.run_heading_study \
+    --protocol paper/fixtures/heading_study_aviation_2027.json \
+    --output paper_eval_outputs/heading_study --workers 2
+uv run --locked python -m paper.summarise_heading_study \
+    paper_eval_outputs/heading_study
+uv run --locked python -m paper.measure_heading_study \
+    paper_eval_outputs/heading_study
+uv run --locked python -m paper.measure_heading_study \
+    paper_eval_outputs/heading_study --cold
+uv run --locked python -m paper.plot_heading_study \
+    paper_eval_outputs/heading_study
+```
+
+The run saves the protocol, source hashes, individual reference bounds and
+library decisions. Summarising writes `summary.json` and `report.md`; measurement
+adds warm and cold timings plus a separate vertical-progress example. Plotting
+uses these saved outputs to produce figures and `study-results.md`.
+
+The protocol fixes synthetic inputs for numerical comparison. Its library
+metadata identifies the baseline; `manifest.json` records the package actually
+evaluated. Reference separation and loss of separation are checked at 80 and
+120 digits, but these finite tests do not prove a floating-point error bound.
+
+## Archived paper evaluation
 
 Reproduction pipeline for:
 

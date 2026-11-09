@@ -445,8 +445,13 @@ def worker(cases_path: Path, role: WorkerRole) -> None:
         api_prefix = "before_" if role == "before" else ""
         if not (outcomes[api_prefix + "interface_prebuilt"] == outcomes[api_prefix + "interface_construct"]):
             raise RuntimeError("Benchmark validation failed: prepared and constructed interface decisions differ")
-        if not (outcomes[api_prefix + "interface_prebuilt"] == outcomes[api_prefix + "interface_core_only"]):
-            raise RuntimeError("Benchmark validation failed: interface and effective core decisions differ")
+        if any(
+            core and not interface
+            for core, interface in zip(
+                outcomes[api_prefix + "interface_core_only"], outcomes[api_prefix + "interface_prebuilt"], strict=True
+            )
+        ):
+            raise RuntimeError("Benchmark validation failed: interface lost an effective-core acceptance")
     package = Path(ra.__file__).parent
     header: WorkerHeader = {
         "ready": True,
@@ -728,12 +733,20 @@ def checks(cases: list[Case], outcomes: Outcomes) -> BenchmarkChecks:
         for i, case in enumerate(cases)
         if len({outcomes[m][i] for m in ("old_python", "core_python", "interface_prebuilt")}) > 1
     ]
+    core_only, interface = outcomes["interface_core_only"], outcomes["interface_prebuilt"]
+    preserves_core = all(not base or accepted for base, accepted in zip(core_only, interface, strict=True))
+    if not preserves_core:
+        raise RuntimeError("Benchmark validation failed: interface lost an effective-core acceptance")
     return {
         "known_collision_repairs_verified": True,
         "known_separated_controls_verified": True,
         "no_current_acceptance_of_saved_unsafe_cases": True,
         "decision_differences": disagreements,
-        "interface_matches_effective_core": True,
+        "interface_matches_effective_core": interface == core_only,
+        "interface_preserves_effective_core_acceptances": preserves_core,
+        "interface_profile_recoveries": [
+            case.id for case, base, accepted in zip(cases, core_only, interface, strict=True) if accepted and not base
+        ],
     }
 
 
@@ -814,7 +827,8 @@ def run(args: BenchmarkOptions) -> None:
                         )
                 checked["before_after_decision_parity"] = parity_methods
         print(
-            f"Preflight passed: {len(cases)} cases, identical direct/compiled decisions, matched interface enclosure",
+            f"Preflight passed: {len(cases)} cases, identical direct/compiled decisions, "
+            "interface preserves effective-core acceptances",
             flush=True,
         )
         raw, cpu = measure(workers, cases, list(range(len(cases))), args.rounds, args.repeats, 2026101202, "population")
@@ -870,8 +884,9 @@ def run(args: BenchmarkOptions) -> None:
                 "semantics": (
                     "Old and repaired cores assume horizon-constant speeds through turns. "
                     "The interface covers arbitrary bounded speed profiles. Zero-width cases remove that distinction. "
-                    "interface_core_only uses the interface's exact enlarged intervals and inflated threshold "
-                    "to isolate wrapper work."
+                    "interface_core_only measures the initial enclosure check with its enlarged intervals and "
+                    "inflated threshold. The interface may additionally certify speed profiles, so this comparison "
+                    "does not isolate wrapper overhead when refinement runs."
                 ),
                 "limitations": (
                     "Synthetic inputs, one shared host and one pinned CPU. No real-time bound or operational traffic "

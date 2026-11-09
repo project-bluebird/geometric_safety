@@ -280,10 +280,12 @@ names = ('small-turn-collision', 'half-turn-collision', 'small-turn-safe', 'half
 # Validation consumes recorded decisions; motion fields are not evaluated here.
 cases = [Case(name, 'regression', *([0.0] * 13)) for name in names]
 cases.append(Case('saved-unsafe', 'saved', *([0.0] * 13), reference='saved constant-speed unsafe'))
+cases.append(Case('profile-recovery', 'regression', *([0.0] * 13)))
 outcomes = {
-    'old_python': [True, True, True, True, False],
-    'core_python': [False, False, True, True, False],
-    'interface_prebuilt': [False, False, True, True, False],
+    'old_python': [True, True, True, True, False, True],
+    'core_python': [False, False, True, True, False, True],
+    'interface_prebuilt': [False, False, True, True, False, True],
+    'interface_core_only': [False, False, True, True, False, False],
 }
 method, index = sys.argv[1], int(sys.argv[2])
 if method:
@@ -305,6 +307,9 @@ print(json.dumps(checks(cases, outcomes)))
             "no_current_acceptance_of_saved_unsafe_cases",
         ):
             assert checks[key] is True
+        assert checks["interface_matches_effective_core"] is False
+        assert checks["interface_preserves_effective_core_acceptances"] is True
+        assert checks["interface_profile_recoveries"] == ["profile-recovery"]
     else:
         assert result.returncode != 0, result.stdout
         if case_index == 4:
@@ -313,6 +318,53 @@ print(json.dumps(checks(cases, outcomes)))
             negation = "not " if case_index < 2 and failed_method != "old_python" else ""
             failure = f"{negation}outcomes['{failed_method}'][index]"
         assert f"Benchmark validation failed: {failure}" in result.stderr
+
+
+def test_legacy_benchmark_report_distinguishes_unrecorded_preservation(tmp_path: Path) -> None:
+    results, cases = _report_fixture(tmp_path)
+    summarise(results, cases, tmp_path / "report")
+    prose = (tmp_path / "report/report.md").read_text()
+    assert "interface_preserves_effective_core_acceptances: not recorded" in prose
+    assert "Interface and initial enclosure decisions: equal" in prose
+
+
+def test_report_does_not_label_wider_acceptance_as_failed_parity(tmp_path: Path) -> None:
+    results, cases = _report_fixture(tmp_path)
+    report = read_benchmark_report(results)
+    report["checks"]["interface_matches_effective_core"] = False
+    report["checks"]["interface_preserves_effective_core_acceptances"] = True
+    report["checks"]["interface_profile_recoveries"] = ["recovered"]
+    results.write_text(json.dumps(report))
+    summarise(results, cases, tmp_path / "report")
+    prose = (tmp_path / "report/report.md").read_text()
+    assert "interface_preserves_effective_core_acceptances: passed" in prose
+    assert "Interface and initial enclosure decisions: different" in prose
+    assert "Additional interface acceptances: 1" in prose
+
+
+def test_legacy_parity_reports_without_profile_fields_remain_readable(
+    tmp_path: Path, parity_report: ParityReport
+) -> None:
+    legacy = object_json(json.dumps(parity_report))
+    for record in list_value(legacy["records"]):
+        interface = object_value(object_value(record)["interface"])
+        del interface["profile_min_distance_lower_bound_m"]
+        del interface["profile_bound_interval_s"]
+    path = tmp_path / "legacy.json"
+    path.write_text(json.dumps(legacy))
+    restored = read_parity_report(path)
+    assert all(record["interface"]["profile_min_distance_lower_bound_m"] is None for record in restored["records"])
+    assert compare_reports(restored, parity_report)["comparison"] == "parity"
+
+
+def test_parity_reader_rejects_partial_profile_schema(tmp_path: Path, parity_report: ParityReport) -> None:
+    malformed = object_json(json.dumps(parity_report))
+    interface = object_value(object_value(list_value(malformed["records"])[0])["interface"])
+    del interface["profile_bound_interval_s"]
+    path = tmp_path / "partial.json"
+    path.write_text(json.dumps(malformed))
+    with pytest.raises(ValueError, match="both profile"):
+        read_parity_report(path)
 
 
 @pytest.mark.parametrize("kind", ["unavailable", "interval"])

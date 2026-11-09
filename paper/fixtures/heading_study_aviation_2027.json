@@ -1,0 +1,248 @@
+{
+  "title": "Continuous-Time Separation Screening for Aircraft Heading Instructions",
+  "protocol_version": 1,
+  "status": "proposed_for_author_review_before_execution",
+  "date": "2026-11-07",
+  "library": {
+    "version": "0.4.0",
+    "git_commit": "183abc6f548d6f11085f5f90e5f8c01d4fd8db68"
+  },
+  "frame": {
+    "coordinates": "east_north",
+    "position_unit": "NM",
+    "relative_position": "A minus B",
+    "heading_unit": "degrees clockwise from north",
+    "nm_to_m": 1852,
+    "kt_to_mps": "1852/3600",
+    "reference_inputs": "Exact binary64 API inputs; retain hexadecimal representations"
+  },
+  "ownship": {
+    "position_nm": [
+      0,
+      0
+    ],
+    "initial_heading_deg": 90,
+    "nominal_speed_kt": 250
+  },
+  "target_headings_deg": [
+    0,
+    10,
+    20,
+    30,
+    40,
+    50,
+    60,
+    70,
+    80,
+    90,
+    100,
+    110,
+    120,
+    130,
+    140,
+    150,
+    160,
+    170,
+    180
+  ],
+  "turn_rate_deg_s": 1.5,
+  "turn_direction": "shortest",
+  "turn_delay_s": 0,
+  "speed_half_widths_kt": [
+    0,
+    10,
+    25,
+    50
+  ],
+  "horizon_s": [
+    180,
+    300
+  ],
+  "separation_threshold_nm": 5,
+  "additional_errors": {
+    "relative_position_m": 0,
+    "relative_velocity_mps": 0,
+    "heading_deviation_deg": 0
+  },
+  "pair_scenes": [
+    {
+      "id": "C1",
+      "family": "crossing",
+      "traffic_position_nm": [
+        10,
+        -10
+      ],
+      "traffic_initial_heading_deg": 0,
+      "traffic_target_heading_deg": 0,
+      "traffic_nominal_speed_kt": 250
+    },
+    {
+      "id": "C2",
+      "family": "crossing",
+      "traffic_position_nm": [
+        10,
+        -10
+      ],
+      "traffic_initial_heading_deg": 0,
+      "traffic_target_heading_deg": 30,
+      "traffic_nominal_speed_kt": 250
+    },
+    {
+      "id": "H1",
+      "family": "opposing",
+      "traffic_position_nm": [
+        15,
+        2
+      ],
+      "traffic_initial_heading_deg": 270,
+      "traffic_target_heading_deg": 270,
+      "traffic_nominal_speed_kt": 250
+    },
+    {
+      "id": "H2",
+      "family": "opposing",
+      "traffic_position_nm": [
+        15,
+        2
+      ],
+      "traffic_initial_heading_deg": 270,
+      "traffic_target_heading_deg": 240,
+      "traffic_nominal_speed_kt": 250
+    },
+    {
+      "id": "O1",
+      "family": "overtaking",
+      "traffic_position_nm": [
+        6,
+        2
+      ],
+      "traffic_initial_heading_deg": 90,
+      "traffic_target_heading_deg": 90,
+      "traffic_nominal_speed_kt": 200
+    },
+    {
+      "id": "O2",
+      "family": "overtaking",
+      "traffic_position_nm": [
+        6,
+        2
+      ],
+      "traffic_initial_heading_deg": 90,
+      "traffic_target_heading_deg": 120,
+      "traffic_nominal_speed_kt": 200
+    }
+  ],
+  "query_count_per_model": 912,
+  "execution_models": {
+    "N": "Both speeds fixed at nominal values; retain turns",
+    "C": "Each speed independently fixed within its interval over the horizon",
+    "V": "Each speed any independent measurable profile within its interval over the horizon"
+  },
+  "multi_traffic_scenes": [
+    {
+      "id": "M1",
+      "pairs": [
+        "C1",
+        "H1",
+        "O1"
+      ]
+    },
+    {
+      "id": "M2",
+      "pairs": [
+        "C2",
+        "H2",
+        "O2"
+      ]
+    }
+  ],
+  "complete_menu_count": 16,
+  "pair_checks_per_complete_menu": 57,
+  "acceptance_rule": "Every supplied ownship-traffic pair must be certified_safe; no claim about traffic-traffic pairs",
+  "reference": {
+    "V": "Independent support-function reachable sets, distance bounds and continuous-time subdivision",
+    "C": "Independent constant-speed reachable hulls and continuous-time subdivision",
+    "precision_decimal_digits": 80,
+    "decisive_result_recheck_digits": 120,
+    "classification_exclusion_band_m": 25,
+    "max_support_evaluations_per_query": 50000,
+    "max_time_cells_per_query": 16384,
+    "budget_exhaustion": "unresolved",
+    "equality_or_boundary": "unresolved",
+    "rounding_evidence": "High-precision numerical reference, not validated outward interval arithmetic",
+    "conflict_evidence": "Constructive admissible speed profiles and a time; independently integrate and verify",
+    "safe_evidence": "A continuous-time lower bound outside the classification exclusion band",
+    "implementation_gate": [
+      "straight analytical cases",
+      "zero speed-interval width",
+      "turn completion",
+      "mirror symmetry",
+      "attainable support-point integration",
+      "no production geometry or envelope used for the reference answer"
+    ],
+    "failure_gate": "Investigate any reference conflict accepted by the library before running further study cases",
+    "separated_criterion": "Whole-horizon lower bound > separation threshold + 25 m, stable at 120 digits",
+    "conflict_criterion": "Independently checked attainable witness < separation threshold - 25 m, stable at 120 digits",
+    "precision_disagreement": "unresolved and investigate"
+  },
+  "timing": {
+    "host": "Campbell",
+    "library_only": true,
+    "timed_unit": "One complete menu, all 57 pair checks without early exit",
+    "rounds": 5,
+    "individually_timed_repetitions_per_round": 20,
+    "order_seed": 20261107,
+    "quantiles": [
+      0.5,
+      0.95
+    ],
+    "reusable_aircraft_declarations": "constructed before timing",
+    "api_calls_and_result_handling": "included",
+    "jit_compilation": "warm before repeated measurements; cold startup reported separately",
+    "load_and_cpu_assignment": "record",
+    "reference_runtime": "record as offline verification cost; no speedup ratio against optimised production"
+  },
+  "vertical_example": {
+    "ownship_position_nm": [
+      0,
+      0
+    ],
+    "traffic_position_nm": [
+      15,
+      0
+    ],
+    "ownship_heading_deg": 90,
+    "traffic_heading_deg": 270,
+    "nominal_speed_kt": 250,
+    "speed_half_width_kt": 50,
+    "ownship_current_fl": 100,
+    "ownship_selected_fl": 100,
+    "traffic_current_fl": 100,
+    "traffic_selected_fl": 120,
+    "minimum_vertical_rates_fpm": [
+      0,
+      500,
+      1500
+    ],
+    "required_vertical_gap_fl": 10,
+    "horizon_s": 300,
+    "separation_threshold_nm": 5,
+    "vertical_rounding_step_fl": 0,
+    "assumptions": "Immediate monotone progress at or above the stated minimum, no overshoot, remain at selected level; no altitude-error allowance",
+    "analytical_control": {
+      "rate_fpm": 1500,
+      "vertical_resolution_time_s": 40,
+      "minimum_lateral_distance_at_resolution_nm": "25/3"
+    }
+  },
+  "selection_policy": "Retain every predeclared input and unresolved outcome; no outcome-dependent case replacement",
+  "evidence": [
+    "generated inputs with source and configuration hashes",
+    "all per-model decisions",
+    "reference brackets and unresolved reasons",
+    "verified conflict witnesses",
+    "individual menu timings",
+    "reproduction manifest and generated figure data"
+  ],
+  "nominal_model_reuse": "228 distinct nominal queries may be reused across the four width groups; do not treat these as independent replications"
+}

@@ -117,9 +117,12 @@ interpreting these measurements. They describe synthetic inputs, not a
 runtime guarantee or operational traffic.
 
 The core assumes constant speeds through turns. The heading interface covers
-arbitrary bounded speed profiles and can therefore reject more inputs. Compare
-zero-width speed intervals or the effective-core measurement when separating
-interface overhead from the cost of its broader motion class.
+arbitrary bounded speed profiles. It first tests an enlarged constant-speed
+enclosure, then attempts a direct speed-profile refinement for eligible
+unresolved turning queries. The effective-core measurement covers only the
+first calculation: its comparison with the interface includes any refinement
+work, not just wrapper overhead. The report checks that the interface preserves
+effective-core acceptances and records additional acceptances separately.
 
 ## Comparing directional modes
 
@@ -176,7 +179,14 @@ It checks decisions, diagnostic kinds and distance diagnostics, and reports
 changes in time or bound-interval diagnostics separately. Matching unavailable
 diagnostics are preserved; a change in distance availability fails comparison.
 A changed decision, missing records or mismatched
-case identifiers prevents a successful summary.
+case identifiers prevents a successful summary by default.
+
+Use `--allow-interface-recoveries` when comparing a baseline with a candidate
+that adds the speed-profile refinement. This permits an unresolved interface
+result to become certified with profile diagnostics; core decisions and base
+diagnostics must still agree. It does not independently validate the new
+certificates. Packages without the optional profile fields remain supported;
+packages exposing only one of the two fields are rejected.
 
 Each source path must contain a `geometric_safety/` package. Package-only
 exports and full archived checkouts are supported. Workers import the selected

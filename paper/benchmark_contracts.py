@@ -52,6 +52,8 @@ class BenchmarkChecks(TypedDict):
     known_separated_controls_verified: bool
     no_current_acceptance_of_saved_unsafe_cases: bool
     interface_matches_effective_core: bool
+    interface_preserves_effective_core_acceptances: NotRequired[bool]
+    interface_profile_recoveries: NotRequired[list[str]]
     decision_differences: list[DecisionDifference]
     previous_false_rejections_recovered: NotRequired[list[str]]
     repair_changes: NotRequired[dict[str, list[DecisionChange]]]
@@ -337,6 +339,13 @@ def parse_checks(value: Json) -> BenchmarkChecks:
         )
     if "before_after_decision_parity" in row:
         result["before_after_decision_parity"] = parse_list(row["before_after_decision_parity"], string)
+    # Older reports recorded equality only, before the profile refinement existed.
+    if "interface_preserves_effective_core_acceptances" in row:
+        result["interface_preserves_effective_core_acceptances"] = boolean(
+            row["interface_preserves_effective_core_acceptances"]
+        )
+    if "interface_profile_recoveries" in row:
+        result["interface_profile_recoveries"] = parse_list(row["interface_profile_recoveries"], string)
     return result
 
 
