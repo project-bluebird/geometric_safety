@@ -101,6 +101,8 @@ def certify_heading_separation_with_vertical(
     vertical_rounding_fl is a nonnegative integer; zero disables rounding.
     The grid tolerance cannot reduce the requested vertical gap. Required
     lateral checks retain the heading solver's numerical limitations.
+    Speed-profile refinement uses the shortened lateral horizon and the same
+    declared error allowances.
     """
     _validate_heading_query(
         relative_position_m,

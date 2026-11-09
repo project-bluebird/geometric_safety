@@ -114,6 +114,12 @@ encounter that a tighter calculation would certify. Straight queries retain
 the two independent speed intervals and use the exact-real straight-heading
 geometry.
 
+If this enclosure does not establish separation for a turning query, the interface checks projections of the speed-profile set directly. For each candidate direction, the speed at every instant is chosen to minimise relative displacement along that direction. The resulting integral covers every admissible speed profile, including variation after the turn. Bounds on its derivative establish a lower bound throughout a time interval; subdivision allows different separating directions over different intervals. Acceptance requires coverage of the whole lateral horizon. An exhausted search remains unresolved.
+
+Candidate directions include perpendiculars to both final tracks. Along such a direction, an aircraft's speed variation no longer affects its projection once its turn ends. The bound still includes the preceding turn and the other aircraft's motion.
+
+This refinement retains each aircraft's own speed interval and avoids the mean-speed deviation envelope. It still includes the declared position, velocity and heading errors, using their maximum displacement allowance over the lateral horizon. The first enclosure check remains a fast path, and its accepted results return directly. Straight motion already has exact-real bounded-speed geometry and needs no refinement. Callers use the same functions and motion declarations for both calculations.
+
 ## Deviation bounds
 
 The caller can declare additional errors through these parameters:
@@ -124,8 +130,8 @@ The caller can declare additional errors through these parameters:
 | `relative_velocity_error_mps` on the query | Pointwise bound on the norm of an additive relative-velocity error | The supplied bound times `T` |
 | `heading_deviation_max_deg` on each `HeadingMotion` | Pointwise circular direction difference from that aircraft's prescribed heading law | `2 U T sin(delta / 2)`, with maximum speed `U` and angular bound `delta` in radians |
 
-All contributions are added to the speed-profile envelopes.
-`result.inflation_m` reports the resulting threshold increase. For an
+The initial enclosure adds these contributions to the speed-profile envelopes. The direct refinement subtracts the same additional-error allowance from its projected distance bounds.
+`result.inflation_m` reports the threshold increase for the initial enclosure check. For an
 unsupported declaration it is zero because no certificate is attempted.
 
 The heading bound applies at every instant. A tolerance on the final heading
@@ -158,6 +164,8 @@ Neither a closest-approach time nor a bound interval identifies first
 separation loss. Use `status` for acceptance; computing a conflict-onset time
 requires a separate calculation.
 
+When the directional speed-profile check establishes separation, `profile_min_distance_lower_bound_m` gives its lower bound on distance over the whole lateral horizon, after the declared additional displacement errors. `profile_bound_interval_s` identifies the interval with the smallest computed bound; it is not a closest-approach interval. Both fields are `None` for results from the initial enclosure check and for unresolved or unsupported queries. The retained `base_` diagnostics and `inflation_m` still describe the initial enclosure and may not establish separation on their own.
+
 ## Numerical limits
 
 The enclosure and geometric arguments use exact real arithmetic. The
@@ -166,6 +174,8 @@ guard. It does not provide validated interval arithmetic or a proved bound
 on accumulated rounding error. A `certified_safe` status inherits this
 numerical limitation as well as the caller's motion assumptions. The margin
 applies to straight and turning checks, including zero-length horizons.
+
+The directional speed-profile refinement requires a further 25 m of clearance, matching the exclusion band used in its independent high-precision validation. This is an additional acceptance requirement; it is not included in the reported distance bound and does not constitute a proved rounding-error bound. The same input-domain restrictions apply to both calculations.
 
 Hull construction uses a shared monotone-chain algorithm with filtered
 orientation signs and an exact expansion fallback for ambiguous signs. If

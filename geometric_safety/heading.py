@@ -13,6 +13,8 @@ direction makes the integrand vanish after the turn, and integrating the directi
 chord bound gives this expression. The mean can change with t; inclusion is
 pointwise. This module freezes each envelope at its horizon maximum and adds
 explicit position, velocity and heading-deviation bounds by triangle inequality.
+Further refinement directly bounds speed-profile projections along separating
+directions, retaining the same additional deviation bounds.
 
 The executed relative velocity must admit the decomposition
 s_A(t) u(psi_A(t) + delta_A(t)) - s_B(t) u(psi_B(t) + delta_B(t)) + e(t).
@@ -27,13 +29,14 @@ A certified_safe result inherits that numerical limitation and assumes the
 caller's motion declarations and deviation bounds hold throughout the horizon.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import math
 from typing import Literal
 
 import numpy as np
 from numpy.typing import NDArray
 
+from geometric_safety._speed_profiles import certify_speed_profiles, prepare_motion
 from geometric_safety.relevant_aircraft import (
     DIAGNOSTIC_INTERVAL_BOUND,
     DIAGNOSTIC_SAMPLED_MINIMUM,
@@ -55,6 +58,11 @@ from geometric_safety.util import (
     shortest_turn_parameters,
     small_convex_hull,
 )
+
+# Matches the exclusion band used to validate the profile refinement.
+# It is additional required clearance, not a proved bound on rounding error.
+PROFILE_REFINEMENT_MARGIN_M = 25.0
+PROFILE_REFINEMENT_MAX_CELLS = 4096
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -117,6 +125,12 @@ class HeadingAssuranceResult:
     straight minimum or the sample time. These diagnostics describe the
     surrogate constant-speed hull, not an executed profile or a minimum after
     subtracting the envelope. Queries with no diagnostics have kind None.
+
+    When profile_min_distance_lower_bound_m is present, a separate speed-profile
+    certificate established acceptance. This lower bound includes the declared
+    displacement errors and covers the whole horizon; profile_bound_interval_s
+    identifies its weakest interval. The base diagnostics retain their original
+    constant-speed meaning and may not establish separation on their own.
     """
 
     status: Literal["certified_safe", "unresolved", "unsupported"]
@@ -126,6 +140,8 @@ class HeadingAssuranceResult:
     base_closest_time_s: float | None = None
     diagnostic_kind: Literal["straight_minimum", "sampled_minimum", "interval_bound"] | None = None
     base_bound_interval_s: tuple[float, float] | None = None
+    profile_min_distance_lower_bound_m: float | None = None
+    profile_bound_interval_s: tuple[float, float] | None = None
 
 
 def _require_nonnegative_finite(name: str, value: float) -> None:
@@ -192,13 +208,15 @@ def _inflation_m(
     horizon_s: float,
     relative_position_error_m: float,
     relative_velocity_error_mps: float,
+    *,
+    include_speed_profiles: bool = True,
 ) -> float:
     terms = [
         relative_position_error_m,
         relative_velocity_error_mps * horizon_s,
-        _mean_speed_envelope_m(a, horizon_s),
-        _mean_speed_envelope_m(b, horizon_s),
     ]
+    if include_speed_profiles:
+        terms.extend((_mean_speed_envelope_m(a, horizon_s), _mean_speed_envelope_m(b, horizon_s)))
     for motion in (a, b):
         chord = 2.0 * math.sin(math.radians(motion.heading_deviation_max_deg) * 0.5)
         terms.append((motion.speed_max_mps * horizon_s) * chord)
@@ -274,13 +292,18 @@ def certify_heading_separation(
     additive relative-velocity error is m/s. Common additive drift cancels in
     relative motion; otherwise the caller must supply a valid disturbance bound.
 
-    No vertical-resolution shortcut is applied. Positive numerical acceptance
-    means the reused kernel certifies its enlarged constant-speed hull against
+    No vertical-resolution shortcut is applied. The first check certifies
+    the enlarged constant-speed hull against
     the threshold plus the maximum deviation envelope. Straight motion retains
     exact-real bounded-speed geometry. Turning uses a conservative enclosure and
     the kernel's continuous-time sufficient test. A failed test or geometry
     outside the kernel's numerical domain is unresolved. The domain ensures
     resolution of the empirical guard, not a proved floating-point error bound.
+
+    A valid unresolved result receives an additional directional speed-profile
+    check. The refinement includes all declared errors and requires 25 m of extra
+    clearance, matching its independent numerical validation's exclusion band.
+    Its separate profile diagnostics identify acceptance by this second check.
     """
     _validate_heading_query(
         relative_position_m,
@@ -314,7 +337,8 @@ def certify_heading_separation(
     bound_interval: tuple[float, float] | None = None
     base_closest_time: float | None = None
     stationary_geometry = horizon_s == 0.0 or a.speed_max_mps == b.speed_max_mps == 0.0
-    if stationary_geometry or (_turn_angle_deg(a) == 0.0 and _turn_angle_deg(b) == 0.0):
+    straight_geometry = stationary_geometry or (_turn_angle_deg(a) == 0.0 and _turn_angle_deg(b) == 0.0)
+    if straight_geometry:
         safe, distance, closest_time = _straight_query(relative_position, a, b, threshold, horizon_s)
         base_closest_time = float(closest_time)
     else:
@@ -378,7 +402,7 @@ def certify_heading_separation(
         return HeadingAssuranceResult("unresolved", "base kernel returned invalid diagnostic interval", inflation)
     status: Literal["certified_safe", "unresolved"] = "certified_safe" if safe else "unresolved"
     reason = "declared motion enclosure certified" if safe else "base hull and envelope did not certify separation"
-    return HeadingAssuranceResult(
+    result = HeadingAssuranceResult(
         status,
         reason,
         inflation,
@@ -386,4 +410,42 @@ def certify_heading_separation(
         base_closest_time,
         diagnostic_kind=diagnostic_kind,
         base_bound_interval_s=bound_interval,
+    )
+    # The straight hull is already exact for bounded speed profiles. Refinement
+    # with a larger clearance requirement cannot add a straight acceptance.
+    if safe or straight_geometry:
+        return result
+    additional_error_m = _inflation_m(
+        a, b, horizon_s, relative_position_error_m, relative_velocity_error_mps, include_speed_profiles=False
+    )
+    a_parameters = prepare_motion(
+        a.heading0_deg, a.target_heading_deg, a.turn_rate_deg_s, a.speed_min_mps, a.speed_max_mps
+    )
+    b_parameters = prepare_motion(
+        b.heading0_deg, b.target_heading_deg, b.turn_rate_deg_s, b.speed_min_mps, b.speed_max_mps
+    )
+    # Explicit arguments avoid the dispatch overhead of omitted Numba defaults.
+    refined, lower, left, right = certify_speed_profiles(
+        relative_position,
+        a_parameters,
+        b_parameters,
+        horizon_s,
+        separation_threshold_m + additional_error_m + PROFILE_REFINEMENT_MARGIN_M,
+        TURN_TIME_CERT_MIN_INTERVAL_S,
+        PROFILE_REFINEMENT_MAX_CELLS,
+    )
+    if not refined or not all(math.isfinite(value) for value in (lower, left, right)):
+        return result
+    lower_after_error = lower - additional_error_m
+    if (
+        lower_after_error < separation_threshold_m + PROFILE_REFINEMENT_MARGIN_M
+        or not 0.0 <= left <= right <= horizon_s
+    ):
+        return result
+    return replace(
+        result,
+        status="certified_safe",
+        reason="directional speed-profile separation certified",
+        profile_min_distance_lower_bound_m=lower_after_error,
+        profile_bound_interval_s=(left, right),
     )
