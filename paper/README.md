@@ -40,6 +40,13 @@ metadata identifies the baseline; `manifest.json` records the package actually
 evaluated. Reference separation and loss of separation are checked at 80 and
 120 digits, but these finite tests do not prove a floating-point error bound.
 
+## Heading study reported in the AVIATION 2027 abstract
+
+The AIAA AVIATION 2027 extended abstract reports a separate study of 873
+heading queries over a ten-minute horizon, not the 912-query protocol above.
+Its inputs, saved decisions, scripts and timings are in
+[`aviation_2027_abstract/`](aviation_2027_abstract/README.md).
+
 ## Archived paper evaluation
 
 Reproduction pipeline for:

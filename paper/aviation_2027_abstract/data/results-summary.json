@@ -1,0 +1,26 @@
+{
+  "distinct_geometries": 23,
+  "queries": 873,
+  "reference_classifications": {
+    "conflict": 476,
+    "separated": 396,
+    "unresolved": 1
+  },
+  "constant_corner_comparison_queries": 621,
+  "minimum_turn_increases_deg": {
+    "1": {
+      "5": 18,
+      "0": 4,
+      "10": 1
+    },
+    "2": {
+      "10": 12,
+      "5": 6,
+      "none_up_to_90": 1,
+      "0": 1,
+      "15": 3
+    }
+  },
+  "live_library_decisions_match_saved": true,
+  "script_sha256": "655db727c7cf079cd0136c2d6ad55437795ff32cc648b51ac04fe36259e4a581"
+}

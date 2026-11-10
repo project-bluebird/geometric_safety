@@ -1,0 +1,16 @@
+{
+  "library/geometric_safety/__init__.py": "daca0a0314934b3e6d52690dd443894ea1b869df8aaddeaa782d413fd4749e69",
+  "library/geometric_safety/_instrumentation.py": "bdc26f9ebf618ce7c2bd22902a0fe68689e9f13b5f394c3ab7bbeb2f0ad23bc8",
+  "library/geometric_safety/_numeric.py": "70d31f22a80e3b27c7b712bc3d9d7b074a7c2d28d0fea553c5aa86ae2d512c8a",
+  "library/geometric_safety/_speed_profiles.py": "8c8edce4aeaeb24865996685bb82127037017f9e6d41152b9ebfb58dad92e873",
+  "library/geometric_safety/combined.py": "76b4474796f1143b60913f98c89324778ac9d4f6497a8aa6a2653ae5dfb8e675",
+  "library/geometric_safety/demo_utils.py": "b221b5a0220c8a67d11ce9988a12a8a63b7d6c1118c85a25f23790d109bc4866",
+  "library/geometric_safety/geographic.py": "3a238c6a180e8276179079773fae09d5cf35262861172c44a4ac2aa88abb7c54",
+  "library/geometric_safety/heading.py": "d1900ecaeb73e2afa83b6f8e7ea236ab8521f8a1f038007de61a8d41b61f3e08",
+  "library/geometric_safety/relevant_aircraft.py": "168c29afdd3a9c999f03fbe3b0d5af7419dcf0258c9291d27b7fda8fd0245dd4",
+  "library/geometric_safety/util.py": "7e26e96893d176896373f7f63e2f7833e4a061c2308694ab89c39441d0208632",
+  "library/geometric_safety/vertical.py": "504e52b93a4d882216f95595217fcb0a0803c6280771e25b3c40e3ebed0b3a74",
+  "library/paper/heading_study_reference.py": "ed78c0f3d6d936011397b05b86707002af875d9be094b44d9b62f87e7a4fd298",
+  "analysis/compare_models.py": "048068bbf62f6be444ae83688e3953b46dc3bb13c42caae2bb1025bce5150f7f",
+  "analysis/library-results.jsonl": "3cc3ed419588fe3cf9d90be1f59d1d49d1d4fbcb739f7a33c9e2a5b3089f5d3c"
+}
