@@ -129,6 +129,7 @@ export interface DetailPayload {
   geometry: Geometry | null;
   geometry_note: string | null;
   vertical: VerticalFrame[] | null;
+  profile_refinement_margin_m: number;
 }
 
 export interface GridPayload {

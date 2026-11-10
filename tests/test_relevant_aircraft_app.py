@@ -22,6 +22,7 @@ from geometric_safety import (
     certify_heading_separation_with_vertical_from_latlon,
 )
 from geometric_safety.demo_utils import heading_summary, turn_duration_s
+from geometric_safety.heading import PROFILE_REFINEMENT_MARGIN_M
 from geometric_safety.util import KT_TO_MPS, NMI_TO_M
 
 
@@ -32,6 +33,16 @@ def client() -> TestClient:
 
 def example(preset_id: str = "vertical_clearance") -> VisualParams:
     return next(p.params for p in presets() if p.id == preset_id).model_copy(deep=True)
+
+
+def test_turning_preset_reports_profile_margin_without_crediting_enclosure(client: TestClient) -> None:
+    preset = next(p for p in presets() if p.id == "single_turn_dodge")
+    response = client.post("/api/time_sweep", json=preset.params.model_dump())
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["certificate"]["lateral"]["profile_min_distance_lower_bound_m"] is not None
+    assert payload["profile_refinement_margin_m"] == PROFILE_REFINEMENT_MARGIN_M
+    assert "allowance" not in preset.description
 
 
 @pytest.mark.parametrize("endpoint", ["/api/time_sweep", "/api/grid"])

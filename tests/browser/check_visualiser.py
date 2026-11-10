@@ -230,6 +230,7 @@ def test_profile_certificate_displays_its_bound_and_base_reference(page: Page, t
     lateral = detail.certificate.lateral
     assert lateral is not None
     assert lateral.status == "certified_safe"
+    assert detail.profile_refinement_margin_m == PROFILE_REFINEMENT_MARGIN_M
     bound = lateral.profile_min_distance_lower_bound_m
     assert bound is not None
     assert bound > 5.0 * NMI_TO_M + PROFILE_REFINEMENT_MARGIN_M
@@ -247,6 +248,7 @@ def test_profile_certificate_displays_its_bound_and_base_reference(page: Page, t
     expect(page.locator("#enclosureLegend")).to_have_text("Base enclosure reference")
     expect(page.locator("#profileLegend")).to_be_visible()
     expect(page.locator("#distanceCaption")).to_contain_text("their crossing does not contradict this certificate")
+    expect(page.locator("#distanceCaption")).to_contain_text(f"at least {detail.profile_refinement_margin_m:g} m")
     expect(page.locator("#hullCaption")).to_contain_text("not the speed-profile acceptance threshold")
 
     # The actual green stroke covers the whole checked interval, not just the

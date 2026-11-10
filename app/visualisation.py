@@ -25,7 +25,12 @@ from geometric_safety.demo_utils import (
     speed_bounds_mps,
 )
 from geometric_safety.geographic import _relative_position_from_latlon
-from geometric_safety.heading import _enclosing_common_speed_bounds_kt, _turn_angle_deg, _unsupported_reason
+from geometric_safety.heading import (
+    PROFILE_REFINEMENT_MARGIN_M,
+    _enclosing_common_speed_bounds_kt,
+    _turn_angle_deg,
+    _unsupported_reason,
+)
 from geometric_safety.relevant_aircraft import _relative_position_hull_at_time
 from geometric_safety.util import KT_TO_MPS, NMI_TO_M, closest_point_on_convex_polygon, shortest_turn_parameters
 from geometric_safety.vertical import _time_to_selected_s, _vertical_band_at_time_fl, vertical_band_gap_fl
@@ -146,6 +151,7 @@ class DetailPayload:
     geometry: Geometry | None
     geometry_note: str | None
     vertical: list[VerticalFrame] | None
+    profile_refinement_margin_m: float
 
 
 @dataclass(frozen=True)
@@ -314,7 +320,9 @@ def build_detail(params: VisualParams) -> DetailPayload:
             )
             for time_s in times
         ]
-    return DetailPayload(certificate, [float(value) for value in times], geometry, note, vertical)
+    return DetailPayload(
+        certificate, [float(value) for value in times], geometry, note, vertical, PROFILE_REFINEMENT_MARGIN_M
+    )
 
 
 def build_grid(params: VisualParams) -> GridPayload:
@@ -424,7 +432,7 @@ def presets() -> list[Preset]:
                 title=scenario.title,
                 description=(
                     "Speeds may vary throughout the turn and its straight continuation. "
-                    "The allowance encloses that variation."
+                    "The filter assesses the full interval under these speed bounds."
                 ),
                 params=VisualParams(
                     a=inputs[0],

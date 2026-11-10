@@ -317,6 +317,8 @@
     if (
       !isRecord(value) ||
       !isCertificate(value.certificate) ||
+      !isNumber(value.profile_refinement_margin_m) ||
+      value.profile_refinement_margin_m < 0 ||
       !isArrayOf(value.times_s, isNumber) ||
       value.times_s.length === 0 ||
       !(value.geometry === null || isGeometry(value.geometry)) ||
@@ -696,7 +698,7 @@
       const [left, right] = lateral.profile_bound_interval_s;
       text(
         "profileDiagnostic",
-        `Speed-profile lower bound: ${nm(profileBound)} throughout 0 to ${seconds(c.lateral_horizon_s)}, after declared errors. Weakest interval: ${seconds(left)} to ${seconds(right)}. Certification includes an extra 25 m clearance margin; this is empirical, not a proved roundoff bound.`,
+        `Speed-profile lower bound: ${nm(profileBound)} throughout 0 to ${seconds(c.lateral_horizon_s)}, after declared errors. Weakest interval: ${seconds(left)} to ${seconds(right)}. Certification includes an extra ${detail.profile_refinement_margin_m} m clearance margin; this is empirical, not a proved roundoff bound.`,
       );
     }
     $("profileLegend").hidden = profileBound === null;
@@ -708,7 +710,7 @@
       "distanceCaption",
       profileBound === null
         ? "The curve samples the constant-speed base hull. The certificate checks the whole required interval, using the displayed allowance. Samples alone do not establish safety."
-        : "The green line is the speed-profile lower bound for the whole lateral interval, after declared errors. It exceeds requested spacing by at least 25 m. The base curve and orange enclosure threshold are conservative references; their crossing does not contradict this certificate.",
+        : `The green line is the speed-profile lower bound for the whole lateral interval, after declared errors. It exceeds requested spacing by at least ${detail.profile_refinement_margin_m} m. The base curve and orange enclosure threshold are conservative references; their crossing does not contradict this certificate.`,
     );
     $("distanceCanvas").setAttribute(
       "aria-label",
