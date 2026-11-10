@@ -397,3 +397,28 @@ def test_opposing_turns_preserve_clearance_through_straight_continuation(horizon
     assert result.status == "certified_safe"
     assert result.profile_min_distance_lower_bound_m == pytest.approx(exact_minimum, abs=1e-8)
     assert result.profile_bound_interval_s == (0.0, horizon)
+
+
+@pytest.mark.parametrize("error", [0.0, np.float64(1.0), np.float32(1.0), np.int64(1)])
+def test_profile_diagnostic_is_a_python_float(error: float) -> None:
+    a, b = _overtaking()
+    result = certify_heading_separation(
+        (-11112.0, -3704.0),
+        a,
+        b,
+        separation_threshold_m=9260.0,
+        horizon_s=180.0,
+        relative_position_error_m=error,
+    )
+    assert result.status == "certified_safe"
+    assert type(result.profile_min_distance_lower_bound_m) is float
+    assert result.profile_bound_interval_s is not None
+    expected = certify_heading_separation(
+        (-11112.0, -3704.0),
+        a,
+        b,
+        separation_threshold_m=9260.0,
+        horizon_s=180.0,
+        relative_position_error_m=float(error),
+    )
+    assert result.profile_min_distance_lower_bound_m == expected.profile_min_distance_lower_bound_m

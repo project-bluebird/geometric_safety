@@ -415,8 +415,10 @@ def certify_heading_separation(
     # with a larger clearance requirement cannot add a straight acceptance.
     if safe or straight_geometry:
         return result
-    additional_error_m = _inflation_m(
-        a, b, horizon_s, relative_position_error_m, relative_velocity_error_mps, include_speed_profiles=False
+    additional_error_m = float(
+        _inflation_m(
+            a, b, horizon_s, relative_position_error_m, relative_velocity_error_mps, include_speed_profiles=False
+        )
     )
     a_parameters = prepare_motion(
         a.heading0_deg, a.target_heading_deg, a.turn_rate_deg_s, a.speed_min_mps, a.speed_max_mps
@@ -446,6 +448,6 @@ def certify_heading_separation(
         result,
         status="certified_safe",
         reason="directional speed-profile separation certified",
-        profile_min_distance_lower_bound_m=lower_after_error,
+        profile_min_distance_lower_bound_m=float(lower_after_error),
         profile_bound_interval_s=(left, right),
     )
