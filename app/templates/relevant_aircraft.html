@@ -84,10 +84,11 @@
           <dl class="metrics">
             <div><dt>Lateral check</dt><dd id="lateralMetric"></dd></div>
             <div><dt>Vertical separation</dt><dd id="verticalMetric"></dd></div>
-            <div><dt>Extra lateral allowance</dt><dd id="allowanceMetric"></dd></div>
+            <div><dt id="allowanceLabel">Extra lateral allowance</dt><dd id="allowanceMetric"></dd></div>
           </dl>
           <div class="timeline" aria-hidden="true"><div id="lateralSegment"></div><div id="verticalSegment"></div></div>
           <p class="help" id="timelineCaption"></p>
+          <p class="diagnostic" id="profileDiagnostic" hidden></p>
           <p class="diagnostic" id="diagnostic"></p>
         </div>
       </section>
@@ -111,8 +112,8 @@
         <section class="card plot-card" id="distanceCard">
           <h2>Lateral distance over time</h2>
           <canvas id="distanceCanvas" role="img" aria-label="Sampled base-hull distance and the threshold used for the certificate"></canvas>
-          <div class="legend"><span class="key base">Base hull</span><span class="key threshold">Spacing + allowance</span><span class="key spacing">Requested spacing</span><span class="key inactive">Lateral check not required</span></div>
-          <p class="help">The curve samples the constant-speed base hull. The certificate checks the whole required interval, using the displayed allowance. Samples alone do not establish safety.</p>
+          <div class="legend"><span class="key base">Base hull</span><span class="key threshold" id="enclosureLegend">Spacing + allowance</span><span class="key safe" id="profileLegend" hidden>Speed-profile lower bound</span><span class="key spacing">Requested spacing</span><span class="key inactive">Lateral check not required</span></div>
+          <p class="help" id="distanceCaption"></p>
         </section>
         <section class="card plot-card" id="hullCard">
           <h2>Relative geometry at selected time</h2>
@@ -143,7 +144,7 @@
       <details class="card assumptions"><summary>What the certificate assumes</summary>
         <p>The heading law is an immediate fixed-rate shortest turn, followed by straight continuation. The speed bounds and declared heading, position and relative-velocity errors must hold throughout the checked interval. Route turns and response delays are outside this model.</p>
         <p>With vertical separation enabled, each aircraft progresses towards its selected level at or above the declared minimum rate and remains there. Levels have no altitude-error allowance. The plotted bands are unrounded; the verified resolution time also respects the selected rounding grid.</p>
-        <p>The relative view uses the same constant-speed hull and the same maximum allowance as the solver. Turning cases can enlarge the narrower speed interval to enclose both declarations. The numerical kernel has an empirical floating-point guard, not a proved error bound for all inputs.</p>
+        <p>The relative view shows the constant-speed base hull and its maximum allowance. Turning cases can enlarge the narrower speed interval to enclose both declarations. When a speed-profile bound certifies separation, the base hull and its allowance remain reference diagnostics. Numerical clearance margins are empirical, not proved floating-point error bounds for all inputs.</p>
       </details>
     </div>
   </div>

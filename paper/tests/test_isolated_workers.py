@@ -2,6 +2,7 @@
 
 import ast
 from collections.abc import Iterator
+import copy
 from dataclasses import asdict
 import json
 import math
@@ -38,7 +39,7 @@ from paper.benchmark_library_versions import (
 )
 from paper.isolated_worker import worker_command
 from paper.validate_directional_production import benchmark
-from paper.validate_performance_parity import compare_reports, read_parity_report, run_worker
+from paper.validate_performance_parity import ParityReport, compare_reports, read_parity_report, run_worker
 
 
 def _snapshot(destination: Path, *, archived_paper: bool = False, without_heading: bool = False) -> Path:
@@ -642,3 +643,116 @@ def test_installed_candidate_does_not_fall_back_to_checkout(
     else:
         assert "ModuleNotFoundError: geometric_safety.heading is absent from the selected library" in result.stderr
     assert not output.exists()
+
+
+def _profile_case_file(path: Path) -> Path:
+    case = Case(
+        "profile-recovery",
+        "regression",
+        -11112.0,
+        -3704.0,
+        90.0,
+        0.0,
+        250.0,
+        1.5,
+        90.0,
+        120.0,
+        200.0,
+        1.5,
+        25.0,
+        180.0,
+        9260.0,
+    )
+    path.write_text(json.dumps({"cases": [asdict(case)]}))
+    return path
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Benchmark workers record Linux CPU affinity")
+def test_benchmark_worker_accepts_real_profile_recovery(tmp_path: Path) -> None:
+    source = _snapshot(tmp_path / "candidate")
+    worker = start_worker("current", _profile_case_file(tmp_path / "cases.json"), tmp_path, source)
+    try:
+        outcomes = worker.header["outcomes"]
+        assert outcomes["interface_core_only"] == [False]
+        assert outcomes["interface_prebuilt"] == outcomes["interface_construct"] == [True]
+        assert worker.header["source_sha256"] == module_hashes(source / "geometric_safety")
+    finally:
+        worker.close()
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Benchmark workers record Linux CPU affinity")
+def test_benchmark_worker_rejects_a_lost_first_pass_acceptance(tmp_path: Path) -> None:
+    source = _snapshot(tmp_path / "candidate")
+    module = source / "geometric_safety/heading.py"
+    text = module.read_text()
+    original = "    if safe or straight_geometry:\n        return result\n"
+    assert text.count(original) == 1
+    module.write_text(
+        text.replace(
+            original, '    if safe or straight_geometry:\n        return replace(result, status="unresolved")\n'
+        )
+    )
+    with pytest.raises(RuntimeError, match="failed during preparation"):
+        start_worker("current", _case_file(tmp_path / "cases.json"), tmp_path, source)
+    assert "interface lost an effective-core acceptance" in (tmp_path / "current_worker.log").read_text()
+
+
+@pytest.fixture(scope="module")
+def profile_reports(tmp_path_factory: pytest.TempPathFactory) -> tuple[ParityReport, ParityReport]:
+    root = tmp_path_factory.mktemp("profile_parity")
+    before = _snapshot(root / "before")
+    module = before / "geometric_safety/heading.py"
+    source = module.read_text()
+    # Preserve the complete package and its actual first-pass calculation, but
+    # expose the pre-refinement result contract and stop before refinement.
+    original = "    if safe or straight_geometry:\n        return result\n"
+    assert source.count(original) == 1
+    source = source.replace(original, "    return result\n")
+    for field in (
+        "    profile_min_distance_lower_bound_m: float | None = None\n",
+        "    profile_bound_interval_s: tuple[float, float] | None = None\n",
+    ):
+        assert source.count(field) == 1
+        source = source.replace(field, "")
+    module.write_text(source)
+    cases = _profile_case_file(root / "cases.json")
+    baseline = run_worker(before, cases, root / "before.json", root / "before_cache", saved_only=True)
+    candidate = run_worker(
+        Path(ra.__file__).parents[1], cases, root / "after.json", root / "after_cache", saved_only=True
+    )
+    assert baseline["records"][0]["interface"]["status"] == "unresolved"
+    assert candidate["records"][0]["interface"]["status"] == "certified_safe"
+    assert baseline["records"][0]["interface"]["profile_min_distance_lower_bound_m"] is None
+    assert candidate["records"][0]["interface"]["profile_min_distance_lower_bound_m"] is not None
+    return baseline, candidate
+
+
+def test_profile_recovery_requires_explicit_acceptance_preservation(
+    profile_reports: tuple[ParityReport, ParityReport],
+) -> None:
+    baseline, candidate = profile_reports
+    with pytest.raises(ValueError, match="Interface status differs"):
+        compare_reports(baseline, candidate)
+    comparison = compare_reports(baseline, candidate, allow_interface_recoveries=True)
+    assert comparison["interface_recoveries"] == ["profile-recovery"]
+    assert comparison["comparison"] == "acceptance_preservation"
+    with pytest.raises(ValueError, match="Interface status differs"):
+        compare_reports(candidate, baseline, allow_interface_recoveries=True)
+
+
+def test_parity_compares_new_profile_diagnostics(profile_reports: tuple[ParityReport, ParityReport]) -> None:
+    _, candidate = profile_reports
+    changed = copy.deepcopy(candidate)
+    interface = changed["records"][0]["interface"]
+    bound = interface["profile_min_distance_lower_bound_m"]
+    assert bound is not None
+    interface["profile_min_distance_lower_bound_m"] = bound + 1.0
+    with pytest.raises(ValueError, match="Profile distances differ"):
+        compare_reports(candidate, changed)
+    interface["profile_min_distance_lower_bound_m"] = bound
+    interface["profile_bound_interval_s"] = (0.0, 0.0)
+    assert compare_reports(candidate, changed)["profile_interval_changes"] == 1
+    interface["profile_min_distance_lower_bound_m"] = None
+    interface["profile_bound_interval_s"] = None
+    with pytest.raises(ValueError, match="Profile distance availability"):
+        compare_reports(candidate, changed)

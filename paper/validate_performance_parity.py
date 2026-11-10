@@ -43,6 +43,8 @@ class ParityInterface(TypedDict):
     base_closest_time_s: float | None
     diagnostic_kind: Literal["straight_minimum", "sampled_minimum", "interval_bound"] | None
     base_bound_interval_s: tuple[float, float] | None
+    profile_min_distance_lower_bound_m: float | None
+    profile_bound_interval_s: tuple[float, float] | None
 
 
 class ParityRecord(TypedDict):
@@ -66,6 +68,10 @@ class ParityComparison(TypedDict):
     cases: int
     maximum_distance_change_m: dict[str, float]
     diagnostic_time_changes: dict[str, int]
+    maximum_profile_bound_change_m: float
+    profile_interval_changes: int
+    interface_recoveries: list[str]
+    comparison: Literal["parity", "acceptance_preservation"]
 
 
 class ParitySummary(ParityComparison):
@@ -194,6 +200,11 @@ def evaluate_cases(cases: list[Case]) -> list[ParityRecord]:
             relative_position_error_m=50.0 if style == 3 else 0.0,
             relative_velocity_error_mps=0.5 if style == 4 else 0.0,
         )
+        # Complete archived packages predate these result fields. Check the pair
+        # explicitly; a partially upgraded result must not masquerade as legacy.
+        has_profile_bound = hasattr(interface, "profile_min_distance_lower_bound_m")
+        if has_profile_bound != hasattr(interface, "profile_bound_interval_s"):
+            raise ValueError("The selected package exposes incomplete profile diagnostics")
         rows.append(
             {
                 "id": case.id,
@@ -207,6 +218,10 @@ def evaluate_cases(cases: list[Case]) -> list[ParityRecord]:
                     "base_closest_time_s": interface.base_closest_time_s,
                     "diagnostic_kind": interface.diagnostic_kind,
                     "base_bound_interval_s": interface.base_bound_interval_s,
+                    "profile_min_distance_lower_bound_m": interface.profile_min_distance_lower_bound_m
+                    if has_profile_bound
+                    else None,
+                    "profile_bound_interval_s": interface.profile_bound_interval_s if has_profile_bound else None,
                 },
             }
         )
@@ -242,6 +257,18 @@ def _unavailable(value: float | None) -> bool:
     return value is None or math.isnan(value)
 
 
+def _bound_interval(value: Json) -> tuple[float, float] | None:
+    if value is None:
+        return None
+    bounds = list_value(value)
+    if len(bounds) != 2:
+        raise ValueError("A bound interval must have two endpoints")
+    interval = (finite_number(bounds[0]), finite_number(bounds[1]))
+    if not 0.0 <= interval[0] <= interval[1]:
+        raise ValueError("A bound interval must be nonnegative and ordered")
+    return interval
+
+
 def parse_record(value: Json) -> ParityRecord:
     row = object_value(value)
     core, interface = list_value(row["core"]), object_value(row["interface"])
@@ -268,15 +295,18 @@ def parse_record(value: Json) -> ParityRecord:
         kind = None
     else:
         raise ValueError("Unknown parity diagnostic kind")
-    interval_value = interface["base_bound_interval_s"]
-    interval = None
-    if interval_value is not None:
-        bounds = list_value(interval_value)
-        if len(bounds) != 2:
-            raise ValueError("A bound interval must have two endpoints")
-        interval = (finite_number(bounds[0]), finite_number(bounds[1]))
-        if interval[0] > interval[1]:
-            raise ValueError("A bound interval must be ordered")
+    interval = _bound_interval(interface["base_bound_interval_s"])
+    has_profile_bound = "profile_min_distance_lower_bound_m" in interface
+    if has_profile_bound != ("profile_bound_interval_s" in interface):
+        raise ValueError("A parity record must contain both profile diagnostic fields")
+    # Saved reports from pre-refinement packages have neither field.
+    profile_value = interface["profile_min_distance_lower_bound_m"] if has_profile_bound else None
+    profile_bound = None if profile_value is None else finite_number(profile_value)
+    profile_interval = _bound_interval(interface["profile_bound_interval_s"] if has_profile_bound else None)
+    if (profile_bound is None) != (profile_interval is None):
+        raise ValueError("Profile bound and interval must be available together")
+    if profile_bound is not None and (profile_bound < 0.0 or status != "certified_safe"):
+        raise ValueError("Profile diagnostics require a certified result and nonnegative lower bound")
     parsed_core = (boolean(core[0]), _diagnostic_number(core[1]), _diagnostic_number(core[2]))
     if parsed_core[0] and any(math.isnan(value) for value in parsed_core[1:]):
         raise ValueError("An accepted core result requires finite diagnostics")
@@ -293,6 +323,8 @@ def parse_record(value: Json) -> ParityRecord:
             base_closest_time_s=None if time_s is None else finite_number(time_s),
             diagnostic_kind=kind,
             base_bound_interval_s=interval,
+            profile_min_distance_lower_bound_m=profile_bound,
+            profile_bound_interval_s=profile_interval,
         ),
     )
 
@@ -345,8 +377,14 @@ def run_worker(source: Path, cases_path: Path, output: Path, cache: Path, *, sav
     return report
 
 
-def compare_reports(baseline: ParityReport, candidate: ParityReport) -> ParityComparison:
-    """Validate saved decisions and distances, and count diagnostic time changes."""
+def compare_reports(
+    baseline: ParityReport, candidate: ParityReport, *, allow_interface_recoveries: bool = False
+) -> ParityComparison:
+    """Check parity, or explicitly allow profile-backed unresolved-to-safe changes.
+
+    Core results and existing base diagnostics retain the same checks in both
+    modes. Acceptance preservation alone does not validate a new certificate.
+    """
     if baseline["corpus"] != candidate["corpus"] or baseline["cases_sha256"] != candidate["cases_sha256"]:
         raise ValueError("Parity reports describe different input corpora")
     before, after = baseline["records"], candidate["records"]
@@ -356,6 +394,8 @@ def compare_reports(baseline: ParityReport, candidate: ParityReport) -> ParityCo
         raise ValueError("Parity record counts differ")
     distance_delta = {"core": 0.0, "interface": 0.0}
     time_changes = {"core": 0, "interface": 0}
+    profile_delta, profile_interval_changes = 0.0, 0
+    recoveries: list[str] = []
     for a, b in zip(before, after, strict=True):
         if a["id"] != b["id"]:
             raise ValueError(f"Parity case IDs differ: {a['id']} / {b['id']}")
@@ -363,9 +403,29 @@ def compare_reports(baseline: ParityReport, candidate: ParityReport) -> ParityCo
         ai, bi = a["interface"], b["interface"]
         if ac[0] != bc[0]:
             raise ValueError(f"Core decisions differ for {a['id']}: {ac} / {bc}")
+        recovered = (
+            allow_interface_recoveries
+            and ai["status"] == "unresolved"
+            and bi["status"] == "certified_safe"
+            and bi["profile_min_distance_lower_bound_m"] is not None
+            and bi["profile_bound_interval_s"] is not None
+        )
+        if recovered:
+            recoveries.append(a["id"])
         for field in ("status", "reason", "inflation_m", "diagnostic_kind"):
+            if recovered and field in ("status", "reason"):
+                continue
             if ai[field] != bi[field]:
                 raise ValueError(f"Interface {field} differs for {a['id']}: {ai[field]} / {bi[field]}")
+        if not recovered:
+            p0, p1 = ai["profile_min_distance_lower_bound_m"], bi["profile_min_distance_lower_bound_m"]
+            if (p0 is None) != (p1 is None):
+                raise ValueError(f"Profile distance availability differs for {a['id']}")
+            if p0 is not None and p1 is not None:
+                if not math.isclose(p0, p1, rel_tol=2e-13, abs_tol=1e-7):
+                    raise ValueError(f"Profile distances differ for {a['id']}: {p0} / {p1}")
+                profile_delta = max(profile_delta, abs(p1 - p0))
+            profile_interval_changes += ai["profile_bound_interval_s"] != bi["profile_bound_interval_s"]
         for method, d0, d1, t0, t1 in (
             ("core", ac[1], bc[1], ac[2], bc[2]),
             (
@@ -390,6 +450,10 @@ def compare_reports(baseline: ParityReport, candidate: ParityReport) -> ParityCo
         "cases": len(before),
         "maximum_distance_change_m": distance_delta,
         "diagnostic_time_changes": time_changes,
+        "maximum_profile_bound_change_m": profile_delta,
+        "profile_interval_changes": profile_interval_changes,
+        "interface_recoveries": recoveries,
+        "comparison": "acceptance_preservation" if allow_interface_recoveries else "parity",
     }
 
 
@@ -400,6 +464,11 @@ def main() -> None:
     parser.add_argument("--candidate", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--worker", action="store_true")
+    parser.add_argument(
+        "--allow-interface-recoveries",
+        action="store_true",
+        help="Check acceptance preservation, allowing profile-backed unresolved-to-safe changes; default is parity",
+    )
     parser.add_argument(
         "--saved-only",
         action="store_true",
@@ -418,13 +487,17 @@ def main() -> None:
         reports.append(
             run_worker(source, args.cases, path, args.output / (role + "_cache"), saved_only=args.saved_only)
         )
-    comparison = compare_reports(reports[0], reports[1])
+    comparison = compare_reports(reports[0], reports[1], allow_interface_recoveries=args.allow_interface_recoveries)
     summary: ParitySummary = {
         "cases": comparison["cases"],
         "maximum_distance_change_m": comparison["maximum_distance_change_m"],
         "diagnostic_time_changes": comparison["diagnostic_time_changes"],
+        "maximum_profile_bound_change_m": comparison["maximum_profile_bound_change_m"],
+        "profile_interval_changes": comparison["profile_interval_changes"],
+        "interface_recoveries": comparison["interface_recoveries"],
+        "comparison": comparison["comparison"],
         "queries": 2 * comparison["cases"],
-        "decision_changes": 0,
+        "decision_changes": len(comparison["interface_recoveries"]),
         "seed": 2026101206,
         "corpus": reports[0]["corpus"],
         "guard_m": reports[1]["guard_m"],
@@ -435,9 +508,12 @@ def main() -> None:
         "cases_sha256": digest(args.cases),
         "raw_sha256": {p.name: digest(p) for p in args.output.glob("*.json")},
         "scope": (
-            "Empirical parity on the supplied cases only; seeded and boundary cases were omitted."
-            if args.saved_only
-            else "Empirical parity, including envelope and boundary cases; not a universal numerical proof."
+            "Empirical acceptance preservation; new certificates require independent validation. "
+            if args.allow_interface_recoveries
+            else "Empirical parity; not a universal numerical proof. "
+        )
+        + (
+            "Supplied cases only; seeded and boundary cases omitted." if args.saved_only else "Includes boundary cases."
         ),
     }
     (args.output / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")

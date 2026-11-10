@@ -224,6 +224,16 @@
       !isNumber(value.inflation_m)
     )
       return false;
+    if (
+      !(
+        (value.profile_min_distance_lower_bound_m === null &&
+          value.profile_bound_interval_s === null) ||
+        (value.status === "certified_safe" &&
+          isNumber(value.profile_min_distance_lower_bound_m) &&
+          isPoint(value.profile_bound_interval_s))
+      )
+    )
+      return false;
     if (value.diagnostic_kind === null)
       return (
         value.base_min_distance_m === null &&
@@ -307,6 +317,8 @@
     if (
       !isRecord(value) ||
       !isCertificate(value.certificate) ||
+      !isNumber(value.profile_refinement_margin_m) ||
+      value.profile_refinement_margin_m < 0 ||
       !isArrayOf(value.times_s, isNumber) ||
       value.times_s.length === 0 ||
       !(value.geometry === null || isGeometry(value.geometry)) ||
@@ -601,7 +613,8 @@
   function renderSummary() {
     if (!detail || !params) return;
     const c = detail.certificate,
-      lateral = c.lateral;
+      lateral = c.lateral,
+      profileBound = lateral?.profile_min_distance_lower_bound_m ?? null;
     $("resultCard").dataset.status = c.status;
     const labels = {
       certified_safe: "Certified",
@@ -642,6 +655,10 @@
             : `From ${seconds(v)}`,
     );
     text(
+      "allowanceLabel",
+      profileBound === null ? "Extra lateral allowance" : "Base-hull allowance",
+    );
+    text(
       "allowanceMetric",
       lateral === null
         ? "Not needed"
@@ -670,12 +687,37 @@
       if (lateral.diagnostic_kind === "straight_minimum")
         diagnostic = `Base-hull minimum: ${nm(lateral.base_min_distance_m)} at ${seconds(lateral.base_closest_time_s)}.`;
       else if (lateral.diagnostic_kind === "sampled_minimum")
-        diagnostic = `Smallest solver sample: ${nm(lateral.base_min_distance_m)} at ${seconds(lateral.base_closest_time_s)}. This is not a continuous-time minimum.`;
+        diagnostic = `Smallest base-hull sample: ${nm(lateral.base_min_distance_m)} at ${seconds(lateral.base_closest_time_s)}. This is not a continuous-time minimum.`;
       else if (lateral.diagnostic_kind === "interval_bound")
         diagnostic = `Base-hull lower bound: ${nm(lateral.base_min_distance_m)} over ${seconds(lateral.base_bound_interval_s[0])} to ${seconds(lateral.base_bound_interval_s[1])}.`;
       else diagnostic = "No lateral distance diagnostic is available.";
     }
     text("diagnostic", diagnostic);
+    $("profileDiagnostic").hidden = profileBound === null;
+    if (profileBound !== null && lateral?.profile_bound_interval_s) {
+      const [left, right] = lateral.profile_bound_interval_s;
+      text(
+        "profileDiagnostic",
+        `Speed-profile lower bound: ${nm(profileBound)} throughout 0 to ${seconds(c.lateral_horizon_s)}, after declared errors. Weakest interval: ${seconds(left)} to ${seconds(right)}. Certification includes an extra ${detail.profile_refinement_margin_m} m clearance margin; this is empirical, not a proved roundoff bound.`,
+      );
+    }
+    $("profileLegend").hidden = profileBound === null;
+    text(
+      "enclosureLegend",
+      profileBound === null ? "Spacing + allowance" : "Base enclosure reference",
+    );
+    text(
+      "distanceCaption",
+      profileBound === null
+        ? "The curve samples the constant-speed base hull. The certificate checks the whole required interval, using the displayed allowance. Samples alone do not establish safety."
+        : `The green line is the speed-profile lower bound for the whole lateral interval, after declared errors. It exceeds requested spacing by at least ${detail.profile_refinement_margin_m} m. The base curve and orange enclosure threshold are conservative references; their crossing does not contradict this certificate.`,
+    );
+    $("distanceCanvas").setAttribute(
+      "aria-label",
+      profileBound === null
+        ? "Sampled base-hull distance and the threshold used for the certificate"
+        : "Speed-profile lower bound and requested spacing, with the base-hull enclosure shown for reference",
+    );
     $("geometryNotice").hidden = !detail.geometry_note;
     text("geometryNotice", detail.geometry_note || "");
     for (const id of ["spatialCard", "distanceCard", "hullCard"])
@@ -1008,10 +1050,12 @@
       .map((f) => f.base_distance_m / NM);
     const threshold =
       g.effective_threshold_m === null ? null : g.effective_threshold_m / NM;
+    const profileBound = c.lateral?.profile_min_distance_lower_bound_m ?? null;
     const top =
       Math.max(
         ...distances,
         threshold ?? 0,
+        profileBound === null ? 0 : profileBound / NM,
         params.separation_threshold_nm,
         1,
       ) * 1.15;
@@ -1070,6 +1114,31 @@
         [3, 2],
         3,
       );
+    }
+    if (profileBound !== null) {
+      line(
+        plot,
+        [
+          [0, profileBound / NM],
+          [Math.min(windowEnd(), c.lateral_horizon_s), profileBound / NM],
+        ],
+        colour.safe,
+        [],
+        2,
+      );
+      if (lateral?.profile_bound_interval_s) {
+        const [left, right] = lateral.profile_bound_interval_s;
+        line(
+          plot,
+          [
+            [left, profileBound / NM],
+            [right, profileBound / NM],
+          ],
+          colour.safe,
+          [],
+          4,
+        );
+      }
     }
     markTime(plot, detail.times_s[selected], "#64748b");
     dot(
@@ -1130,7 +1199,9 @@
     text(
       "hullCaption",
       required
-        ? `Base-hull distance ${nm(frame.base_distance_m)}. The outer circle is ${nm(effectiveThreshold)}: spacing plus the allowance used for this lateral interval. The dotted circle shows the requested spacing.`
+        ? (c.lateral?.profile_min_distance_lower_bound_m ?? null) !== null
+          ? `Base-hull distance ${nm(frame.base_distance_m)}. The outer circle is the conservative base enclosure reference (${nm(effectiveThreshold)}), not the speed-profile acceptance threshold. The dotted circle shows requested spacing.`
+          : `Base-hull distance ${nm(frame.base_distance_m)}. The outer circle is ${nm(effectiveThreshold)}: spacing plus the allowance used for this lateral interval. The dotted circle shows the requested spacing.`
         : `Base-hull distance ${nm(frame.base_distance_m)}. Lateral separation is not required at this time; the grey circle shows the requested spacing for reference.`,
     );
   }

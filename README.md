@@ -114,7 +114,7 @@ certified_safe
 
 Check `result.status` explicitly. `if result:` only tests the result object and does not test separation. Malformed numeric inputs, such as a negative horizon or reversed speed bounds, raise `ValueError`.
 
-`result.reason` explains the outcome, and `result.inflation_m` reports the extra separation used to cover the declared speed variation and deviation bounds. The optional distance and time fields describe the underlying constant-speed calculation. They do not give an executed aircraft's minimum separation or the time at which separation is first lost. See [diagnostics](docs/motion-models.md#diagnostics) before using those fields.
+`result.reason` explains the outcome. The solver first checks a constant-speed enclosure enlarged to cover the declared speed variation and errors; `result.inflation_m` reports that enlargement. If needed, it then checks the speed profiles directly and reports a separate `profile_min_distance_lower_bound_m` over the whole lateral horizon. The `base_` diagnostics describe the initial constant-speed enclosure. None of these fields gives an executed aircraft's closest-approach time or the time at which separation is first lost. See [diagnostics](docs/motion-models.md#diagnostics) before using those fields.
 
 ## Include vertical separation
 
@@ -355,7 +355,7 @@ uv run --locked python -m paper.validate_performance_numerics \
 
 ## Relevant-aircraft visualiser
 
-The interactive FastAPI application uses the geographic heading interfaces, with optional minimum-rate vertical separation. It shows the required lateral interval, remaining altitude bands, constant-speed reference geometry and the extra allowance used to cover the declared speed profiles and errors. The distance plot shows the same inflated threshold as the certificate. Its sampled curve is explanatory; the decision comes from the continuous-time solver.
+The interactive FastAPI application uses the geographic heading interfaces, with optional minimum-rate vertical separation. It shows the required lateral interval, remaining altitude bands and constant-speed reference geometry with its deviation allowance. When the directional speed-profile check establishes separation, the plot also shows its lower bound over the complete lateral interval. The sampled reference curve is explanatory; the decision comes from the continuous-time solver.
 
 Choose an example encounter or enter independent speed bounds, headings and positions through **Edit inputs**. Relative position error is entered in NM and relative velocity error in knots. With vertical separation enabled, enter current and selected flight levels and the minimum climb/descent rate. The time slider links the plots; the plot-window control changes only the displayed interval. The relative-geometry axes cover that whole displayed window and stay fixed as the selected time changes. Altitude ticks use multiples of 10 FL. The position map runs the same check at each cell and refreshes on request. Results distinguish certified, unresolved and unsupported queries. Red marks unresolved results; it does not establish a conflict.
 

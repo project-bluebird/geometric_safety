@@ -59,6 +59,8 @@ interface LateralDecision {
   status: Status;
   reason: string;
   inflation_m: number;
+  profile_min_distance_lower_bound_m: number | null;
+  profile_bound_interval_s: Point | null;
 }
 
 // The solver's diagnostic kind determines which distance and time fields exist.
@@ -127,6 +129,7 @@ export interface DetailPayload {
   geometry: Geometry | null;
   geometry_note: string | null;
   vertical: VerticalFrame[] | null;
+  profile_refinement_margin_m: number;
 }
 
 export interface GridPayload {

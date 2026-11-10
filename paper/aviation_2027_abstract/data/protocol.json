@@ -1,0 +1,22 @@
+{
+  "title": "Instruction robustness across three encounter families",
+  "scope": "Prespecified extension; all combinations retained; no production library import",
+  "families": [
+    {"name": "oblique", "heading_a": 285, "heading_b": 45, "distances_a_nm": [18,20,22], "distances_b_nm": [18,20,22], "route_context": "FINCH-EGL approach versus CRANE-EGL-QUAIL"},
+    {"name": "perpendicular", "heading_a": 135, "heading_b": 45, "distances_a_nm": [18,20,22], "distances_b_nm": [18,20,22], "route_context": "GOOSE-ALB-EGL direction versus CRANE-EGL-QUAIL"},
+    {"name": "overtaking", "heading_a": 45, "heading_b": 45, "distances_a_nm": [26,28,30], "distances_b_nm": [16,18,20], "route_context": "Two aircraft along CRANE-EGL-QUAIL"}
+  ],
+  "turns_deg": [-20,-15,-10,-5,0,5,10,15,20],
+  "uncertainty_scales": [0,1,2],
+  "horizons_s": [300,600],
+  "nominal_speeds_kt": [450,360],
+  "base_half_widths_kt": [10,30],
+  "turn_rate_deg_s": 1,
+  "separation_nm": 5,
+  "reference_margin_m": 25,
+  "digits": [80,120],
+  "max_support": 50000,
+  "max_cells": 16384,
+  "route_source": "https://github.com/project-bluebird/BluebirdATC/blob/a7e480656a83696e886a13cf73eeacf8a702bdf9/bluebird-dt/bluebird_dt/airspace_generator/sector_xplus.py",
+  "interpretation": "Known initial states, no wind, instructed A holds target even for zero turn; B holds 045. No route turn is silently included. Uncertainty bounds and rate are illustrative. Tied left/right minima remain ties. Unresolved is not conflict. Main computation uses 80 digits; repeat every query at 120 and require agreement. The 25m band is numerical exclusion, not operational extra separation. No probabilities or fuel/workload claims."
+}

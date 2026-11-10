@@ -113,10 +113,17 @@ def summarise(results: Path, cases_path: Path, output: Path) -> None:
         ("known_collision_repairs_verified", checks["known_collision_repairs_verified"]),
         ("known_separated_controls_verified", checks["known_separated_controls_verified"]),
         ("no_current_acceptance_of_saved_unsafe_cases", checks["no_current_acceptance_of_saved_unsafe_cases"]),
-        ("interface_matches_effective_core", checks["interface_matches_effective_core"]),
+        (
+            "interface_preserves_effective_core_acceptances",
+            checks.get("interface_preserves_effective_core_acceptances"),
+        ),
     ):
         status = "passed" if verdict is True else "failed" if verdict is False else "not recorded"
         check_lines.append(f"{name}: {status}.")
+    equality = "equal" if checks["interface_matches_effective_core"] else "different"
+    check_lines.append(f"Interface and initial enclosure decisions: {equality}.")
+    if "interface_profile_recoveries" in checks:
+        check_lines.append(f"Additional interface acceptances: {len(checks['interface_profile_recoveries'])}.")
     host = protocol["host"]
     started_at = protocol["started_at_utc"]
     thread_settings = json.dumps(protocol["single_thread_environment"], sort_keys=True)

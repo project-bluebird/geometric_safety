@@ -13,6 +13,9 @@ from pydantic import TypeAdapter
 import pytest
 
 from app.visualisation import DetailPayload, GridPayload, VisualParams
+from geometric_safety.demo_utils import local_xy_to_latlon
+from geometric_safety.heading import PROFILE_REFINEMENT_MARGIN_M
+from geometric_safety.util import NMI_TO_M
 
 ROOT = Path(__file__).resolve().parents[2]
 DETAIL = TypeAdapter(DetailPayload)
@@ -24,20 +27,27 @@ BOX = TypeAdapter(tuple[float, float, float, float])
 OBSERVE_CANVAS = """() => {
   window.canvasDraws = {};
   const proto = CanvasRenderingContext2D.prototype;
-  for (const method of ['setTransform', 'fillRect', 'fillText', 'clip', 'moveTo', 'lineTo', 'arc', 'fill']) {
+  const methods = ['setTransform', 'fillRect', 'fillText', 'clip', 'beginPath',
+                   'moveTo', 'lineTo', 'arc', 'fill', 'stroke'];
+  for (const method of methods) {
     const original = proto[method];
     proto[method] = function(...args) {
       const id = this.canvas.id;
       if (method === 'setTransform')
-        window.canvasDraws[id] = {labels: [], points: [], circles: [], fills: [], clipped: false};
+        window.canvasDraws[id] = {labels: [], points: [], circles: [], fills: [],
+                                 strokes: [], path: [], clipped: false};
       const draw = window.canvasDraws[id];
       if (draw) {
         if (method === 'fillRect' && !draw.box) draw.box = args;
         if (method === 'fillText') draw.labels.push({text: String(args[0]), font: this.font, align: this.textAlign});
         if (method === 'clip') draw.clipped = true;
+        if (method === 'beginPath') draw.path = [];
+        if (method === 'moveTo' || method === 'lineTo') draw.path.push(args);
         if (draw.clipped && (method === 'moveTo' || method === 'lineTo')) draw.points.push(args);
         if (draw.clipped && method === 'arc') draw.circles.push(args.slice(0, 3));
         if (draw.clipped && method === 'fill') draw.fills.push(this.fillStyle);
+        if (draw.clipped && method === 'stroke')
+          draw.strokes.push({colour: this.strokeStyle, width: this.lineWidth, points: draw.path});
       }
       return original.apply(this, args);
     };
@@ -159,9 +169,10 @@ def test_presets_unsupported_motion_and_real_server_validation(page: Page) -> No
             statuses.add(_preset(page, preset_id).certificate.status)
     assert {"certified_safe", "unresolved"} <= statuses
 
-    _preset(page, "single_turn_dodge")
+    _preset(page, "lateral_only")
     assert "does not establish a conflict" in page.locator("#resultReason").inner_text()
     assert page.locator("#resultCard").evaluate("el => getComputedStyle(el).borderLeftColor") == "rgb(197, 106, 100)"
+    _preset(page, "single_turn_dodge")
     page.locator("#editInputs").click()
     page.locator("#a_turn_rate_deg_s").fill("0")
     page.locator("#evaluateBtn").click()
@@ -177,6 +188,105 @@ def test_presets_unsupported_motion_and_real_server_validation(page: Page) -> No
     assert pending.value.status == 422
     expect(page.locator("#resultCard")).to_have_attribute("data-status", "error")
     expect(page.locator("#resultReason")).to_contain_text("maximum speed must be at least minimum speed")
+
+
+def test_profile_certificate_displays_its_bound_and_base_reference(page: Page, tmp_path: Path) -> None:
+    _preset(page, "lateral_only")
+    b_lat, b_lon = local_xy_to_latlon(6.0 * NMI_TO_M, 2.0 * NMI_TO_M, 51.0, -1.0)
+    fields = {
+        "a_lat": 51.0,
+        "a_lon": -1.0,
+        "b_lat": b_lat,
+        "b_lon": b_lon,
+        "a_heading_deg": 90.0,
+        "a_target_heading_deg": 0.0,
+        "a_turn_rate_deg_s": 1.5,
+        "a_speed_min_kt": 225.0,
+        "a_speed_max_kt": 275.0,
+        "b_heading_deg": 90.0,
+        "b_target_heading_deg": 120.0,
+        "b_turn_rate_deg_s": 1.5,
+        "b_speed_min_kt": 175.0,
+        "b_speed_max_kt": 225.0,
+        "horizon_s": 180.0,
+        "separation_threshold_nm": 5.0,
+    }
+    # Submit a real encounter through the form; no response or decision is substituted.
+    with page.expect_response(lambda response: response.url.endswith("/api/time_sweep")) as pending:
+        page.evaluate(
+            """fields => {
+                for (const [id, value] of Object.entries(fields)) {
+                    const input = document.getElementById(id);
+                    input.value = String(value);
+                    input.dispatchEvent(new Event('input', {bubbles: true}));
+                }
+                document.getElementById('inputs').requestSubmit();
+            }""",
+            fields,
+        )
+    response = pending.value
+    assert response.ok, response.text()
+    detail = DETAIL.validate_python(response.json())
+    lateral = detail.certificate.lateral
+    assert lateral is not None
+    assert lateral.status == "certified_safe"
+    assert detail.profile_refinement_margin_m == PROFILE_REFINEMENT_MARGIN_M
+    bound = lateral.profile_min_distance_lower_bound_m
+    assert bound is not None
+    assert bound > 5.0 * NMI_TO_M + PROFILE_REFINEMENT_MARGIN_M
+    assert lateral.profile_bound_interval_s is not None
+    assert detail.geometry is not None
+    assert detail.geometry.effective_threshold_m is not None
+    assert min(frame.base_distance_m for frame in detail.geometry.frames) < detail.geometry.effective_threshold_m
+
+    expect(page.locator("#resultCard")).to_have_attribute("data-status", "certified_safe")
+    expect(page.locator("#profileDiagnostic")).to_contain_text(f"{bound / NMI_TO_M:.2f} NM throughout 0 to 180 s")
+    expect(page.locator("#profileDiagnostic")).to_contain_text("after declared errors")
+    expect(page.locator("#profileDiagnostic")).to_contain_text(f"{PROFILE_REFINEMENT_MARGIN_M:g} m clearance margin")
+    expect(page.locator("#profileDiagnostic")).to_contain_text("not a proved roundoff bound")
+    expect(page.locator("#allowanceLabel")).to_have_text("Base-hull allowance")
+    expect(page.locator("#enclosureLegend")).to_have_text("Base enclosure reference")
+    expect(page.locator("#profileLegend")).to_be_visible()
+    expect(page.locator("#distanceCaption")).to_contain_text("their crossing does not contradict this certificate")
+    expect(page.locator("#distanceCaption")).to_contain_text(f"at least {detail.profile_refinement_margin_m:g} m")
+    expect(page.locator("#hullCaption")).to_contain_text("not the speed-profile acceptance threshold")
+
+    # The actual green stroke covers the whole checked interval, not just the
+    # weakest interval reported by the solver, and uses the bound's true height.
+    points = TypeAdapter(list[tuple[float, float]]).validate_python(
+        page.evaluate(
+            "window.canvasDraws.distanceCanvas.strokes.find(s => s.colour === '#339985' && s.width === 2).points"
+        )
+    )
+    x, y, width, height = BOX.validate_python(page.evaluate("window.canvasDraws.distanceCanvas.box"))
+    top = (
+        max(
+            *(frame.base_distance_m / NMI_TO_M for frame in detail.geometry.frames),
+            detail.geometry.effective_threshold_m / NMI_TO_M,
+            bound / NMI_TO_M,
+            5.0,
+            1.0,
+        )
+        * 1.15
+    )
+    bound_y = y + height * (1.0 - bound / NMI_TO_M / top)
+    assert len(points) == 2
+    assert points[0] == pytest.approx((x, bound_y))
+    assert points[1] == pytest.approx((x + width, bound_y))
+    page.screenshot(path=str(tmp_path / "visualiser-profile-desktop.png"), full_page=True)
+    page.set_viewport_size({"width": 390, "height": 1100})
+    assert page.evaluate("document.documentElement.scrollWidth") <= 390
+    page.screenshot(path=str(tmp_path / "visualiser-profile-mobile.png"), full_page=True)
+
+    legacy = _preset(page, "vertical_clearance")
+    assert legacy.certificate.lateral is not None
+    assert legacy.certificate.lateral.profile_min_distance_lower_bound_m is None
+    expect(page.locator("#profileDiagnostic")).to_be_hidden()
+    expect(page.locator("#profileLegend")).to_be_hidden()
+    expect(page.locator("#allowanceLabel")).to_have_text("Extra lateral allowance")
+    expect(page.locator("#enclosureLegend")).to_have_text("Spacing + allowance")
+    expect(page.locator("#distanceCaption")).to_contain_text("using the displayed allowance")
+    assert not page.evaluate("window.canvasDraws.distanceCanvas.strokes.some(s => s.colour === '#339985')")
 
 
 @pytest.mark.parametrize(
