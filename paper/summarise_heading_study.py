@@ -76,6 +76,8 @@ class WidthSummary:
     variable_reference_unresolved: int
     constant_separated_variable_conflict: int
     variable_separated_library_withheld: int
+    constant_accepted_reference_unresolved: int
+    variable_accepted_reference_unresolved: int
 
 
 @dataclass(frozen=True)
@@ -143,6 +145,7 @@ def menus(directory: Path, outcomes: list[Outcome]) -> list[Menu]:
 
 def summarise(directory: Path) -> dict[str, WidthSummary]:
     outcomes = read_outcomes(directory)
+    _, settings = load_protocol(directory / "protocol.json")
     by_width: dict[str, WidthSummary] = {}
     for width in sorted({item.case.width_kt for item in outcomes}):
         rows = [item for item in outcomes if item.case.width_kt == width]
@@ -158,14 +161,26 @@ def summarise(directory: Path) -> dict[str, WidthSummary]:
             sum(item.variable_reference == "unresolved" for item in rows),
             sum(item.constant_reference == "separated" and item.variable_reference == "conflict" for item in rows),
             sum(item.variable_reference == "separated" and not item.variable for item in rows),
+            sum(item.constant and item.constant_reference == "unresolved" for item in rows),
+            sum(item.variable and item.variable_reference == "unresolved" for item in rows),
         )
     if any(item.variable and item.variable_reference == "conflict" for item in outcomes):
         raise ValueError("An accepted varying-speed query has a conflicting reference")
     if any(item.constant_reference == "conflict" and item.variable_reference == "separated" for item in outcomes):
         raise ValueError("Reference classifications contradict model containment")
+    accepted_unresolved = [
+        item.case.identifier for item in outcomes if item.variable and item.variable_reference == "unresolved"
+    ]
+    constant_accepted_unresolved = [
+        item.case.identifier for item in outcomes if item.constant and item.constant_reference == "unresolved"
+    ]
+    exact_agreement = all(item.variable == (item.variable_reference == "separated") for item in outcomes)
     data = {
         "by_speed_half_width": {key: asdict(value) for key, value in by_width.items()},
         "menus": [asdict(menu) for menu in menus(directory, outcomes)],
+        "accepted_reference_unresolved_cases": accepted_unresolved,
+        "constant_accepted_reference_unresolved_cases": constant_accepted_unresolved,
+        "acceptances_match_reference_separated": exact_agreement,
         "speed_variation_effect_cases": [
             item.case.identifier
             for item in outcomes
@@ -184,19 +199,31 @@ def summarise(directory: Path) -> dict[str, WidthSummary]:
     lines = [
         "# Fixed heading-screening study",
         "",
-        "All 912 predeclared candidate queries were evaluated. Counts are per query, "
-        "not independent operational encounters. Reference classifications require a 25 m exclusion band "
-        "and decisive outcomes are checked at 80 and 120 digits. "
+        f"All {len(outcomes)} predeclared candidate queries were evaluated. Counts are per query, "
+        "not independent operational encounters. "
+        f"Reference classifications require a {settings.margin_m:g} m exclusion band "
+        f"and decisive outcomes are checked at {settings.digits} and {settings.recheck_digits} digits. "
         "The reference is numerical, not validated interval arithmetic.",
         "",
+        f"Accepted queries with unresolved constant-speed references: {len(constant_accepted_unresolved)}.",
+        f"Accepted queries with unresolved varying-speed references: {len(accepted_unresolved)}. "
+        "Such acceptances lack decisive reference verification; they are not demonstrated conflicts.",
+        "The varying-speed acceptance set matches the reference-separated set."
+        if exact_agreement
+        else "The varying-speed acceptance set differs from the reference-separated set.",
+        "",
         "| Speed half-width (kt) | Queries | Nominal accepted | Constant accepted | Varying accepted | "
-        "Varying reference separated | Varying reference unresolved | Constant separated / varying conflict | "
+        "Varying reference separated | Varying reference unresolved | Constant accepted / reference unresolved | "
+        "Varying accepted / reference unresolved | "
+        "Constant separated / varying conflict | "
         "Reference separated / library withheld |",
-        "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     lines.extend(
         f"| {row.half_width_kt:g} | {row.queries} | {row.nominal_acceptances} | {row.constant_acceptances} | "
         f"{row.variable_acceptances} | {row.variable_reference_separated} | {row.variable_reference_unresolved} | "
+        f"{row.constant_accepted_reference_unresolved} | "
+        f"{row.variable_accepted_reference_unresolved} | "
         f"{row.constant_separated_variable_conflict} | {row.variable_separated_library_withheld} |"
         for row in by_width.values()
     )

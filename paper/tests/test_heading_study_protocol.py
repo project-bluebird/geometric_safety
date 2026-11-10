@@ -4,6 +4,8 @@ from pathlib import Path
 
 import mpmath as mp
 
+from geometric_safety.heading import PROFILE_REFINEMENT_MARGIN_M
+from paper.benchmark_contracts import object_json
 from paper.run_heading_study import decimal, evaluate, load_protocol
 
 
@@ -29,6 +31,8 @@ def test_frozen_design_has_all_inputs_and_correct_relative_frame() -> None:
     assert crossing.query.threshold_m == 9260.0
     assert settings.digits == 80
     assert settings.recheck_digits == 120
+    assert settings.margin_m == PROFILE_REFINEMENT_MARGIN_M
+    assert object_json(protocol_path().read_text())["status"] == "frozen"
 
 
 def test_known_crossing_runs_real_production_and_both_references() -> None:

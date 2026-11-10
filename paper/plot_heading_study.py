@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from fractions import Fraction
 import json
 from pathlib import Path
 
@@ -11,7 +12,9 @@ from matplotlib.colors import ListedColormap
 from matplotlib.patches import Patch
 import numpy as np
 
-from paper.benchmark_contracts import finite_number, object_json, object_value, parse_list, string
+from geometric_safety.util import heading_diff
+from paper.benchmark_contracts import finite_number, integer, object_json, object_value, parse_list, string
+from paper.run_heading_study import load_protocol
 from paper.summarise_heading_study import menus, read_outcomes
 
 
@@ -19,6 +22,12 @@ def plot(directory: Path) -> None:
     plt.switch_backend("Agg")
     outcomes = read_outcomes(directory)
     menu_rows = menus(directory, outcomes)
+    protocol = object_json((directory / "protocol.json").read_text())
+    _, reference_settings = load_protocol(directory / "protocol.json")
+    groups = {
+        string(group["id"]): parse_list(group["pairs"], string)
+        for group in parse_list(protocol["multi_traffic_scenes"], object_value)
+    }
     palette = ["#cf666b", "#d6d9de", "#edbb64", "#348878"]
     labels = ["Reference conflict", "Reference unresolved", "Reference separated; withheld", "Library accepted"]
     widths = sorted({row.half_width_kt for row in menu_rows})
@@ -60,7 +69,12 @@ def plot(directory: Path) -> None:
                 edgecolors="white",
                 linewidth=1.5,
             )
-            title = "Traffic holds heading" if scene == "M1" else "Traffic also turns"
+            turning_traffic = any(
+                heading_diff(item.case.query.b.heading_deg, item.case.query.b.target_deg) != 0
+                for item in outcomes
+                if item.case.scene in groups[scene]
+            )
+            title = "Includes turning traffic" if turning_traffic else "Traffic holds heading"
             ax.set_title(f"{scene}: {title} | {horizon:g} s", loc="left", fontsize=12, pad=12)
             ax.set_xticks(range(0, len(headings), 2), [f"{heading:03.0f}" for heading in headings[::2]])
             ax.set_yticks(range(len(widths)), [f"{width:g}" for width in widths])
@@ -72,7 +86,7 @@ def plot(directory: Path) -> None:
                 ax.set_ylabel("Speed half-width (kt)", labelpad=10)
             if row_index == 1:
                 ax.set_xlabel("A target heading (deg)", labelpad=10)
-    fig.suptitle("Heading choices against three traffic aircraft", fontsize=16)
+    fig.suptitle("Heading choices against the supplied traffic", fontsize=16)
     fig.legend(
         handles=[Patch(facecolor=color, label=label) for color, label in zip(palette, labels, strict=True)],
         loc="outside lower center",
@@ -89,10 +103,14 @@ def plot(directory: Path) -> None:
         "",
         "## Complete heading menus",
         "",
-        "Each menu contains 19 candidate headings checked against three traffic aircraft. "
-        "A candidate is accepted only when all three pair checks pass. "
-        "M1 combines C1, H1 and O1; M2 combines C2, H2 and O2. "
+        f"Each menu contains {len(headings)} candidate headings checked against its listed traffic aircraft. "
+        "A candidate is accepted only when every pair check passes. "
         "The figure distinguishes a witnessed conflict from a library decision to withhold an instruction.",
+        "",
+        *(
+            f"- {scene}: {', '.join(pairs)} ({len(headings) * len(pairs)} pair checks)"
+            for scene, pairs in groups.items()
+        ),
         "",
         "![Complete heading menus](heading-menus.png)",
         "",
@@ -128,46 +146,55 @@ def plot(directory: Path) -> None:
             f"| {width:g} | {sum(row.nominal and row.constant_reference == 'conflict' for row in selected)} | "
             f"{sum(row.nominal and row.variable_reference == 'conflict' for row in selected)} |"
         )
-    effect_ids = {
-        row.case.identifier
+    effect_scenes = {
+        row.case.identifier: row.case.scene
         for row in outcomes
         if row.constant_reference == "separated" and row.variable_reference == "conflict"
     }
-    lines.extend(
-        [
-            "",
-            "The following queries are separated for every admissible constant speed, "
-            "but have an attainable varying-speed conflict. They share the C1 crossing geometry. "
-            "The distances below are bounds and witnessed distances, not exact minima.",
-            "",
-            "| Query | Constant lower bound (NM) | Varying witnessed distance (NM) | Witness time (s) |",
-            "| --- | --- | --- | --- |",
-        ]
-    )
-    for line in (directory / "results.jsonl").read_text().splitlines():
-        record = object_json(line)
-        identifier = string(object_value(record["case"])["identifier"])
-        if identifier in effect_ids:
-            constant = object_value(object_value(record["constant_reference"])["recheck"])
-            variable = object_value(object_value(record["variable_reference"])["recheck"])
-            witness = object_value(variable["witness"])
-            lines.append(
-                f"| {identifier} | {float(string(constant['lower_m'])) / 1852:.5f} | "
-                f"{float(string(variable['upper_m'])) / 1852:.5f} | {float(string(witness['time_s'])):.3f} |"
-            )
+    lines.append("")
+    if effect_scenes:
+        lines.extend(
+            [
+                "The following queries are separated for every admissible constant speed, "
+                "but have an attainable varying-speed conflict. "
+                "The distances below are bounds and witnessed distances, not exact minima.",
+                "",
+                "| Scene | Query | Constant lower bound (NM) | Varying witnessed distance (NM) | Witness time (s) |",
+                "| --- | --- | --- | --- | --- |",
+            ]
+        )
+        for line in (directory / "results.jsonl").read_text().splitlines():
+            record = object_json(line)
+            identifier = string(object_value(record["case"])["identifier"])
+            if identifier in effect_scenes:
+                constant = object_value(object_value(record["constant_reference"])["recheck"])
+                variable = object_value(object_value(record["variable_reference"])["recheck"])
+                witness = object_value(variable["witness"])
+                lines.append(
+                    f"| {effect_scenes[identifier]} | {identifier} | {float(string(constant['lower_m'])) / 1852:.5f} | "
+                    f"{float(string(variable['upper_m'])) / 1852:.5f} | {float(string(witness['time_s'])):.3f} |"
+                )
+    else:
+        lines.append("No query has constant-speed separation and an attainable varying-speed conflict.")
     timing = object_json((directory / "timings.json").read_text())
     timing_rows = parse_list(timing["menus"], object_value)
     cold = object_json((directory / "cold-timing.json").read_text())
     affinity = ", ".join(str(int(value)) for value in parse_list(timing["cpu_affinity"], finite_number))
     machine = string(timing["machine"]) if "machine" in timing else "the recorded study host"
+    timing_settings = object_value(protocol["timing"])
+    rounds = integer(timing_settings["rounds"])
+    repetitions = rounds * integer(timing_settings["individually_timed_repetitions_per_round"])
+    if any(len(parse_list(row["samples_ms"], finite_number)) != repetitions for row in timing_rows):
+        raise ValueError("Timing sample count differs from the protocol")
     lines.extend(
         [
             "",
             "## Cost and vertical progress",
             "",
-            "Timing covers all 57 public-API calls and result handling per complete menu, with no early exit. "
-            "Reusable aircraft declarations are prepared before timing. Each menu has 100 individually timed "
-            f"repetitions in five rounds; menu order is seeded. Measurements use CPU affinity {affinity} on {machine}.",
+            "Timing covers every public-API call and result handling per complete menu, with no early exit. "
+            "Reusable aircraft declarations are prepared before timing. "
+            f"Each menu has {repetitions} individually timed repetitions in {rounds} rounds; menu order is seeded. "
+            f"Measurements use CPU affinity {affinity} on {machine}.",
             "",
             f"Menu medians span {min(finite_number(row['median_ms']) for row in timing_rows):.3f} to "
             f"{max(finite_number(row['median_ms']) for row in timing_rows):.3f} ms. "
@@ -181,6 +208,9 @@ def plot(directory: Path) -> None:
             "| --- | --- | --- |",
         ]
     )
+    control = object_value(object_value(protocol["vertical_example"])["analytical_control"])
+    distance_nm = string(control["minimum_lateral_distance_at_resolution_nm"])
+    distance_m = float(Fraction(distance_nm)) * 1852
     lines.extend(
         f"| {finite_number(row['minimum_rate_fpm']):g} | {finite_number(row['lateral_horizon_s']):g} | "
         f"{string(row['status'])} |"
@@ -189,8 +219,9 @@ def plot(directory: Path) -> None:
     lines.extend(
         [
             "",
-            "At 1,500 ft/min, the vertical gap develops after 40 s. The minimum lateral distance up to "
-            "that time is 25/3 NM (15,433.333333 m), matching the independent analytical calculation.",
+            f"At {finite_number(control['rate_fpm']):g} ft/min, the analytical control develops vertical separation "
+            f"after {finite_number(control['vertical_resolution_time_s']):g} s. Its minimum lateral distance up to "
+            f"that time is {distance_nm} NM ({distance_m:,.6f} m).",
             "",
             "## Scope",
             "",
@@ -198,7 +229,8 @@ def plot(directory: Path) -> None:
             "Counts across headings, widths and horizons are correlated. Varying speeds have no acceleration "
             "constraint and both turns follow prescribed angular rates. Reference separation uses continuous-time "
             "bounds; conflict uses actual admissible profiles checked by quadrature. "
-            "Decisive classifications agree at 80 and 120 digits, but this is not a formal floating-point proof.",
+            f"Decisive classifications agree at {reference_settings.digits} and {reference_settings.recheck_digits} "
+            "digits, but this is not a formal floating-point proof.",
             "",
         ]
     )

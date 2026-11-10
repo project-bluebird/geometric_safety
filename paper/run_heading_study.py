@@ -17,6 +17,7 @@ import numpy as np
 
 import geometric_safety
 from geometric_safety import HeadingMotion, certify_heading_separation
+from geometric_safety.heading import PROFILE_REFINEMENT_MARGIN_M
 from geometric_safety.relevant_aircraft import _catch_up_projection_interval_with_turns_local
 from paper.benchmark_contracts import (
     Json,
@@ -289,8 +290,10 @@ def evaluate(case: StudyCase, settings: Settings) -> StudyResult:
 def run(protocol: Path, output: Path, workers: int) -> None:
     if workers < 1:
         raise ValueError("At least one worker is required")
-    output.mkdir(parents=True, exist_ok=False)
     cases, settings = load_protocol(protocol)
+    if settings.margin_m != PROFILE_REFINEMENT_MARGIN_M:
+        raise ValueError("The reference exclusion band must match the library's profile refinement margin")
+    output.mkdir(parents=True, exist_ok=False)
     (output / "protocol.json").write_bytes(protocol.read_bytes())
     (output / "inputs.json").write_text(json.dumps([asdict(case) for case in cases], indent=2) + "\n")
     package = Path(geometric_safety.__file__).resolve().parent
